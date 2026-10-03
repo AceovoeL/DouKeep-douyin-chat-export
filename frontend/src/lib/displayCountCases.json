@@ -1,0 +1,271 @@
+[
+  {
+    "name": "互相关注一次事件下发 6 条镜像，界面只显示 2 条",
+    "hidden": ["m13", "m14", "m15", "m16"],
+    "display": 2,
+    "messages": [
+      {
+        "msg_id": "m11",
+        "conv_id": "0:1:100:200",
+        "sender_uid": "u100",
+        "msg_type": 1,
+        "content": "{\"tips\":\"你们已互相关注对方\",\"aweType\":0}",
+        "timestamp": 1790418222,
+        "seq": 1,
+        "raw_data": "{\"content_json\": \"{\\\"tips\\\":\\\"你们已互相关注对方\\\",\\\"aweType\\\":0}\"}"
+      },
+      {
+        "msg_id": "m12",
+        "conv_id": "0:1:100:200",
+        "sender_uid": "u200",
+        "msg_type": 0,
+        "content": "{\"joker_stickers\": [{\"id\": 0}], \"hello_text\": \"打个招呼吧\", \"hint_text\": \"我们已互相关注，可以开始聊天了\"}",
+        "timestamp": 1790418222,
+        "seq": 2,
+        "raw_data": "{\"content_json\": \"{\\\"joker_stickers\\\":[{\\\"id\\\":0}],\\\"hello_text\\\":\\\"打个招呼吧\\\",\\\"hint_text\\\":\\\"我们已互相关注，可以开始聊天了\\\"}\"}"
+      },
+      {
+        "msg_id": "m13",
+        "conv_id": "0:1:100:200",
+        "sender_uid": "u100",
+        "msg_type": 0,
+        "content": "{\"stickers\": [{\"id\": 1000000000000031}], \"hint_text\": \"我们已互相关注，可以开始聊天了\"}",
+        "timestamp": 1790418225,
+        "seq": 3,
+        "raw_data": "{\"content_json\": \"{\\\"stickers\\\":[{\\\"id\\\":1000000000000031}],\\\"hint_text\\\":\\\"我们已互相关注，可以开始聊天了\\\"}\"}"
+      },
+      {
+        "msg_id": "m14",
+        "conv_id": "0:1:100:200",
+        "sender_uid": "u200",
+        "msg_type": 1,
+        "content": "我们已互相关注，可以开始聊天了",
+        "timestamp": 1790418226,
+        "seq": 4,
+        "raw_data": "{\"content_json\": \"{\\\"type\\\":0,\\\"text\\\":\\\"我们已互相关注，可以开始聊天了\\\",\\\"aweType\\\":701}\"}"
+      },
+      {
+        "msg_id": "m15",
+        "conv_id": "0:1:100:200",
+        "sender_uid": "u100",
+        "msg_type": 1,
+        "content": "我们已互相关注，可以开始聊天了",
+        "timestamp": 1790418228,
+        "seq": 5,
+        "raw_data": "{\"content_json\": \"{\\\"type\\\":0,\\\"text\\\":\\\"我们已互相关注，可以开始聊天了\\\",\\\"aweType\\\":701}\"}"
+      },
+      {
+        "msg_id": "m16",
+        "conv_id": "0:1:100:200",
+        "sender_uid": "u200",
+        "msg_type": 1,
+        "content": "{\"tips\":\"你们已互相关注对方\",\"aweType\":0}",
+        "timestamp": 1790418229,
+        "seq": 6,
+        "raw_data": "{\"content_json\": \"{\\\"tips\\\":\\\"你们已互相关注对方\\\",\\\"aweType\\\":0}\"}"
+      }
+    ]
+  },
+  {
+    "name": "空载荷的系统消息不显示，普通文本照常显示",
+    "hidden": ["m22"],
+    "display": 2,
+    "messages": [
+      {
+        "msg_id": "m21",
+        "conv_id": "0:1:100:300",
+        "sender_uid": "u100",
+        "msg_type": 1,
+        "content": "在吗",
+        "timestamp": 1790418300,
+        "seq": 1,
+        "raw_data": null
+      },
+      {
+        "msg_id": "m22",
+        "conv_id": "0:1:100:300",
+        "sender_uid": "u300",
+        "msg_type": 0,
+        "content": "{}",
+        "timestamp": 1790418301,
+        "seq": 2,
+        "raw_data": null
+      },
+      {
+        "msg_id": "m23",
+        "conv_id": "0:1:100:300",
+        "sender_uid": "u300",
+        "msg_type": 1,
+        "content": "在的",
+        "timestamp": 1790418302,
+        "seq": 3,
+        "raw_data": null
+      }
+    ]
+  },
+  {
+    "name": "阅读端还不认识的通话记录载荷不显示",
+    "hidden": ["m32"],
+    "display": 1,
+    "messages": [
+      {
+        "msg_id": "m31",
+        "conv_id": "0:1:100:400",
+        "sender_uid": "u100",
+        "msg_type": 1,
+        "content": "到家了",
+        "timestamp": 1790418400,
+        "seq": 1,
+        "raw_data": null
+      },
+      {
+        "msg_id": "m32",
+        "conv_id": "0:1:100:400",
+        "sender_uid": "u400",
+        "msg_type": 0,
+        "content": "{\"voip_status\":101,\"camera_off\":1,\"voip_content\":\"通话结束 01:45\",\"voip_main_title\":\"\",\"voip_sub_title\":\"点击回拨\"}",
+        "timestamp": 1790418401,
+        "seq": 2,
+        "raw_data": "{\"content_json\": \"{\\\"voip_status\\\":101,\\\"voip_content\\\":\\\"通话结束 01:45\\\",\\\"camera_off\\\":1}\"}"
+      }
+    ]
+  },
+  {
+    "name": "点赞提示的两份镜像只留一份",
+    "hidden": ["m42"],
+    "display": 1,
+    "messages": [
+      {
+        "msg_id": "m41",
+        "conv_id": "0:1:100:500",
+        "sender_uid": "u100",
+        "msg_type": 1,
+        "content": "{\"tips\":\"对方赞了你分享的 视频A\",\"aweType\":126}",
+        "timestamp": 1790418500,
+        "seq": 1,
+        "raw_data": "{\"content_json\": \"{\\\"tips\\\":\\\"对方赞了你分享的 视频A\\\",\\\"aweType\\\":126,\\\"server_message_id\\\":\\\"1234567890123456\\\"}\"}"
+      },
+      {
+        "msg_id": "m42",
+        "conv_id": "0:1:100:500",
+        "sender_uid": "u100",
+        "msg_type": 1,
+        "content": "{\"tips\":\"你赞了对方分享的 视频A\",\"aweType\":126}",
+        "timestamp": 1790418506,
+        "seq": 2,
+        "raw_data": "{\"content_json\": \"{\\\"tips\\\":\\\"你赞了对方分享的 视频A\\\",\\\"aweType\\\":126,\\\"server_message_id\\\":\\\"1234567890123456\\\"}\"}"
+      }
+    ]
+  },
+  {
+    "name": "一起看视频邀请卡虽然载荷认不出，但要显示",
+    "hidden": [],
+    "display": 1,
+    "messages": [
+      {
+        "msg_id": "m51",
+        "conv_id": "0:1:100:600",
+        "sender_uid": "u600",
+        "msg_type": 0,
+        "content": "{\"aweType\":9000,\"title\":\"邀你一起看视频\"}",
+        "timestamp": 1790418600,
+        "seq": 1,
+        "raw_data": "{\"content_json\": \"{\\\"aweType\\\":9000,\\\"title\\\":\\\"邀你一起看视频\\\"}\"}"
+      }
+    ]
+  },
+  {
+    "name": "文本、图片、表情、分享卡、语音都算显示",
+    "hidden": [],
+    "display": 6,
+    "messages": [
+      {
+        "msg_id": "m61",
+        "conv_id": "0:1:100:700",
+        "sender_uid": "u100",
+        "msg_type": 1,
+        "content": "早安",
+        "timestamp": 1790418700,
+        "seq": 1,
+        "raw_data": null
+      },
+      {
+        "msg_id": "m62",
+        "conv_id": "0:1:100:700",
+        "sender_uid": "u700",
+        "msg_type": 3,
+        "content": "[图片]",
+        "timestamp": 1790418701,
+        "seq": 2,
+        "raw_data": null
+      },
+      {
+        "msg_id": "m63",
+        "conv_id": "0:1:100:700",
+        "sender_uid": "u100",
+        "msg_type": 2,
+        "content": "[表情]",
+        "timestamp": 1790418702,
+        "seq": 3,
+        "raw_data": null
+      },
+      {
+        "msg_id": "m64",
+        "conv_id": "0:1:100:700",
+        "sender_uid": "u700",
+        "msg_type": 4,
+        "content": "[分享视频] 标题",
+        "timestamp": 1790418703,
+        "seq": 4,
+        "raw_data": null
+      },
+      {
+        "msg_id": "m65",
+        "conv_id": "0:1:100:700",
+        "sender_uid": "u100",
+        "msg_type": 1,
+        "content": "{\"tips\":\"{{1}}赞了你的作品\",\"aweType\":126,\"template\":[{\"key\":1,\"name\":\"对方\"}]}",
+        "timestamp": 1790418704,
+        "seq": 5,
+        "raw_data": "{\"content_json\": \"{\\\"tips\\\":\\\"{{1}}赞了你的作品\\\",\\\"aweType\\\":126,\\\"template\\\":[{\\\"key\\\":1,\\\"name\\\":\\\"对方\\\"}]}\"}"
+      },
+      {
+        "msg_id": "m66",
+        "conv_id": "0:1:100:700",
+        "sender_uid": "u700",
+        "msg_type": 0,
+        "content": "{\"resource_url\":{\"url_list\":[\"https://example.com/voice.m4a\"]},\"duration\":3200,\"aweType\":501}",
+        "timestamp": 1790418705,
+        "seq": 6,
+        "raw_data": "{\"content_json\": \"{\\\"resource_url\\\":{\\\"url_list\\\":[\\\"https://example.com/voice.m4a\\\"]},\\\"duration\\\":3200,\\\"aweType\\\":501}\"}"
+      }
+    ]
+  },
+  {
+    "name": "群通知（拉人进群）只有 locale_resources 模板也要显示，空消息照旧藏起来",
+    "hidden": ["m72"],
+    "display": 1,
+    "messages": [
+      {
+        "msg_id": "m71",
+        "conv_id": "0:1:100:800",
+        "sender_uid": "u800",
+        "msg_type": 0,
+        "content": "[系统消息]",
+        "timestamp": 1790418800,
+        "seq": 1,
+        "raw_data": "{\"content_json\": \"{\\\"aweType\\\":100140,\\\"active_users\\\":[{\\\"uid\\\":11,\\\"nickname\\\":\\\"小明\\\"}],\\\"passive_users\\\":[{\\\"uid\\\":22,\\\"nickname\\\":\\\"小红\\\"}],\\\"locale_resources\\\":[{\\\"lang\\\":\\\"zh-Hans\\\",\\\"text\\\":\\\"{0}邀请{1}加入了群聊，新成员可查看历史消息\\\"}]}\"}"
+      },
+      {
+        "msg_id": "m72",
+        "conv_id": "0:1:100:800",
+        "sender_uid": "u800",
+        "msg_type": 0,
+        "content": "{}",
+        "timestamp": 1790418801,
+        "seq": 2,
+        "raw_data": null
+      }
+    ]
+  }
+]

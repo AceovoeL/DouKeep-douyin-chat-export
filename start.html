@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>抖音聊天记录导出 · 首次运行检查</title>
+  <!--
+    首次运行入口。
+
+    浏览器出于安全限制，网页不能直接执行本地命令，所以这里的流程是：
+      1. 页面去读 data/env-report.js（检测脚本写出来的结果文件，用 <script src> 读，
+         因为 file:// 页面允许加载同目录/子目录的脚本，fetch 本地文件则会被拦）；
+      2. 检测本身由 tools/env_check.ps1 完成（纯 PowerShell，不需要 Python / Node）；
+      3. 触发检测/启动有两条路：自定义协议 douyin-chat-export://（注册一次以后一键）
+         和把命令复制到剪贴板让用户按 Win+R 粘贴回车（首次没有协议时用这条）；
+      4. 必要条件全部通过后，启动器会运行 start.ps1（建虚拟环境 / 装依赖 / 构建前端
+         的进度实时输出；服务自己的输出写进 data/server.log，面板「日志」页可以直接看）；
+         页面同时轮询 127.0.0.1:8000（后端就绪才会上线），就绪后自动跳控制面板。
+      5. 启动由启动器（tools/bridge.ps1）负责，它会把状态写进 data/launcher-state.js；
+         页面读到「启动器正在启动」就只等结果，不自己再启动一份 start.ps1。
+  -->
+  <style>
+    :root {
+      --bg: #0f1013;
+      --panel: #17181c;
+      --panel2: #1d1f24;
+      --border: #2b2e35;
+      --text: #eceef2;
+      --text2: #a8aeb9;
+      --text3: #767d89;
+      --green: #3ddc84;
+      --green-bg: rgba(61, 220, 132, .13);
+      --red: #ff5d6c;
+      --red-bg: rgba(255, 93, 108, .13);
+      --yellow: #f0b429;
+      --yellow-bg: rgba(240, 180, 41, .14);
+      --accent: #6ea8fe;
+      --accent-bg: rgba(110, 168, 254, .14);
+      --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Courier New", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      background: #f4f5f7;
+      color: #1b1d22;
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── 页面本体（弹窗背后那一层） ── */
+    .page {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 56px 24px 80px;
+    }
+
+    .page h1 { margin: 0 0 10px; font-size: 26px; }
+    .page .lead { margin: 0 0 26px; color: #5b6270; line-height: 1.8; font-size: 14px; }
+    .page .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+    .page .card {
+      padding: 16px 18px; border: 1px solid #e2e5ea; border-radius: 12px; background: #fff;
+      box-shadow: 0 1px 2px rgba(16, 20, 30, .04);
+    }
+    .page .card b { display: block; margin-bottom: 6px; font-size: 14px; }
+    .page .card span { color: #5b6270; font-size: 13px; line-height: 1.75; }
+    .page code { font-family: var(--mono); background: #eceef3; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+
+    /* ── 弹窗遮罩 ── */
+    .overlay {
+      position: fixed; inset: 0; z-index: 100;
+      display: grid; place-items: center; padding: 20px;
+      background: rgba(18, 19, 23, .84);
+      backdrop-filter: blur(3px);
+      animation: fadeIn .18s ease-out;
+    }
+    .overlay[hidden] { display: none; }
+
+    @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(8px) scale(.985) } to { opacity: 1; transform: none } }
+
+    .dialog {
+      width: min(760px, 100%);
+      max-height: calc(100vh - 40px);
+      display: flex; flex-direction: column;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 16px;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+      animation: slideIn .2s ease-out;
+      overflow: hidden;
+    }
+
+    .dlg-head {
+      display: flex; align-items: flex-start; gap: 14px;
+      padding: 20px 22px 16px; border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, var(--panel2), var(--panel));
+    }
+    .dlg-icon {
+      width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center;
+      border-radius: 12px; font-size: 20px; font-weight: 800;
+      background: var(--accent-bg); color: var(--accent);
+    }
+    .dlg-icon.ok { background: var(--green-bg); color: var(--green); }
+    .dlg-icon.fail { background: var(--red-bg); color: var(--red); }
+    .dlg-icon.warn { background: var(--yellow-bg); color: var(--yellow); }
+    .dlg-title { font-size: 16px; font-weight: 700; padding-top: 1px; }
+    .dlg-sub { margin-top: 6px; font-size: 13px; color: var(--text2); line-height: 1.7; }
+
+    .progress { height: 3px; background: #23262c; }
+    .progress i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--green)); transition: width .3s ease; }
+
+    .summary {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+      padding: 12px 22px; font-size: 13px; color: var(--text2);
+      border-bottom: 1px solid var(--border); background: rgba(255, 255, 255, .015);
+    }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    }
+    .chip.ok { background: var(--green-bg); color: var(--green); }
+    .chip.fail { background: var(--red-bg); color: var(--red); }
+    .chip.warn { background: var(--yellow-bg); color: var(--yellow); }
+    .chip.info { background: var(--accent-bg); color: var(--accent); }
+    .legend { margin-left: auto; display: flex; gap: 12px; font-size: 12px; color: var(--text3); }
+    .legend b { font-weight: 700; }
+
+    .list { overflow-y: auto; padding: 14px 22px 4px; flex: 1 1 auto; }
+    .list::-webkit-scrollbar { width: 8px; }
+    .list::-webkit-scrollbar-thumb { background: #33363d; border-radius: 4px; }
+
+    .row {
+      display: flex; align-items: flex-start; gap: 13px;
+      padding: 11px 13px; border: 1px solid var(--border); border-radius: 11px;
+      background: rgba(255, 255, 255, .018); margin-bottom: 9px;
+    }
+    .row.ok { border-color: rgba(61, 220, 132, .28); }
+    .row.fail { border-color: rgba(255, 93, 108, .4); background: var(--red-bg); }
+    .row.warn { border-color: rgba(240, 180, 41, .32); }
+
+    .row-main { flex: 1 1 auto; min-width: 0; }
+    .row-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .row-name { font-size: 14px; font-weight: 700; }
+    .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
+    .tag.required { background: rgba(110, 168, 254, .16); color: var(--accent); }
+    .tag.optional { background: rgba(255, 255, 255, .07); color: var(--text3); }
+    .req { font-size: 12.5px; color: var(--text2); font-family: var(--mono); }
+    .req::before { content: '需要 '; font-family: inherit; color: var(--text3); }
+    .cur { font-size: 12.5px; color: var(--text); font-family: var(--mono); }
+    .cur::before { content: '当前 '; font-family: inherit; color: var(--text3); }
+    .row-detail { display: block; margin-top: 5px; font-size: 12px; color: var(--text3); line-height: 1.7; }
+    .row-path { display: block; margin-top: 4px; font-size: 11.5px; color: var(--text3); font-family: var(--mono); word-break: break-all; }
+    .row-hint { display: block; margin-top: 6px; font-size: 12.5px; line-height: 1.7; color: var(--yellow); }
+    .row.fail .row-hint { color: #ffc9cf; }
+
+    .mark { flex: 0 0 auto; font-size: 20px; font-weight: 800; line-height: 1.2; padding-top: 1px; }
+    .mark.ok { color: var(--green); }
+    .mark.fail { color: var(--red); }
+    .mark.warn { color: var(--yellow); }
+
+    /* ── 首次运行引导 / 等待提示 ── */
+    .guide { margin: 4px 22px 0; padding: 14px; border-radius: 11px; background: var(--panel2); border: 1px solid var(--border); }
+    .guide[hidden] { display: none; }
+    .guide h3 { margin: 0 0 8px; font-size: 13.5px; }
+    .guide ol { margin: 0; padding-left: 20px; font-size: 13px; color: var(--text2); line-height: 2; }
+    .guide kbd {
+      font-family: var(--mono); font-size: 12px; background: #0c0d10; color: var(--text);
+      border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px;
+    }
+    .cmd {
+      margin-top: 10px; padding: 10px 12px; border-radius: 9px;
+      background: #0c0d10; border: 1px solid var(--border);
+      font-family: var(--mono); font-size: 12px; color: #cfd6e4;
+      word-break: break-all; line-height: 1.65; user-select: all;
+    }
+    .guide-note { margin-top: 10px; font-size: 12px; color: var(--text3); line-height: 1.75; }
+    .guide-note b { color: var(--yellow); }
+
+    details.manual { margin: 10px 22px 0; font-size: 12.5px; color: var(--text3); }
+    details.manual summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+    details.manual .cmd { margin-top: 8px; }
+    details.manual p { margin: 8px 0 0; line-height: 1.75; }
+
+    .foot {
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 15px 22px 18px; border-top: 1px solid var(--border);
+      background: rgba(255, 255, 255, .015);
+    }
+    .foot-note { flex: 1 1 240px; font-size: 12px; color: var(--text3); line-height: 1.7; }
+    .foot-note.locked { color: var(--red); }
+    .actions { display: flex; gap: 9px; margin-left: auto; }
+
+    button {
+      font-family: inherit; font-size: 13px; font-weight: 600;
+      padding: 9px 16px; border-radius: 9px; cursor: pointer;
+      border: 1px solid var(--border); background: #23262c; color: var(--text);
+      transition: filter .15s, transform .12s, opacity .15s;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.15); }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.primary { background: var(--accent); border-color: transparent; color: #08111f; }
+    button.green { background: var(--green); border-color: transparent; color: #05230f; }
+    button.ghost { background: transparent; }
+
+    .spin {
+      display: inline-block; width: 12px; height: 12px; vertical-align: -1px; margin-right: 6px;
+      border: 2px solid rgba(255, 255, 255, .25); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg) } }
+
+    .toast {
+      position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+      z-index: 200; padding: 10px 18px; border-radius: 10px;
+      background: #23262c; color: var(--text); border: 1px solid var(--border);
+      font-size: 13px; box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
+      opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+    .toast.err { border-color: rgba(255, 93, 108, .5); color: #ffd2d7; }
+  </style>
+</head>
+
+<body>
+  <main class="page">
+    <h1>抖音聊天记录导出</h1>
+    <p class="lead">
+      这是首次运行的入口页面。打开后它会检查本机环境（Python、Node.js、npm 等），
+      必要条件都通过之后会自动运行 <code>start.ps1</code> 启动服务，
+      等后端就绪再自动跳转到控制面板。
+    </p>
+    <div class="cards">
+      <div class="card">
+        <b>① 环境检测</b>
+        <span>检测只做检查、不改动系统。缺失的项目会给出安装建议。</span>
+      </div>
+      <div class="card">
+        <b>② 一键启动</b>
+        <span>通过后自动运行 <code>start.ps1</code>：建虚拟环境 → 装依赖 → 构建前端 → 起服务。</span>
+      </div>
+      <div class="card">
+        <b>③ 自动跳转</b>
+        <span>后端就绪（<code>127.0.0.1:8000</code> 能连上）后，页面自动打开控制面板；服务输出在 <code>data/server.log</code>，面板「日志」页可以看。</span>
+      </div>
+    </div>
+    <p class="lead" style="margin-top:26px">
+      弹窗被关掉过？点这里重新打开：<button id="reopenBtn" class="primary" type="button" style="margin-left:6px">重新打开环境检测</button>
+    </p>
+  </main>
+
+  <!-- ── 环境检测弹窗 ── -->
+  <div class="overlay" id="overlay">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+      <div class="dlg-head">
+        <div class="dlg-icon" id="dlgIcon">…</div>
+        <div style="min-width:0">
+          <div class="dlg-title" id="dlgTitle">环境检测</div>
+          <div class="dlg-sub" id="dlgSub">正在读取本机环境检测结果…</div>
+        </div>
+      </div>
+
+      <div class="progress"><i id="progressFill"></i></div>
+
+      <div class="summary">
+        <span class="chip info" id="chipRequired">必要条件 -/-</span>
+        <span class="chip info" id="chipOptional">可选条件 -/-</span>
+        <span class="chip warn" id="chipState">检测中</span>
+        <span class="legend">
+          <span><b style="color:var(--green)">✓</b> 通过</span>
+          <span><b style="color:var(--red)">✗</b> 未通过</span>
+          <span><b style="color:var(--yellow)">!</b> 可选缺失</span>
+        </span>
+      </div>
+
+      <div class="list" id="checkList"></div>
+
+      <!-- 首次运行：还没有检测结果时的引导 -->
+      <div class="guide" id="guide" hidden>
+        <h3 id="guideTitle">首次运行需要先执行一次检测命令</h3>
+        <ol id="guideSteps">
+          <li>点下面的 <b>复制命令</b>（浏览器允许时会自动复制）</li>
+          <li>按 <kbd>Win</kbd> + <kbd>R</kbd> 打开「运行」</li>
+          <li>按 <kbd>Ctrl</kbd> + <kbd>V</kbd> 粘贴，按 <kbd>Enter</kbd> 回车</li>
+          <li>回到本页面，结果会自动刷新出来（检测通过后会自动启动服务）</li>
+        </ol>
+        <div class="cmd" id="cmdText">…</div>
+        <div class="guide-note" id="guideNote">
+          命令执行完会自动把结果写到 <code>data/env-report.js</code>，本页面读到后就会刷新出检测结果。
+          这条命令只是个启动器：先检测环境，检测通过才启动后端服务。
+        </div>
+        <div style="margin-top:12px">
+          <button class="primary" id="copyCmdBtn" type="button">复制命令</button>
+          <button class="ghost" id="retryProtocolBtn" type="button">我已注册协议，直接调用启动器</button>
+        </div>
+      </div>
+
+      <details class="manual" id="manualBox">
+        <summary>手动命令（浏览器没法自动调用启动器时用）</summary>
+        <p>检测命令（按 Win+R 粘贴回车）：</p>
+        <div class="cmd" id="manualCheck">…</div>
+        <p>启动命令（只启动后端，不重新检测）：</p>
+        <div class="cmd" id="manualStart">…</div>
+        <p>复制按钮：<button class="ghost" id="copyCheckBtn" type="button" style="padding:5px 12px">复制检测命令</button>
+          <button class="ghost" id="copyStartBtn" type="button" style="padding:5px 12px">复制启动命令</button></p>
+      </details>
+
+      <div class="foot">
+        <div class="foot-note" id="footNote">必要条件未全部通过时，这个窗口不能关闭。</div>
+        <div class="actions">
+          <button class="ghost" id="recheckBtn" type="button">重新检测</button>
+          <button class="green" id="startBtn" type="button" hidden>启动后端服务</button>
+          <button id="closeBtn" type="button" hidden>关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    'use strict';
+
+    /* ── 常量 ── */
+    var PROTOCOL = 'douyin-chat-export';
+    var REPORT_SRC = 'data/env-report.js';           // 检测报告（JSONP 形式）
+    var LAUNCHER_SRC = 'data/launcher-state.js';     // 启动器状态（JSONP 形式）：谁在启动 start.ps1
+    var API_READY = 'http://127.0.0.1:8000/api/auth/check';   // 公开端点，用来判断后端是否就绪
+    var PANEL_URL = 'http://127.0.0.1:8000/panel';
+    var REPORT_FRESH_MS = 10 * 60 * 1000;            // 报告超过 10 分钟就算旧结果
+    var PROTOCOL_GRACE_MS = 9000;                    // 调用协议后等报告/服务的宽限时间
+    var LAUNCHER_GRACE_MS = 3 * 60 * 1000;           // 启动器动手后 3 分钟内，页面不自己再启动一遍
+
+    var state = {
+      report: null,          // 最近一次读到的检测报告
+      lastTs: 0,             // 已渲染报告的 ts
+      launcher: null,        // 最近一次读到的启动器状态（bridge.ps1 写的）
+      phase: 'loading',      // loading | need_init | checking | result | waiting | redirect
+      startedAt: 0,          // 本次点了「启动」的时间
+      waitTimer: null,       // "启动后端"后等服务的超时提醒
+      serverReady: false
+    };
+
+    var el = function (id) { return document.getElementById(id); };
+
+    /* ── 项目路径 / 命令文本 ────────────────────────────────────────────── */
+    function projectDir() {
+      // file:///D:/a/b/start.html  ->  D:\a\b
+      var path = decodeURIComponent(location.pathname || '');
+      if (/^\/[A-Za-z]:/.test(path)) path = path.substring(1);       // 去掉盘符前的斜杠
+      var dir = path.replace(/\/[^/]*$/, '');
+      if (/^[A-Za-z]:/.test(dir)) return dir.replace(/\//g, '\\');    // 本地盘
+      if (/^\/\//.test(path)) return path.replace(/\/[^/]*$/, '').replace(/\//g, '\\'); // UNC
+      return dir.replace(/\//g, '\\');
+    }
+
+    function command(action) {
+      return 'powershell -NoProfile -ExecutionPolicy Bypass -File "' +
+        projectDir() + '\\tools\\bridge.ps1" -Action ' + action;
+    }
+
+    /* ── 提示条 ─────────────────────────────────────────────────────────── */
+    var toastTimer = null;
+    function toast(text, isError) {
+      var box = el('toast');
+      box.textContent = text;
+      box.className = 'toast show' + (isError ? ' err' : '');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { box.className = 'toast'; }, 3200);
+    }
+
+    function copyText(text, okText) {
+      var done = function () { toast(okText || '已复制到剪贴板'); };
+      var fail = function () {
+        toast('复制失败：请手动选中下面的命令再按 Ctrl+C', true);
+        var box = el('cmdText');
+        if (box) {
+          var range = document.createRange();
+          range.selectNodeContents(box);
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { legacyCopy(text) ? done() : fail(); });
+      } else {
+        legacyCopy(text) ? done() : fail();
+      }
+    }
+
+    function legacyCopy(text) {
+      try {
+        var area = document.createElement('textarea');
+        area.value = text;
+        area.setAttribute('readonly', 'readonly');
+        area.style.position = 'fixed';
+        area.style.left = '-9999px';
+        document.body.appendChild(area);
+        area.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(area);
+        return ok;
+      } catch (e) { return false; }
+    }
+
+    /* ── 自定义协议：在隐藏 iframe 里触发，页面本身不跳走 ───────────────── */
+    function fireProtocol(action) {
+      try {
+        var frame = document.createElement('iframe');
+        frame.style.display = 'none';
+        frame.src = PROTOCOL + '://' + action + '/';
+        document.body.appendChild(frame);
+        setTimeout(function () { if (frame.parentNode) frame.parentNode.removeChild(frame); }, 10000);
+        return true;
+      } catch (e) { return false; }
+    }
+
+    /* ── 读检测报告（JSONP：<script src="data/env-report.js?t=...">） ───── */
+    function pollReport() {
+      var script = document.createElement('script');
+      script.charset = 'utf-8';
+      script.async = true;
+      script.onload = function () { script.remove(); applyReport(); };
+      script.onerror = function () { script.remove(); };
+      script.src = REPORT_SRC + '?t=' + Date.now();
+      document.head.appendChild(script);
+      setTimeout(function () { if (script.parentNode) script.remove(); }, 5000);
+    }
+
+    function applyReport() {
+      var report = window.__DOUYIN_ENV_REPORT__;
+      if (!report || !report.items || !report.summary) return;
+      if (!(report.ts > state.lastTs)) return;          // 还是上一份，忽略
+      state.lastTs = report.ts;
+      state.report = report;
+      if (state.phase === 'loading' || state.phase === 'need_init' || state.phase === 'checking') {
+        state.phase = 'result';
+      }
+      render();
+    }
+
+    /* ── 启动器状态（启动器 bridge.ps1 写的文件） ───────────────────────────
+       启动器拉起 start.ps1 时（或者发现它已经在跑时）会写一份
+       data/launcher-state.js。页面读到「启动器正在启动」，就只等它，不自己再启动一份。 */
+    function pollLauncherState() {
+      var script = document.createElement('script');
+      script.charset = 'utf-8';
+      script.async = true;
+      script.onload = function () { script.remove(); applyLauncherState(); };
+      script.onerror = function () { script.remove(); };
+      script.src = LAUNCHER_SRC + '?t=' + Date.now();
+      document.head.appendChild(script);
+      setTimeout(function () { if (script.parentNode) script.remove(); }, 5000);
+    }
+
+    function applyLauncherState() {
+      var info = window.__DOUYIN_LAUNCHER_STATE__;
+      if (!info || !(info.ts > 0)) return;
+      if (state.launcher && !(info.ts > state.launcher.ts)) return;   // 还是上一条，忽略
+      state.launcher = info;
+      if (!state.serverReady && launcherStarting() && state.phase === 'result') {
+        state.phase = 'waiting';          // 启动器已经在启动了，页面这边转入「等待」
+      }
+      render();
+    }
+
+    /* 启动器是不是刚刚动手拉起 start.ps1（宽限期内就视为「有人在启动了」） */
+    function launcherStarting() {
+      var info = state.launcher;
+      if (!info || info.state !== 'starting') return false;
+      return (Date.now() - info.ts * 1000) < LAUNCHER_GRACE_MS;
+    }
+
+    /* ── 渲染 ───────────────────────────────────────────────────────────── */
+    function render() {
+      var report = state.report;
+      var list = el('checkList');
+      var summary = report ? report.summary : null;
+
+      if (!report) {
+        el('dlgIcon').className = 'dlg-icon';
+        el('dlgIcon').textContent = state.phase === 'checking' ? '…' : '?';
+        el('dlgTitle').textContent = '环境检测';
+        el('dlgSub').innerHTML = state.phase === 'checking'
+          ? '<span class="spin"></span>正在检测本机环境…'
+          : '还没有检测结果，请先执行一次检测命令。';
+        el('chipRequired').className = 'chip info';
+        el('chipRequired').textContent = '必要条件 -/-';
+        el('chipOptional').className = 'chip info';
+        el('chipOptional').textContent = '可选条件 -/-';
+        el('chipState').className = 'chip warn';
+        el('chipState').textContent = state.phase === 'checking' ? '检测中' : '待检测';
+        el('progressFill').style.width = state.phase === 'checking' ? '35%' : '0';
+        list.innerHTML = '';
+        renderGuide(true);
+        setLocked(true);
+        el('startBtn').hidden = true;
+        el('closeBtn').hidden = true;
+        el('recheckBtn').disabled = state.phase === 'checking';
+        return;
+      }
+
+      var ok = !!summary.ok;
+      var stale = (Date.now() - report.ts * 1000) > REPORT_FRESH_MS;
+      var launcherBusy = ok && launcherStarting();
+      el('dlgIcon').className = 'dlg-icon ' + (ok ? 'ok' : 'fail');
+      el('dlgIcon').textContent = ok ? '✓' : '✗';
+      el('dlgTitle').textContent = ok ? '环境检测通过' : '环境检测未通过';
+      el('dlgSub').innerHTML = (ok
+        ? (launcherBusy
+            ? '启动器已经在启动后端服务了（start.ps1 只启动一次），<span class="spin"></span>正在等它就绪…'
+            : '必要条件全部满足，可以启动后端服务了。' +
+              (state.phase === 'waiting' ? ' <span class="spin"></span>正在等待后端服务就绪（输出写进 data/server.log）…' : ''))
+        : '下面标红的条件必须先解决，处理完点「重新检测」。') +
+        '<br><span style="color:var(--text3);font-size:12px">检测时间：' + (report.generated_at || '未知') +
+        '（' + (report.source === 'powershell' ? 'PowerShell 检测器' : '后端检测') + '）' +
+        (stale ? ' · <b style="color:var(--yellow)">结果已超过 10 分钟，建议重新检测</b>' : '') + '</span>';
+
+      el('chipRequired').className = 'chip ' + (summary.required_passed === summary.required_total ? 'ok' : 'fail');
+      el('chipRequired').textContent = '必要条件 ' + summary.required_passed + '/' + summary.required_total;
+      el('chipOptional').className = 'chip ' + (summary.optional_passed === summary.optional_total ? 'ok' : 'warn');
+      el('chipOptional').textContent = '可选条件 ' + summary.optional_passed + '/' + summary.optional_total;
+      el('chipState').className = 'chip ' + (ok ? 'ok' : 'fail');
+      el('chipState').textContent = ok ? '通过' : '未通过';
+      el('progressFill').style.width = Math.round(summary.required_passed / Math.max(1, summary.required_total) * 100) + '%';
+
+      list.innerHTML = '';
+      report.items.forEach(function (item) { list.appendChild(renderRow(item)); });
+
+      renderGuide(false);
+      setLocked(!ok, launcherBusy);
+      el('startBtn').hidden = !ok || state.serverReady;
+      el('closeBtn').hidden = !ok;
+      el('recheckBtn').disabled = false;
+      el('manualBox').open = !ok;
+    }
+
+    function renderRow(item) {
+      var row = document.createElement('div');
+      var optionalMissing = (!item.required && !item.ok);
+      row.className = 'row ' + (item.ok ? 'ok' : (optionalMissing ? 'warn' : 'fail'));
+
+      var main = document.createElement('div');
+      main.className = 'row-main';
+
+      var line = document.createElement('div');
+      line.className = 'row-line';
+      line.appendChild(span('row-name', item.name));
+      line.appendChild(span('tag ' + (item.required ? 'required' : 'optional'), item.required ? '必需' : '可选'));
+      if (item.requirement) line.appendChild(span('req', item.requirement));
+      if (item.current) line.appendChild(span('cur', item.current));
+      main.appendChild(line);
+
+      if (item.detail) main.appendChild(span('row-detail', item.detail));
+      if (item.path) main.appendChild(span('row-path', item.path));
+      if (!item.ok && item.hint) main.appendChild(span('row-hint', '→ ' + item.hint));
+      row.appendChild(main);
+
+      var mark = document.createElement('div');
+      mark.className = 'mark ' + (item.ok ? 'ok' : (optionalMissing ? 'warn' : 'fail'));
+      mark.textContent = item.ok ? '✓' : (optionalMissing ? '!' : '✗');
+      mark.title = item.ok ? '通过' : (optionalMissing ? '可选条件缺失（不阻止启动）' : '未通过，必须先处理');
+      row.appendChild(mark);
+      return row;
+    }
+
+    function span(cls, text) {
+      var node = document.createElement('span');
+      node.className = cls;
+      node.textContent = text;
+      return node;
+    }
+
+    function renderGuide(show) {
+      var guide = el('guide');
+      guide.hidden = !show;
+      if (!show) return;
+      var cmd = command('check');
+      el('cmdText').textContent = cmd;
+
+      if (state.phase === 'checking') {
+        el('guideTitle').innerHTML = '<span class="spin"></span>正在检测…（已经调用过启动器，正在等结果）';
+        el('guideSteps').hidden = true;
+      } else {
+        el('guideTitle').textContent = '首次运行：请先执行一次下面的命令';
+        el('guideSteps').hidden = false;
+      }
+      el('copyCmdBtn').hidden = false;
+      el('manualCheck').textContent = cmd;
+      el('manualStart').textContent = command('start');
+      // Windows 的「运行」对话框对命令长度有 260 字符上限，太长了就提醒换短路径
+      if (cmd.length > 240 && !el('cmdTooLong')) {
+        var warn = document.createElement('div');
+        warn.id = 'cmdTooLong';
+        warn.className = 'guide-note';
+        warn.innerHTML = '<b>提示：</b>这条命令有 ' + cmd.length +
+          ' 个字符，超过「运行」对话框约 260 字符的上限。把项目移到更短的位置' +
+          '（例如 <code>D:\\douyin-chat-export</code>）再打开本页面即可。';
+        el('cmdText').parentNode.insertBefore(warn, el('cmdText').nextSibling);
+      }
+    }
+
+    function setLocked(locked, launcherBusy) {
+      var note = el('footNote');
+      if (locked) {
+        note.className = 'foot-note locked';
+        note.textContent = '必要条件未全部通过，这个窗口不能关闭（处理完点「重新检测」）。';
+      } else if (launcherBusy) {
+        note.className = 'foot-note';
+        note.textContent = '启动器已经在启动后端服务了，这里只等它、不会重复启动。' +
+          '若 3 分钟后还没反应，点「重新检测」重来一次。';
+      } else {
+        note.className = 'foot-note';
+        note.textContent = '必要条件已通过，可以关闭这个窗口。';
+      }
+    }
+
+    /* ── 重新检测 ───────────────────────────────────────────────────────── */
+    function runCheck() {
+      var cmd = command('check');
+      copyText(cmd, '已复制检测命令；正在调用启动器…');
+      state.phase = 'checking';
+      state.serverReady = false;
+      render();
+      fireProtocol('check');
+      startProtocolGrace();
+    }
+
+    /* 调用协议后如果没有新报告，就把「手动粘贴命令」的引导摆到台面上 */
+    function startProtocolGrace() {
+      var sentTs = state.lastTs;
+      setTimeout(function () {
+        if (state.lastTs > sentTs) return;              // 报告已更新，说明启动器跑起来了
+        if (state.phase !== 'checking') return;
+        state.phase = 'need_init';
+        render();
+        toast('浏览器没有自动调用启动器，请按 Win+R 粘贴命令回车', true);
+      }, PROTOCOL_GRACE_MS);
+    }
+
+    /* ── 启动后端 ───────────────────────────────────────────────────────── */
+    function startBackend() {
+      if (launcherStarting()) {
+        // 启动器（bridge.ps1）正在启动 start.ps1：这里只等它就绪。
+        // 注意不设 startedAt：万一启动器中途失败，宽限期一过页面还能自己重试。
+        state.phase = 'waiting';
+        render();
+        toast('启动器已经在启动后端服务了，正在等它就绪（不会重复启动）');
+        clearTimeout(state.waitTimer);
+        state.waitTimer = setTimeout(onStartWaitTimeout, 20000);
+        return;
+      }
+      state.startedAt = Date.now();
+      state.phase = 'waiting';
+      state.serverReady = false;
+      render();
+      toast('已请求启动后端，首次启动要装依赖、构建前端，可能需要几分钟');
+      fireProtocol('start');
+      render();
+      // 浏览器可能因为"没有用户操作"拦住协议调用，等一会儿还没起来就把手动命令摆出来
+      clearTimeout(state.waitTimer);
+      state.waitTimer = setTimeout(onStartWaitTimeout, 20000);
+    }
+
+    function onStartWaitTimeout() {
+      if (state.serverReady || state.phase !== 'waiting') return;
+      var note = el('footNote');
+      note.className = 'foot-note';
+      if (launcherStarting()) {
+        note.textContent = '启动器正在启动后端服务（首次运行要装依赖、构建前端，可能要几分钟），' +
+          '再等一会儿；若一直没反应，点「重新检测」重来。';
+        return;
+      }
+      el('manualBox').open = true;
+      note.textContent = '后端还没起来：如果浏览器拦住了自动调用，请展开下面的「手动命令」，' +
+        '按 Win+R 粘贴启动命令再回车。';
+    }
+
+    /* ── 轮询后端是否就绪 ───────────────────────────────────────────────── */
+    function pollServer() {
+      fetch(API_READY + '?t=' + Date.now(), { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (typeof data.need_password !== 'boolean') return;      // 不是本项目的服务
+          state.serverReady = true;
+          onServerReady();
+        })
+        .catch(function () { /* 还没起来，继续等 */ });
+    }
+
+    function onServerReady() {
+      state.serverReady = true;
+      clearTimeout(state.waitTimer);
+      var reportOk = !state.report || (state.report.summary && state.report.summary.ok);
+      if (!reportOk) {
+        // 环境条件没过却已经有服务在跑：提示一下，但别把用户锁在这
+        var note = el('footNote');
+        note.className = 'foot-note';
+        note.textContent = '检测到 127.0.0.1:8000 上已有本项目服务在运行，可直接打开控制面板。';
+        return;
+      }
+      state.phase = 'redirect';
+      el('dlgSub').innerHTML = '<span class="spin"></span>后端服务已就绪，正在跳转控制面板…';
+      el('chipState').className = 'chip ok';
+      el('chipState').textContent = '就绪';
+      el('startBtn').hidden = true;
+      setTimeout(function () { location.replace(PANEL_URL); }, 900);
+    }
+
+    /* ── 事件绑定 ───────────────────────────────────────────────────────── */
+    el('recheckBtn').addEventListener('click', runCheck);
+    el('startBtn').addEventListener('click', startBackend);
+    el('closeBtn').addEventListener('click', function () {
+      if (!state.report || !state.report.summary.ok) {
+        toast('必要条件还没通过，不能关闭', true);
+        return;
+      }
+      el('overlay').hidden = true;
+    });
+    el('reopenBtn').addEventListener('click', function () { el('overlay').hidden = false; });
+    el('copyCmdBtn').addEventListener('click', function () { copyText(command('check')); });
+    el('copyCheckBtn').addEventListener('click', function () { copyText(command('check')); });
+    el('copyStartBtn').addEventListener('click', function () { copyText(command('start')); });
+    el('retryProtocolBtn').addEventListener('click', function () {
+      state.phase = 'checking';
+      render();
+      fireProtocol('check');
+      startProtocolGrace();
+    });
+
+    // 必要条件没通过时，这个弹窗不允许被关掉：Esc、点背景都无视
+    document.addEventListener('keydown', function (event) {
+      if (event.key !== 'Escape') return;
+      var report = state.report;
+      if (report && report.summary && report.summary.ok) return;
+      event.preventDefault();
+      event.stopPropagation();
+      toast('必要条件未通过，不能关闭这个窗口', true);
+    }, true);
+    el('overlay').addEventListener('click', function (event) {
+      if (event.target !== this) return;
+      var report = state.report;
+      if (report && report.summary && report.summary.ok) return;
+      toast('必要条件未通过，不能关闭这个窗口', true);
+    });
+
+    /* ── 启动 ───────────────────────────────────────────────────────────── */
+    (function boot() {
+      render();                                  // 先画"检测中"
+      el('manualCheck').textContent = command('check');
+      el('manualStart').textContent = command('start');
+      el('cmdText').textContent = command('check');
+      // 有些浏览器允许页面在没有用户操作时写剪贴板，能成的话用户少点一下
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(command('check')).catch(function () { });
+        }
+      } catch (e) { }
+      pollReport();
+      setInterval(pollReport, 1500);
+      pollLauncherState();
+      setInterval(pollLauncherState, 2000);
+      pollServer();
+      setInterval(pollServer, 2000);
+
+      // 3 秒还没读到任何报告：显示首次运行引导
+      setTimeout(function () {
+        if (state.report) return;
+        if (state.phase === 'loading') { state.phase = 'need_init'; render(); }
+      }, 3000);
+
+      // 已经有新报告且通过、但服务没起来时：试着自动启动一次（浏览器可能要求用户点一下）。
+      // 例外：启动器（bridge.ps1）正在启动 start.ps1，这时页面只等它就绪。
+      setInterval(function () {
+        if (!state.report || !state.report.summary.ok) return;
+        if (state.serverReady) return;
+        if (state.phase !== 'result' && state.phase !== 'waiting') return;
+        var busy = launcherStarting();
+        if (busy && !state.startedAt) {
+          if (state.phase !== 'waiting') { state.phase = 'waiting'; render(); }
+          return;                                     // 交给启动器，页面不插手
+        }
+        if (state.startedAt || busy) return;
+        state.startedAt = Date.now();
+        state.phase = 'waiting';
+        render();
+        fireProtocol('start');
+      }, 4000);
+    })();
+  </script>
+</body>
+
+</html>

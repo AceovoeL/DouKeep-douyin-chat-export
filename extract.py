@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Main entry point: extract Douyin chat data via web version.
+
+常用参数：
+  --incremental        只抓新消息（默认是全量）
+  --filter NAME        只抓名字匹配的会话（逗号分隔可多个）
+  --refresh-fields     字段回填：不清库、不删消息，只把抖音还能返回的消息
+                       重新抓一遍并补上整包字段与操作标记
+  --no-download-images 不下载媒体图片（默认会下载；已存在的文件自动跳过）
+"""
+import asyncio
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+
+def _parse_args():
+    """Parse CLI arguments."""
+    args = {
+        "mode": "extract",
+        "name_filter": None,
+        "incremental": "--incremental" in sys.argv,
+        # 媒体图片默认下载（面板里可以关掉，关掉会传 --no-download-images）。
+        "download_images": "--no-download-images" not in sys.argv,
+        "refresh_fields": "--refresh-fields" in sys.argv,
+        "output_format": "jsonl",
+        "output_path": None,
+    }
+
+    if "--discover" in sys.argv:
+        args["mode"] = "discover"
+    elif "--list-conversations" in sys.argv:
+        args["mode"] = "list_conversations"
+    elif "--transcribe-voices" in sys.argv:
+        args["mode"] = "voice_backfill"
+    elif "--export" in sys.argv:
+        args["mode"] = "export"
+    elif args["refresh_fields"]:
+        args["mode"] = "refresh_fields"
+
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--filter" and i < len(sys.argv) - 1:
+            args["name_filter"] = sys.argv[i + 1]
+        elif arg == "--format" and i < len(sys.argv) - 1:
+            args["output_format"] = sys.argv[i + 1]
+        elif arg == "--output" and i < len(sys.argv) - 1:
+            args["output_path"] = sys.argv[i + 1]
+
+    return args
+
+
+def run_export(args):
+    """Export chat data to ChatLab format (no browser needed)."""
+    from extractor.exporter import ChatLabExporter
+
+    fmt = args["output_format"]
+    output_path = args["output_path"]
+
+    exporter = ChatLabExporter(
+        conv_name=args["name_filter"],
+        output_format=fmt,
+    )
+    exporter.export(output_path)
+
+
+async def run():
+    args = _parse_args()
+
+    # Export mode: no browser needed
+    if args["mode"] == "export":
+        run_export(args)
+        return 0
+
+    from extractor.web_scraper import WebChatScraper
+
+    scraper = WebChatScraper(
+        discovery_mode=(args["mode"] == "discover"),
+        name_filter=args["name_filter"],
+        incremental=args["incremental"],
+        download_images=args["download_images"],
+    )
+
+    try:
+        await scraper.launch()
+        logged_in = await scraper.wait_for_login()
+        if not logged_in:
+            print("[-] 未能登录，退出")
+            return 2  # non-zero exit so the panel surfaces this as a failure
+
+        if args["mode"] == "discover":
+            duration = 60
+            for arg in sys.argv[1:]:
+                if arg.isdigit():
+                    duration = int(arg)
+            await scraper.run_discovery(duration=duration)
+        elif args["mode"] == "list_conversations":
+            convs = await scraper.list_conversations()
+            out_path = os.path.join(
+                os.path.dirname(__file__), "data", "conversations_list.json"
+            )
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            import json as _json
+            import time as _time
+            payload = {
+                "discovered_at": int(_time.time()),
+                "items": [
+                    {
+                        "nickname": c.get("nickname", ""),
+                        "name": c.get("name", ""),
+                        "time": c.get("time", ""),
+                        "preview": c.get("preview", ""),
+                    }
+                    for c in convs
+                ],
+            }
+            with open(out_path, "w", encoding="utf-8") as f:
+                _json.dump(payload, f, ensure_ascii=False, indent=2)
+            print(f"[+] 会话列表已写入 {out_path}")
+        elif args["mode"] == "voice_backfill":
+            await scraper.backfill_voice_transcriptions(args["name_filter"])
+        elif args["mode"] == "refresh_fields":
+            # 只读回填：把抖音还能返回的消息重新抓一遍，补上整包字段。
+            # 不清库、不删旧消息、不下载媒体、不做语音转写。
+            await scraper.extract_all(refresh=True)
+        else:
+            await scraper.extract_all()
+
+        return 0
+
+    except KeyboardInterrupt:
+        print("\n[*] 用户中断")
+        return 130
+    except Exception as e:
+        print(f"\n[-] 错误: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    finally:
+        await scraper.close()
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(run()) or 0)

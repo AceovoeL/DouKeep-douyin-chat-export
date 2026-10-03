@@ -1,0 +1,2453 @@
+#!/usr/bin/env python3
+"""Extract Douyin chat messages via web version using Playwright + DOM scraping."""
+import asyncio
+from collections import defaultdict
+import base64
+import json
+import hashlib
+import os
+import re
+import random
+import sys
+import time
+from datetime import datetime, timedelta
+
+# Fix Windows console encoding: allow unencodable chars (e.g. \xa0, emoji,
+# decorative Unicode in nicknames) to be replaced instead of crashing print().
+if sys.platform == 'win32':
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, 'reconfigure'):
+            try:
+                _stream.reconfigure(errors='replace')
+            except Exception:
+                pass
+
+from playwright.async_api import async_playwright
+
+from common import paths
+from common.message_kinds import daily_share_text, is_daily_share, is_view_once
+from common.message_modify import parse_modify
+from common.tls import client_context
+from extractor.forwarded import backfill_uploaded_forwards
+from extractor.im_media import (  # noqa: F401 — re-exported for tools/control_panel
+    _detect_media_format, _fetch, _save_emoji, _save_image,
+)
+from extractor.models import (
+    init_db, get_db, upsert_user, upsert_conversation, update_conversation_stats,
+)
+from extractor.voice_transcriber import (
+    VoiceTranscriber,
+    backfill_sender_sec_uids,
+    is_voice_message,
+    pending_voice_rows,
+)
+
+CHAT_URL = "https://www.douyin.com/chat?isPopup=1"
+USER_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "browser_profile")
+
+# 刚打开私信页时，会话列表是前端异步渲染出来的：DOM 里先出现一部分，剩下的过几秒才补上。
+# 页面一打开就往下走（list_conversations / extract_all 直接开始滚动收集，或者采集时
+# 为了偷 short_id 重载页面后马上去点会话），可能只拿到一半左右的会话、或者干脆找不到
+# 那个会话。所以每次 goto 之后都先静等这几秒，再去做「等会话列表、滚动、点击」这些事。
+CHAT_PAGE_SETTLE_SECONDS = 5
+
+# IM 用户信息接口：POST sec_user_ids=<JSON 数组> → {data: [{uid, nickname, unique_id, avatar_thumb}]}
+# 只认 cookies，不需要 msToken/a_bogus（与 batch_play_info 同理）。
+USER_INFO_API = "https://www.douyin.com/aweme/v1/web/im/user/info/"
+BATCH_USER_INFO = 20
+
+# After cache-clear reload, list titles often show UIDs until nicknames hydrate.
+# Poll for the target nickname instead of giving up after one scroll-through.
+CONV_FIND_TIMEOUT_S = 15
+CONV_FIND_POLL_S = 0.5
+
+
+def _filter_conversations(conversations, name_filter):
+    """Panel selections are exact nicknames, including short names like 'n'."""
+    names = {part.strip() for part in name_filter.split(",") if part.strip()}
+    return [c for c in conversations
+            if c.get("nickname") in names or c.get("name") in names]
+
+
+# aweType → 分享卡片（视频/直播、商品、引用评论）
+_VIDEO_SHARE_AWE_TYPES = (11054, 11055, 11063, 11066, 11067, 11069, 11070)
+_OTHER_SHARE_AWE_TYPES = (11029, 10500, 10401, 800, 801, 803)
+
+
+def _share_cover(cj):
+    """分享卡片的封面图，取 cover_url.url_list[0]。"""
+    cover = cj.get("cover_url")
+    if isinstance(cover, dict):
+        urls = cover.get("url_list", [])
+        if urls and isinstance(urls[0], str):
+            return urls[0]
+    return None
+
+
+def _classify_json_message(cj):
+    """分类非语音/表情/图片的 content_json。
+
+    返回 ``(text, msg_type, image_src)``，msg_type 取 text/other/share/video。
+    语音、表情、图片在调用处先行处理（它们的判定需要 cj 之外的信息），
+    因此这里只覆盖剩余的网页载荷类型。
+    """
+    text = cj.get("text", "") or cj.get("description", "")
+    image_src = None
+    awe_type = cj.get("aweType", -1)
+    if awe_type in (700, 0, 701, 703):
+        return text, "text", image_src
+    if is_view_once(cj):
+        # aweType=10401 且有正文、无卡片字段：「仅看一次」文本消息，不是分享卡片。
+        return text, "text", image_src
+    if awe_type in _VIDEO_SHARE_AWE_TYPES:
+        # 分享视频/直播；封面图在 cj.cover_url.url_list[0]。
+        # 卡片没有标题时正文留空：界面按分享卡渲染（封面 + 作者），
+        # 以前落库的 "[分享]" 占位在哪儿显示都没有信息量。
+        image_src = _share_cover(cj)
+        return text or cj.get("push_detail") or "", "share", image_src
+    if is_daily_share(cj):
+        # 分享「限时日常」：作品卡片不带标题，正文统一带 [分享限时日常] 标签，
+        # 这样「限时日常」这个关键词在查看器搜索里能命中（老数据见
+        # tools/backfill_daily_share.py）。
+        body = daily_share_text(cj)
+        push = str(text or cj.get("push_detail") or "").strip()
+        if push and push not in body:
+            body = f"{body} {push}"
+        return body, "share", _share_cover(cj)
+    if awe_type in _OTHER_SHARE_AWE_TYPES:
+        # 分享商品/评论（10401 仅当带卡片字段；仅看一次文本已在上方拦截）
+        # aweType=10500: 引用视频评论，comment 字段包含评论内容
+        comment = cj.get("comment", "")
+        if comment:
+            text = comment
+        elif not text:
+            # 没有标题的分享（视频/图片/动图/文章/评论）正文留空，不写 "[分享]"。
+            text = cj.get("push_detail") or cj.get("aweme_title", "") or ""
+        return text, "share", image_src
+    if awe_type >= 100000:
+        return text or cj.get("push_detail") or "[系统消息]", "other", image_src
+    if cj.get("video", {}).get("vid") and cj.get("poster", {}).get("origin_url_list"):
+        # 视频消息：awe_type=0 的视频走单独路径，cj.video.vid + cj.poster
+        # 真正的视频流要 vid → 加密 URL 反查（待办），目前只下载 poster 封面图
+        try:
+            dur_sec = round(float(cj.get("duration") or 0))
+        except (TypeError, ValueError):
+            dur_sec = 0
+        urls = cj.get("poster", {}).get("origin_url_list") or []
+        if urls and isinstance(urls[0], str):
+            image_src = urls[0]
+        return (f"[视频 {dur_sec}秒]" if dur_sec else "[视频]"), "video", image_src
+    if text:
+        return text, "text", image_src
+    return (
+        cj.get("push_detail") or cj.get("display_name") or json.dumps(cj, ensure_ascii=False)[:200],
+        "other",
+        image_src,
+    )
+
+# ── DOM Selectors (from discovery) ──────────────────────────────
+# Conversation list
+SEL_CONV_LIST = 'div[class*="conversationConversationListwrapper"]'
+SEL_CONV_ITEM = 'div[class*="conversationConversationItemwrapper"]'
+SEL_CONV_TITLE = 'div[class*="conversationConversationItemtitle"]'
+SEL_CONV_TIME = 'div[class*="ConversationItemTagNextToTitletimeStr"]'
+SEL_CONV_PREVIEW = 'pre[class*="ConversationItemHinttextBox"]'
+
+# Message area
+SEL_MSG_LIST = 'div[class*="messageMessageListlist"]'
+SEL_MSG_BOX = 'div[class*="messageMessageBoxmessageBox"]'
+SEL_MSG_CONTENT_BOX = 'div[class*="messageMessageBoxcontentBox"]'
+SEL_MSG_IS_SELF = 'messageMessageBoxisFromMe'  # class substring
+SEL_MSG_TEXT = 'span[class*="TextMessageTextpureText"]'
+SEL_MSG_TIME = 'div[class*="MessageBoxTimetimeLayout"]'
+SEL_MSG_SHARE = 'div[class*="MessageItemShareAwemecontainer"]'
+SEL_MSG_EMOJI = 'img[class*="MessageItemEmojiimage"]'
+SEL_MSG_AVATAR = 'img[class*="avatar"]'
+
+# ── 中文星期映射 ────────────────────────────────────────────────
+WEEKDAY_MAP = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+
+
+class WebChatScraper:
+    def __init__(self, discovery_mode=False, name_filter=None, incremental=False, download_images=False):
+        self.discovery_mode = discovery_mode
+        self.name_filter = name_filter
+        self.incremental = incremental
+        self.download_images = download_images
+        self.pw = None
+        self.context = None
+        self.page = None
+        self._db_conn = None  # 持久数据库连接
+        self._last_known_timestamp = 0  # 跨批次时间戳继承
+
+    async def launch(self):
+        os.makedirs(USER_DATA_DIR, exist_ok=True)
+        init_db()
+        self._db_conn = get_db()
+
+        self.pw = await async_playwright().start()
+        self.context = await self.pw.chromium.launch_persistent_context(
+            USER_DATA_DIR,
+            headless=os.environ.get("HEADLESS", "false").lower() == "true",
+            viewport={"width": 1400, "height": 900},
+            locale="zh-CN",
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        await self.context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        """)
+        self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+        print("[+] 浏览器已启动")
+
+    async def wait_for_login(self):
+        await self.page.goto("https://www.douyin.com/", wait_until="domcontentloaded")
+        print("[*] 正在检测登录状态...")
+
+        for attempt in range(180):
+            # Use Playwright cookie API to check HttpOnly cookies too
+            cookies = await self.context.cookies("https://www.douyin.com")
+            # 要求 sessionid 值非空：LevelDB 里可能残留一个名字在、值为空的 sessionid，
+            # 只查名字会误判为已登录，随后 API 全部拿到 0 条。
+            logged_in = any(c["name"] == "sessionid" and c["value"] for c in cookies)
+            if logged_in:
+                print("[+] 已检测到登录状态")
+                return True
+            if attempt == 0:
+                print("[*] 未检测到登录，请在浏览器中扫码登录... (最多 3 分钟)")
+            await asyncio.sleep(1)
+
+        print("[-] 登录超时")
+        return False
+
+    async def _wait_chat_page_settled(self):
+        """打开（或重载）私信页后先静等几秒，让会话列表自己加载完整。
+
+        页面刚出来时列表只渲染了一部分，立刻滚动/读取会少拿会话（表现为"只有原来
+        一半的会话"），立刻找会话则会报"未找到会话"。两个入口都要等：进页面时
+        （navigate_to_chat）和采集时为了偷 short_id 重载页面之后。
+        等多久见 CHAT_PAGE_SETTLE_SECONDS。
+        """
+        print(f"[*] 等待会话列表加载（{CHAT_PAGE_SETTLE_SECONDS} 秒）...")
+        await asyncio.sleep(CHAT_PAGE_SETTLE_SECONDS)
+
+    async def navigate_to_chat(self):
+        print("[*] 正在导航至私信页面...")
+
+        for attempt in range(3):
+            await self.page.goto(CHAT_URL, wait_until="domcontentloaded")
+            await self._wait_chat_page_settled()
+            try:
+                await self.page.wait_for_selector(SEL_CONV_ITEM, timeout=20000)
+                print(f"[+] 当前页面: {self.page.url}")
+                return
+            except Exception as e:
+                await self._dump_chat_page_diagnostics(reason=str(e)[:80])
+                if attempt < 2:
+                    print(f"[!] 等待会话列表超时，第 {attempt+1} 次重试...")
+                    await asyncio.sleep(3)
+                else:
+                    print("[!] 等待会话列表超时（已重试 3 次），页面可能未完全加载")
+
+        await asyncio.sleep(1)
+        print(f"[+] 当前页面: {self.page.url}")
+
+    async def _dump_chat_page_diagnostics(self, reason: str = ""):
+        """打印当前 chat 页的诊断信息，用于排查 selector 命中失败的原因。"""
+        try:
+            diag = await self.page.evaluate("""() => {
+                const out = {
+                    url: location.href,
+                    title: document.title,
+                    pathname: location.pathname,
+                    has_conv_store: !!window.conversationStore,
+                    has_user_store: !!window.userInfoStore,
+                    has_im_module: !!window['__VMOK_@pc-im/im:1.0.0.562__'] ||
+                                   Object.keys(window).some(k => k.includes('pc-im')),
+                    list_wrappers: document.querySelectorAll('div[class*="conversationConversationListwrapper"]').length,
+                    item_wrappers: document.querySelectorAll('div[class*="conversationConversationItemwrapper"]').length,
+                    body_text_first200: (document.body && document.body.innerText || '').slice(0, 200),
+                };
+                // Detect login wall / captcha
+                out.has_qr = !!document.querySelector('img[src*="qrcode"], canvas[class*="qrcode"], div[class*="qrcode"], div[class*="QrCode"]');
+                out.has_captcha = !!document.querySelector('iframe[src*="captcha"], div[class*="captcha"], div[class*="verify"]');
+                out.has_login_btn = !!document.querySelector('button[class*="login"], div[class*="login-button"]');
+                // Top-level classes of body's first ~10 children to spot rename
+                const top = [];
+                if (document.body) {
+                    for (const c of document.body.children) {
+                        if (top.length >= 10) break;
+                        top.push((c.className || '').toString().split(/\\s+/).slice(0, 3).join(' '));
+                    }
+                }
+                out.body_top_children_classes = top;
+                // Sample any class names that look related so we can spot a rename
+                const related = new Set();
+                document.querySelectorAll('div[class]').forEach(el => {
+                    const cls = el.className;
+                    if (typeof cls !== 'string') return;
+                    for (const c of cls.split(/\\s+/)) {
+                        const lc = c.toLowerCase();
+                        if (lc.includes('conversation') || lc.includes('chatlist') || lc.includes('messagelist')) {
+                            related.add(c);
+                        }
+                    }
+                });
+                out.related_classes = [...related].slice(0, 25);
+                return out;
+            }""")
+        except Exception as e:
+            print(f"[!] 诊断失败: {e}")
+            return
+
+        if reason:
+            print(f"[!] 会话列表未找到 (原因: {reason})")
+        print(f"[*] URL: {diag.get('url')}")
+        print(f"[*] 标题: {diag.get('title')}")
+        print(f"[*] conversationStore={diag.get('has_conv_store')} userInfoStore={diag.get('has_user_store')} IM SDK={diag.get('has_im_module')}")
+        print(f"[*] DOM 命中: list={diag.get('list_wrappers')} item={diag.get('item_wrappers')}")
+        if diag.get("has_qr"):
+            print("[!] 页面有二维码 → 登录态实际无效，请重新扫码或导入新 Cookie")
+        if diag.get("has_captcha"):
+            print("[!] 页面有验证码/滑块 → 触发了风控，需要人工通过")
+        if diag.get("has_login_btn"):
+            print("[!] 页面有登录按钮 → 大概率未登录")
+        if not diag.get("has_conv_store") and not diag.get("has_im_module"):
+            print("[!] IM SDK 完全未加载 → 可能账号无 PC IM 权限，或 JS chunk 被拦截")
+        related = diag.get("related_classes") or []
+        if related and diag.get("item_wrappers", 0) == 0:
+            print(f"[*] 相关类名: {', '.join(related)}")
+            print("[*] 如果出现 conversationItemwrapper 之类的新名字，可能是抖音改了类名")
+        snippet = (diag.get("body_text_first200") or "").replace("\n", " ").strip()
+        if snippet:
+            print(f"[*] 正文片段: {snippet}")
+
+    # ── Time Parsing ──────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_time_label(label: str) -> int:
+        """将 DOM 时间标签转为 Unix 秒时间戳。"""
+        if not label or not label.strip():
+            return 0
+
+        label = label.strip()
+        now = datetime.now()
+
+        # "X分钟前"
+        m = re.match(r"(\d+)\s*分钟前", label)
+        if m:
+            return int((now - timedelta(minutes=int(m.group(1)))).timestamp())
+
+        # "X小时前"
+        m = re.match(r"(\d+)\s*小时前", label)
+        if m:
+            return int((now - timedelta(hours=int(m.group(1)))).timestamp())
+
+        # "刚刚"
+        if label == "刚刚":
+            return int(now.timestamp())
+
+        # "昨天 HH:MM"
+        m = re.match(r"昨天\s*(\d{1,2}):(\d{2})", label)
+        if m:
+            yesterday = now - timedelta(days=1)
+            dt = yesterday.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+            return int(dt.timestamp())
+
+        # "前天 HH:MM"
+        m = re.match(r"前天\s*(\d{1,2}):(\d{2})", label)
+        if m:
+            day = now - timedelta(days=2)
+            dt = day.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+            return int(dt.timestamp())
+
+        # "星期X HH:MM"
+        m = re.match(r"星期([一二三四五六日天])\s*(\d{1,2}):(\d{2})", label)
+        if m:
+            target_wd = WEEKDAY_MAP.get(m.group(1), 0)
+            current_wd = now.weekday()
+            days_back = (current_wd - target_wd) % 7
+            if days_back == 0:
+                days_back = 7  # 同一天指上周
+            day = now - timedelta(days=days_back)
+            dt = day.replace(hour=int(m.group(2)), minute=int(m.group(3)), second=0, microsecond=0)
+            return int(dt.timestamp())
+
+        # "YYYY/MM/DD HH:MM" or "YYYY/MM/DD"
+        m = re.match(r"(\d{4})/(\d{1,2})/(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?", label)
+        if m:
+            year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            hour = int(m.group(4)) if m.group(4) else 0
+            minute = int(m.group(5)) if m.group(5) else 0
+            try:
+                dt = datetime(year, month, day, hour, minute)
+                return int(dt.timestamp())
+            except ValueError:
+                pass
+
+        # "MM/DD HH:MM" or "MM/DD"
+        m = re.match(r"(\d{1,2})/(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?$", label)
+        if m:
+            month, day = int(m.group(1)), int(m.group(2))
+            hour = int(m.group(3)) if m.group(3) else 0
+            minute = int(m.group(4)) if m.group(4) else 0
+            year = now.year
+            try:
+                dt = datetime(year, month, day, hour, minute)
+                if dt > now:
+                    dt = dt.replace(year=year - 1)
+                return int(dt.timestamp())
+            except ValueError:
+                pass
+
+        # "HH:MM" (今天)
+        m = re.match(r"^(\d{1,2}):(\d{2})$", label)
+        if m:
+            dt = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+            return int(dt.timestamp())
+
+        # 无法解析
+        return 0
+
+    # ── Discovery ──────────────────────────────────────────────────
+
+    async def run_discovery(self, duration=60):
+        print(f"\n{'='*60}")
+        print(f"  发现模式 — 分析 DOM 结构 ({duration}s)")
+        print(f"{'='*60}\n")
+
+        await self.navigate_to_chat()
+        await asyncio.sleep(2)
+
+        dom_info = await self._dump_dom_structure()
+        debug_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        filepath = os.path.join(debug_dir, f"dom_structure_{int(time.time()*1000)}.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(dom_info, f, ensure_ascii=False, indent=2)
+
+        print(f"\n[*] 监听 {duration} 秒，请在浏览器中操作...")
+        for i in range(duration):
+            await asyncio.sleep(1)
+            if i > 0 and i % 15 == 0:
+                print(f"  [{i}/{duration}s]")
+                await self._dump_dom_structure()
+
+    async def _dump_dom_structure(self):
+        dom_info = await self.page.evaluate("""() => {
+            const result = { title: document.title, url: location.href, im_elements: {}, conv_containers: [], msg_containers: [] };
+            document.querySelectorAll('*').forEach(el => {
+                const cls = typeof el.className === 'string' ? el.className : '';
+                const lower = cls.toLowerCase();
+                if (lower.match(/session|conversation|chat|message|im-|inbox|msg|bubble/)) {
+                    const key = el.tagName.toLowerCase() + '.' + cls.split(' ')[0]?.substring(0, 40);
+                    if (!result.im_elements[key]) result.im_elements[key] = { count: 0, sample_text: '', class: cls, children: 0 };
+                    result.im_elements[key].count++;
+                    if (!result.im_elements[key].sample_text) result.im_elements[key].sample_text = el.textContent?.trim().substring(0, 80) || '';
+                    result.im_elements[key].children = Math.max(result.im_elements[key].children, el.children.length);
+                }
+            });
+            return result;
+        }""")
+
+        print(f"  [DOM] IM 元素类型: {len(dom_info.get('im_elements', {}))}")
+        for key, info in sorted(dom_info.get("im_elements", {}).items()):
+            if info["count"] >= 2:
+                print(f"    {key} x{info['count']}  text: {info['sample_text'][:50]}")
+        return dom_info
+
+    # ── Extraction ─────────────────────────────────────────────────
+
+    async def extract_all(self, refresh=False):
+        await self.navigate_to_chat()
+        await asyncio.sleep(2)
+
+        print("[*] 正在加载会话列表...")
+        conversations = await self._load_all_conversations()
+        print(f"[+] 共发现 {len(conversations)} 个会话")
+
+        if not conversations:
+            print("[-] 未找到会话")
+            # Save debug screenshot
+            debug_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "debug_no_conv.png")
+            try:
+                await self.page.screenshot(path=debug_path)
+                print(f"[*] 调试截图已保存: {debug_path}")
+            except Exception:
+                pass
+            return
+
+        if self.name_filter:
+            # Support comma-separated multiple filters
+            filtered = _filter_conversations(conversations, self.name_filter)
+            print(f"[*] 过滤后: {len(filtered)} 个会话匹配 \"{self.name_filter}\"")
+            if not filtered:
+                print(f"[-] 没有匹配的会话。全部会话名称:")
+                for c in conversations:
+                    print(f"    - {c.get('nickname', '')} ({c['name']})")
+                return
+            conversations = filtered
+
+        for i, conv in enumerate(conversations):
+            display_name = conv.get("nickname") or conv["name"]
+            print(f"\n[{i+1}/{len(conversations)}] {display_name} (最后活跃: {conv['time']})")
+            try:
+                await self._extract_conversation(i, conv, refresh=refresh)
+            except Exception as e:
+                print(f"  [!] 错误: {e}")
+                import traceback
+                traceback.print_exc()
+            await asyncio.sleep(0.5 + random.random())
+
+        conn = self._db_conn
+        stats = {
+            "conversations": conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0],
+            "messages": conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
+            "users": conn.execute("SELECT COUNT(*) FROM users").fetchone()[0],
+        }
+
+        print(f"\n{'='*60}")
+        print(f"  提取完成!")
+        print(f"  会话: {stats['conversations']}")
+        print(f"  消息: {stats['messages']}")
+        print(f"  用户: {stats['users']}")
+        print(f"{'='*60}")
+
+    async def list_conversations(self):
+        """Navigate to chat and return all discovered conversations (no extraction).
+
+        Used by the control panel's "refresh conversation list" action so the
+        user can pick which conversations to scrape/export.
+        """
+        await self.navigate_to_chat()
+        await asyncio.sleep(2)
+
+        print("[*] 正在加载会话列表...")
+        conversations = await self._load_all_conversations()
+        print(f"[+] 共发现 {len(conversations)} 个会话")
+        return conversations
+
+    async def _load_all_conversations(self):
+        """Scroll the conversation list and accumulate all items with dedup.
+
+        The list uses virtual scrolling: items that leave the viewport are
+        removed from the DOM, so a single querySelectorAll snapshot misses
+        everything above/below the visible window. We scroll from the top
+        to the bottom, reading items each round and deduping by nickname.
+        """
+        # 先滚到顶部，保证从头开始收集
+        await self.page.evaluate(f"""() => {{
+            const list = document.querySelector('{SEL_CONV_LIST}');
+            if (list) {{
+                const scrollable = list.querySelector('[style*="overflow"]') || list;
+                scrollable.scrollTop = 0;
+            }}
+        }}""")
+        await asyncio.sleep(0.6)
+
+        seen = {}  # key -> conv info (保持插入顺序 = 列表自上而下)
+        stable_rounds = 0
+
+        for _ in range(120):
+            convs = await self.page.evaluate(f"""() => {{
+                const items = document.querySelectorAll('{SEL_CONV_ITEM}');
+                return Array.from(items).map(el => {{
+                    const titleEl = el.querySelector('{SEL_CONV_TITLE}');
+                    const timeEl = el.querySelector('{SEL_CONV_TIME}');
+                    const previewEl = el.querySelector('{SEL_CONV_PREVIEW}');
+                    let nickname = '';
+                    if (titleEl) {{
+                        const innerTitle = titleEl.querySelector('div[class*="conversationConversationItemtitle"]');
+                        nickname = (innerTitle && innerTitle !== titleEl)
+                            ? innerTitle.textContent.trim()
+                            : titleEl.childNodes[0]?.textContent?.trim() || '';
+                    }}
+                    return {{
+                        name: titleEl ? titleEl.textContent.trim() : '',
+                        nickname: nickname,
+                        time: timeEl ? timeEl.textContent.trim() : '',
+                        preview: previewEl ? previewEl.textContent.trim() : '',
+                    }};
+                }});
+            }}""")
+
+            added = 0
+            for c in convs:
+                key = c.get("nickname") or c.get("name")
+                if key and key not in seen:
+                    seen[key] = c
+                    added += 1
+
+            reached_bottom = await self.page.evaluate(f"""() => {{
+                const list = document.querySelector('{SEL_CONV_LIST}');
+                if (!list) return true;
+                const scrollable = list.querySelector('[style*="overflow"]') || list;
+                const before = scrollable.scrollTop;
+                scrollable.scrollTop += 400;
+                return scrollable.scrollTop === before;
+            }}""")
+
+            if added == 0:
+                stable_rounds += 1
+            else:
+                stable_rounds = 0
+                print(f"  已加载 {len(seen)} 个会话...")
+
+            # 到底且连续 2 轮无新增 → 视为读完
+            if reached_bottom and stable_rounds >= 2:
+                break
+
+            await asyncio.sleep(0.5)
+
+        # 回到顶部，后续点击流程从熟悉的起点开始
+        await self.page.evaluate(f"""() => {{
+            const list = document.querySelector('{SEL_CONV_LIST}');
+            if (list) {{
+                const scrollable = list.querySelector('[style*="overflow"]') || list;
+                scrollable.scrollTop = 0;
+            }}
+        }}""")
+        await asyncio.sleep(0.5)
+
+        all_convs = list(seen.values())
+        for c in all_convs:
+            c["name"] = c["name"].replace('\xa0', ' ').strip()
+            c["nickname"] = c.get("nickname", "").replace('\xa0', ' ').strip()
+
+        return all_convs
+
+    async def _ensure_conv_list_loaded(self):
+        """Wait for conversation list to load.
+
+        On a freshly loaded chat page, the list renders at the top by default,
+        so we don't scroll here — _find_and_click_conversation handles scrolling
+        as needed. Scrolling unnecessarily can race with virtual-scroll
+        re-renders and break subsequent clicks.
+        """
+        try:
+            await self.page.wait_for_selector(SEL_CONV_ITEM, timeout=20000)
+        except Exception:
+            return 0
+        await asyncio.sleep(1)
+        count = await self.page.evaluate(f"""() =>
+            document.querySelectorAll('{SEL_CONV_ITEM}').length
+        """)
+        return count
+
+    async def _match_conversation_in_dom(self, target_name):
+        """Return {index, text, names} for an exact nickname/fullText match in the current DOM."""
+        return await self.page.evaluate(f"""(targetName) => {{
+            const normalize = s => s.replace(/[\\s\\u00a0]+/g, ' ').trim();
+            const target = normalize(targetName);
+            const items = document.querySelectorAll('{SEL_CONV_ITEM}');
+            const debugNames = [];
+
+            for (let i = 0; i < items.length; i++) {{
+                const item = items[i];
+                const titleEl = item.querySelector('{SEL_CONV_TITLE}');
+                if (!titleEl) {{ debugNames.push(''); continue; }}
+
+                const innerTitle = titleEl.querySelector('{SEL_CONV_TITLE}');
+                let nickname = '';
+                if (innerTitle) {{
+                    nickname = normalize(innerTitle.textContent);
+                }} else {{
+                    for (const node of titleEl.childNodes) {{
+                        const t = node.textContent?.trim();
+                        if (t) {{ nickname = normalize(t); break; }}
+                    }}
+                }}
+
+                const fullText = normalize(titleEl.textContent);
+                debugNames.push(nickname || fullText.substring(0, 20));
+
+                if (target && (nickname === target || fullText === target)) {{
+                    return {{index: i, text: nickname || fullText, names: debugNames}};
+                }}
+            }}
+
+            return {{index: -1, text: '', names: debugNames}};
+        }}""", target_name)
+
+    async def _click_conversation_index(self, idx, text):
+        items = await self.page.query_selector_all(SEL_CONV_ITEM)
+        if idx < len(items):
+            await items[idx].click()
+            return {"found": True, "text": text}
+        return None
+
+    async def _scroll_conv_list_to_top(self):
+        await self.page.evaluate(f"""() => {{
+            const list = document.querySelector('{SEL_CONV_LIST}');
+            if (list) {{
+                const scrollable = list.querySelector('[style*="overflow"]') || list;
+                scrollable.scrollTop = 0;
+            }}
+        }}""")
+
+    async def _scroll_conv_list_down(self):
+        """Scroll the conversation list down one step. True if already at bottom (or no list)."""
+        return await self.page.evaluate(f"""() => {{
+            const list = document.querySelector('{SEL_CONV_LIST}');
+            if (!list) return true;
+            const scrollable = list.querySelector('[style*="overflow"]') || list;
+            const before = scrollable.scrollTop;
+            scrollable.scrollTop += 400;
+            return scrollable.scrollTop === before;
+        }}""")
+
+    async def _find_and_click_conversation(self, target_name, timeout_s=None, poll_s=None):
+        """Find a conversation by name and click it.
+
+        After a cache-clear reload, titles may show UIDs until nicknames hydrate.
+        Poll until `timeout_s`, scrolling the virtual list and wrapping back to
+        the top so a later pass can match the real nickname.
+
+        JS does the matching (with whitespace/nbsp normalization, so Windows
+        vs. Linux discrepancies don't break exact checks), but the ACTUAL
+        click uses Playwright's element handle — JS `.click()` only fires a
+        `click` event, while React listens for `pointerdown`/`mousedown`,
+        so a JS click was identified but wouldn't activate the conversation.
+        """
+        timeout_s = CONV_FIND_TIMEOUT_S if timeout_s is None else timeout_s
+        poll_s = CONV_FIND_POLL_S if poll_s is None else poll_s
+        deadline = time.monotonic() + timeout_s
+        waited_logged = False
+        all_debug_names = []
+
+        def _remember_names(m):
+            for n in m.get("names") or []:
+                if n and n not in all_debug_names:
+                    all_debug_names.append(n)
+
+        async def _try_click(m):
+            _remember_names(m)
+            if m.get("index", -1) >= 0:
+                return await self._click_conversation_index(m["index"], m["text"])
+            return None
+
+        # First attempt: match current DOM (don't disturb scroll state)
+        clicked = await _try_click(await self._match_conversation_in_dom(target_name))
+        if clicked:
+            return clicked
+
+        await self._scroll_conv_list_to_top()
+
+        while time.monotonic() < deadline:
+            clicked = await _try_click(await self._match_conversation_in_dom(target_name))
+            if clicked:
+                return clicked
+
+            if not waited_logged:
+                print(f"  [*] 等待会话「{target_name}」出现（当前标题仍为 UID 或未加载）...")
+                waited_logged = True
+
+            reached_bottom = await self._scroll_conv_list_down()
+            if reached_bottom:
+                await self._scroll_conv_list_to_top()
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(poll_s, remaining))
+
+        return {"found": False, "count": len(all_debug_names), "names": all_debug_names[:20]}
+
+    async def _download_voice_files(self, messages):
+        """下载语音消息的音频文件到本地"""
+        voice_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "media", "voice")
+        os.makedirs(voice_dir, exist_ok=True)
+
+        voice_msgs = []
+        for m in messages:
+            if m.get("msg_type") != "other":
+                continue
+            cj_str = m.get("content_json", "")
+            if not cj_str or "resource_url" not in cj_str:
+                continue
+            try:
+                cj = json.loads(cj_str)
+                if cj.get("resource_url") and cj.get("duration"):
+                    urls = cj["resource_url"].get("url_list", [])
+                    if urls:
+                        voice_msgs.append((m, urls[0], cj.get("duration", 0)))
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+        if not voice_msgs:
+            return
+
+        # 批量下载（通过浏览器 fetch 以携带 cookie）
+        for m, url, duration in voice_msgs:
+            server_id = m.get("server_id", "unknown")
+            filename = f"{server_id}.mpeg"
+            local_path = os.path.join(voice_dir, filename)
+            rel_path = f"voice/{filename}"
+
+            if os.path.exists(local_path):
+                m["local_path"] = rel_path
+                continue
+
+            try:
+                import urllib.request
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=15, context=client_context()) as resp:
+                    data = resp.read()
+                if len(data) > 100:
+                    with open(local_path, "wb") as f:
+                        f.write(data)
+                    m["local_path"] = rel_path
+                    dur_sec = round(duration / 1000)
+                    print(f"  [voice] 已下载语音 {dur_sec}s: {filename}")
+                else:
+                    print(f"  [voice] 下载失败（空响应 {len(data)}B）: {server_id}")
+            except Exception as e:
+                print(f"  [voice] 下载失败: {server_id}: {e}")
+
+    async def _download_image_files(self, messages):
+        """下载图片/表情包到本地。
+        - 表情：直接保存（无加密），按 URL 路径哈希去重
+        - 图片：从 origin_url 拉密文，AES-256-GCM 解密 (skey) 后保存
+        """
+        if not self.download_images:
+            return
+        media_root = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "media")
+        img_dir = os.path.join(media_root, "images")
+        emoji_dir = os.path.join(media_root, "emoji")
+        os.makedirs(img_dir, exist_ok=True)
+        os.makedirs(emoji_dir, exist_ok=True)
+
+        ok, fail = 0, 0
+        for m in messages:
+            mt = m.get("msg_type")
+            if mt == "emoji":
+                url = m.get("image_src")
+                if not url:
+                    continue
+                try:
+                    rel = _save_emoji(url, emoji_dir)
+                    if rel:
+                        m["local_path"] = rel; ok += 1
+                except Exception as e:
+                    fail += 1
+                    print(f"  [media] emoji 失败: {e}")
+            elif mt == "image":
+                try:
+                    cj = json.loads(m.get("content_json", "") or "{}")
+                    ru = cj.get("resource_url") or {}
+                    skey = ru.get("skey")
+                    origin = (ru.get("origin_url_list") or [None])[0]
+                    if not (skey and origin):
+                        continue
+                    rel = _save_image(origin, skey, m.get("server_id", "unknown"), img_dir)
+                    if rel:
+                        m["local_path"] = rel; ok += 1
+                except Exception as e:
+                    fail += 1
+                    print(f"  [media] image 失败: {e}")
+            elif mt == "video":
+                # awe_type=0 的视频：只下载 poster（封面图）。真正的视频文件需要
+                # 反查 vid→URL 才能拿，留待后续；poster 用 poster.skey 解密。
+                try:
+                    cj = json.loads(m.get("content_json", "") or "{}")
+                    poster = cj.get("poster") or {}
+                    skey = poster.get("skey")
+                    origin = (poster.get("origin_url_list") or [None])[0]
+                    if not (skey and origin):
+                        continue
+                    rel = _save_image(origin, skey, m.get("server_id", "unknown"), img_dir)
+                    if rel:
+                        m["local_path"] = rel; ok += 1
+                except Exception as e:
+                    fail += 1
+                    print(f"  [media] video 封面失败: {e}")
+        if ok or fail:
+            print(f"  [media] 图片/表情/视频封面 已下载 {ok} 个 (失败 {fail})")
+
+    async def _extract_and_save_user_info(self, conv_id):
+        """从 userInfoStore 提取用户信息（昵称、头像、unique_id），下载头像到本地。"""
+        users = await self.page.evaluate("""() => {
+            const result = [];
+            try {
+                const uis = window.userInfoStore;
+                if (!uis) return result;
+
+                // 当前登录用户
+                const me = uis.curLoginUserInfo;
+                if (me) {
+                    result.push({
+                        uid: String(me.uid || ''),
+                        nickname: me.nickname || '',
+                        unique_id: me.uniqueId || '',
+                        avatar_url: me.avatarUrl || me.avatar300Url || '',
+                    });
+                }
+
+                // usersInfoMap (MobX observable)
+                const uim = uis.usersInfoMap;
+                if (uim && uim.data_) {
+                    for (const [k, v] of uim.data_.entries()) {
+                        const u = v.value_ || v;
+                        if (!u || !u.nickname) continue;
+                        let avatarUrl = '';
+                        if (u.avatar_thumb && u.avatar_thumb.url_list && u.avatar_thumb.url_list.length > 0) {
+                            avatarUrl = u.avatar_thumb.url_list[0];
+                        }
+                        result.push({
+                            uid: String(u.uid || k),
+                            nickname: u.nickname || '',
+                            unique_id: u.unique_id || '',
+                            avatar_url: avatarUrl,
+                        });
+                    }
+                }
+            } catch(e) {}
+            return result;
+        }""")
+
+        if not users:
+            print(f"  [*] 未能从 userInfoStore 获取用户信息")
+            return
+
+        saved = await self._save_users(users)
+        print(f"  [*] 已保存 {saved} 个用户信息")
+
+    async def _save_users(self, users):
+        """下载头像到本地并落库。users: [{uid, nickname, unique_id, avatar_url}]。"""
+        avatar_dir = paths.AVATARS_DIR
+        os.makedirs(avatar_dir, exist_ok=True)
+
+        conn = self._db_conn
+        saved = 0
+        for u in users:
+            uid = u.get("uid", "")
+            if not uid:
+                continue
+
+            nickname = u.get("nickname", "")
+            unique_id = u.get("unique_id", "")
+            avatar_url = u.get("avatar_url", "")
+
+            # 下载头像到本地
+            local_avatar = None
+            if avatar_url:
+                ext = "jpg"
+                if ".webp" in avatar_url:
+                    ext = "webp"
+                elif ".png" in avatar_url:
+                    ext = "png"
+                local_path = os.path.join(avatar_dir, f"{uid}.{ext}")
+                if not os.path.exists(local_path):
+                    try:
+                        resp = await self.page.evaluate("""async (url) => {
+                            try {
+                                const r = await fetch(url, {credentials: 'include'});
+                                if (!r.ok) return null;
+                                const buf = await r.arrayBuffer();
+                                return Array.from(new Uint8Array(buf));
+                            } catch { return null; }
+                        }""", avatar_url)
+                        if resp and len(resp) > 100:
+                            with open(local_path, "wb") as f:
+                                f.write(bytes(resp))
+                            local_avatar = f"avatars/{uid}.{ext}"
+                            print(f"  [*] 已保存头像: {nickname} ({uid})")
+                    except Exception as e:
+                        print(f"  [!] 下载头像失败 {nickname}: {e}")
+                else:
+                    local_avatar = f"avatars/{uid}.{ext}"
+
+            upsert_user(conn, uid, nickname=nickname,
+                        avatar_url=local_avatar or avatar_url,
+                        unique_id=unique_id)
+            saved += 1
+
+        conn.commit()
+        return saved
+
+    async def _resolve_sender_identities(self, sec_by_uid):
+        """按 sec_uid 批量补全发送者昵称/头像。
+
+        `userInfoStore` 只缓存 SDK 渲染过的用户——单聊够用，群聊远远不够：纯 API
+        模式压根不渲染历史消息，绝大多数群成员因此从来没进过 users 表，前端只能
+        回退成会话名，于是所有人都显示成群名（issue #24）。
+
+        消息 protobuf 的 field 14 是该条消息发送者的 sec_uid，拿它调 IM 的用户信息
+        接口即可补全。接口只认 cookies（不需要 msToken/a_bogus），sec_user_ids 是
+        JSON 数组，一次可查多个。
+        """
+        known = self._known_user_uids()
+        pending = {uid: sec for uid, sec in sec_by_uid.items() if uid not in known}
+        if not pending:
+            return
+
+        print(f"  [*] 补全 {len(pending)} 个发送者的昵称/头像...")
+        sec_list = list(pending.values())
+        total = 0
+        for i in range(0, len(sec_list), BATCH_USER_INFO):
+            batch = sec_list[i:i + BATCH_USER_INFO]
+            try:
+                users = await self.page.evaluate("""async (args) => {
+                    const [api, secs] = args;
+                    const r = await fetch(api, {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: 'sec_user_ids=' + encodeURIComponent(JSON.stringify(secs)),
+                    });
+                    if (!r.ok) return [];
+                    const j = await r.json();
+                    return (j.data || []).map(u => ({
+                        uid: String(u.uid || ''),
+                        nickname: u.nickname || '',
+                        unique_id: u.unique_id || '',
+                        avatar_url: (u.avatar_thumb && u.avatar_thumb.url_list
+                                     && u.avatar_thumb.url_list[0]) || '',
+                    })).filter(u => u.uid && u.nickname);
+                }""", [USER_INFO_API, batch])
+            except Exception as e:
+                print(f"  [!] 补全发送者失败 (batch {i // BATCH_USER_INFO + 1}): {e}")
+                continue
+            if users:
+                total += await self._save_users(users)
+            await asyncio.sleep(0.3)
+
+        print(f"  [*] 已补全 {total}/{len(pending)} 个发送者信息")
+
+    def _known_user_uids(self):
+        """users 表里已有昵称的 uid（没昵称的等同于没有，需要补全）。"""
+        return {
+            row[0] for row in self._db_conn.execute(
+                "SELECT uid FROM users WHERE nickname IS NOT NULL AND nickname != ''"
+            )
+        }
+
+    async def _extract_and_save_conv_avatar(self, conv_id):
+        """从当前激活会话的列表项 DOM 抓取头像，下载到本地，写入会话表。"""
+        avatar_url = await self.page.evaluate(f"""() => {{
+            const active = document.querySelector('{SEL_CONV_ITEM}[class*="curConversation"]');
+            if (!active) return '';
+            const img = active.querySelector('img');
+            return img ? img.src : '';
+        }}""")
+        if not avatar_url or not avatar_url.startswith('http'):
+            return
+
+        avatar_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "media", "avatars")
+        os.makedirs(avatar_dir, exist_ok=True)
+
+        ext = "jpg"
+        if ".webp" in avatar_url:
+            ext = "webp"
+        elif ".png" in avatar_url:
+            ext = "png"
+        safe_id = conv_id.replace(':', '_').replace('/', '_')
+        filename = f"conv_{safe_id}.{ext}"
+        local_path = os.path.join(avatar_dir, filename)
+
+        try:
+            resp = await self.page.evaluate("""async (url) => {
+                try {
+                    const r = await fetch(url);
+                    if (!r.ok) return null;
+                    const buf = await r.arrayBuffer();
+                    return Array.from(new Uint8Array(buf));
+                } catch { return null; }
+            }""", avatar_url)
+            if resp and len(resp) > 100:
+                with open(local_path, "wb") as f:
+                    f.write(bytes(resp))
+                rel_path = f"avatars/{filename}"
+                self._db_conn.execute(
+                    "UPDATE conversations SET avatar_url = ? WHERE conv_id = ?",
+                    (rel_path, conv_id),
+                )
+                self._db_conn.commit()
+                print(f"  [*] 已保存会话头像")
+        except Exception as e:
+            print(f"  [!] 下载会话头像失败: {e}")
+
+    async def _extract_conversation(self, conv_index, conv_info, refresh=False):
+        """Click a conversation and extract all its messages.
+
+        ``refresh``（字段回填）模式不清库、不删旧消息，只把抖音还能返回的消息
+        更新成带整包字段的版本。
+        """
+        conv_name = conv_info["name"]
+        # 优先使用纯昵称（不含火花天数和时间）
+        clean_name = conv_info.get("nickname") or conv_name
+        # Will try to get real conversation ID from fiber data after clicking
+        conv_id = hashlib.md5(conv_name.encode()).hexdigest()[:16]
+
+        # 确保会话列表完整加载（处理上一个会话 reload 后的状态）
+        await self._ensure_conv_list_loaded()
+
+        result = await self._find_and_click_conversation(clean_name)
+        if not result.get("found"):
+            dbg = result.get("names", [])
+            print(f"  [!] 无法找到会话「{clean_name}」，跳过 (DOM中有 {result.get('count', 0)} 个会话: {dbg})")
+            return
+        print(f"  [*] 已点击会话: {result.get('text', '')}")
+
+        await asyncio.sleep(2)
+
+        active_name = await self.page.evaluate(f"""() => {{
+            const active = document.querySelector('{SEL_CONV_ITEM}[class*="curConversation"]');
+            if (!active) return '';
+            const title = active.querySelector('{SEL_CONV_TITLE}');
+            return title ? title.textContent.trim() : '';
+        }}""")
+        print(f"  [*] 当前活跃会话: {active_name or '(未检测到)'}")
+
+        # Try to get real conversation ID from IM SDK
+        real_conv_id = await self.page.evaluate("""() => {
+            const cs = window.conversationStore;
+            return cs && cs.curConversationId ? String(cs.curConversationId) : null;
+        }""")
+        if real_conv_id:
+            conv_id = real_conv_id
+            print(f"  [*] 真实会话ID: {conv_id}")
+
+        # 全量模式：清除该会话的旧消息，避免残留已撤回或已删除的消息。
+        # 但 DELETE 是先 commit 的，而后面的抓取可能一条都拿不到（回退到滚动模式却读不出
+        # 内容、重新加载后找不到会话、中途抛异常）——那样一次失败的全量抓取就把历史记录
+        # 清空了。所以先快照到临时表，结束时发现库里是空的就还原回去。
+        backed_up = 0
+        if not self.incremental and not refresh:
+            backed_up = self._backup_conv_messages(conv_id)
+            cur = self._db_conn.execute("DELETE FROM messages WHERE conv_id = ?", (conv_id,))
+            if cur.rowcount > 0:
+                print(f"  [*] 全量模式：已清除该会话旧消息 {cur.rowcount} 条")
+
+        try:
+            upsert_conversation(self._db_conn, conv_id, name=clean_name)
+            self._db_conn.commit()
+
+            # 从激活的会话列表项抓取并保存会话头像
+            await self._extract_and_save_conv_avatar(conv_id)
+
+            # 提取用户信息（昵称、头像、unique_id）
+            await self._extract_and_save_user_info(conv_id)
+
+            mode_str = "字段回填" if refresh else ("增量" if self.incremental else "全量")
+            print(f"  [*] 开始{mode_str}导出 (纯API模式)...")
+
+            # ── 纯 API 模式：拿到 short_id → API 直取全部消息 ──
+            # short_id 是 imapi 分页请求的 field 3。代码历史上误称它 "cursor"，实际是
+            # conversation_short_id（每会话固定）；真正翻页靠 field 5 的时间戳。
+            short_id = await self._acquire_short_id(conv_id, clean_name)
+
+            if not short_id:
+                print(f"  [!] 未能获取 short_id，跳过该会话（其它会话不受影响；已有消息会保留）")
+                return
+
+            total_saved = await self._api_fetch_all_messages(
+                conv_id, short_id, incremental=self.incremental, refresh=refresh
+            )
+            print(f"  [+] 共保存 {total_saved} 条消息")
+        finally:
+            if not refresh:
+                self._restore_conv_messages_if_empty(conv_id, backed_up)
+
+    async def _acquire_short_id(self, conv_id, clean_name):
+        """拿到 imapi 分页请求需要的 short_id（field 3）。
+
+        - 群聊：纯数字 conv_id 本身就是 short_id（实测请求里 f3==conv_id），不依赖 SDK
+          任何时序，直接返回。旧代码对群聊也走"清缓存偷请求"，而群聊 SDK 有缓存时压根
+          不发 get_by_conversation → 偷不到 → 抓不到（issue #24/#25 根因）。
+        - 单聊：conv_id 形如 '0:1:uidA:uidB'，short_id 是另一个数字，既不在前端 store 里
+          也算不出来，直接查接口又过不了 secsdk 签名——只能从 SDK 自己发的（已签名的）
+          get_by_conversation 请求里偷。带重试；偷不到就放弃该会话（不再有滚动兜底）。
+        """
+        if conv_id.isdigit():
+            print(f"  [*] 群聊 short_id = conv_id ({conv_id})")
+            return conv_id
+
+        for attempt in range(3):
+            short_id = await self._steal_short_id_from_sdk(conv_id, clean_name)
+            if short_id:
+                return short_id
+            # 陌生人会话只有一条系统提示、消息列表不可滚动 → 结构上没有可翻页的历史，
+            # 再重试也偷不到。这类会话在"全量重抓"里成批出现，省掉多余的清缓存+重载。
+            si = await self._get_scroll_info()
+            if si and not si.get("scrollable"):
+                print(f"  [*] 会话无可翻页历史（消息列表不可滚动），停止重试")
+                break
+            if attempt < 2:
+                print(f"  [!] 第 {attempt + 1}/3 次未捕获到 short_id，重试...")
+        return None
+
+    async def _steal_short_id_from_sdk(self, conv_id, clean_name):
+        """清缓存 → 重载 → 点会话，逼 SDK 重新从 API 拉取，拦它发出的
+        get_by_conversation 请求，从请求体偷 short_id（f8→301→3）。
+
+        请求体的 protobuf 解析是脆弱逆向逻辑，逐字保留自旧实现，勿改。
+        返回 short_id 字符串，偷不到返回 None。
+        """
+        # 1. 清除 SDK 本地缓存（localStorage/sessionStorage/IndexedDB，保留 cookies 以维持登录）
+        print(f"  [*] 清除 SDK 本地缓存...")
+        await self._clear_sdk_cache()
+
+        # 2. 安装请求拦截器（在重新加载之前，确保捕获 SDK 的第一个 API 请求）
+        self._captured_api_cursor = None
+        cursor_captured_event = asyncio.Event()
+
+
+        async def capture_api_request(request):
+            if "get_by_conversation" in request.url and request.method == "POST":
+                try:
+                    body = request.post_data_buffer
+                    if body:
+                        result = await self.page.evaluate("""(bytes) => {
+                            function dv(buf, pos) {
+                                let r = 0n, s = 0n;
+                                while (pos < buf.length) {
+                                    const b = buf[pos++]; r |= BigInt(b & 0x7F) << s;
+                                    if (!(b & 0x80)) break; s += 7n;
+                                }
+                                return [r, pos];
+                            }
+                            function ef(buf, tf) {
+                                let pos = 0;
+                                while (pos < buf.length) {
+                                    let tag; [tag, pos] = dv(buf, pos);
+                                    const fn = Number(tag >> 3n), wt = Number(tag & 7n);
+                                    if (wt === 0) { let v; [v, pos] = dv(buf, pos); }
+                                    else if (wt === 2) { let len; [len, pos] = dv(buf, pos); len = Number(len); if (fn === tf) return buf.slice(pos, pos + len); pos += len; }
+                                    else if (wt === 1) pos += 8; else if (wt === 5) pos += 4; else break;
+                                }
+                                return null;
+                            }
+                            // 提取字符串字段 (wire type 2)
+                            function efStr(buf, tf) {
+                                let pos = 0;
+                                while (pos < buf.length) {
+                                    let tag; [tag, pos] = dv(buf, pos);
+                                    const fn = Number(tag >> 3n), wt = Number(tag & 7n);
+                                    if (wt === 0) { let v; [v, pos] = dv(buf, pos); }
+                                    else if (wt === 2) {
+                                        let len; [len, pos] = dv(buf, pos); len = Number(len);
+                                        if (fn === tf) return new TextDecoder().decode(buf.slice(pos, pos + len));
+                                        pos += len;
+                                    }
+                                    else if (wt === 1) pos += 8; else if (wt === 5) pos += 4; else break;
+                                }
+                                return null;
+                            }
+                            const data = new Uint8Array(bytes);
+                            const f8 = ef(data, 8);
+                            if (!f8) return null;
+                            const f301 = ef(f8, 301);
+                            if (!f301) return null;
+                            // 提取 conv_id (field 1, string) 和 cursor (field 3, varint)
+                            const reqConvId = efStr(f301, 1);
+                            let cursor = null;
+                            let pos = 0;
+                            while (pos < f301.length) {
+                                let tag; [tag, pos] = dv(f301, pos);
+                                const fn = Number(tag >> 3n), wt = Number(tag & 7n);
+                                if (wt === 0) { let v; [v, pos] = dv(f301, pos); if (fn === 3) cursor = v.toString(); }
+                                else if (wt === 2) { let len; [len, pos] = dv(f301, pos); pos += Number(len); }
+                                else if (wt === 1) pos += 8; else if (wt === 5) pos += 4; else break;
+                            }
+                            return { convId: reqConvId, cursor: cursor };
+                        }""", list(body))
+                        if result and result.get("cursor") and result["cursor"] != "0":
+                            req_conv_id = result.get("convId", "")
+                            if req_conv_id == conv_id:
+                                self._captured_api_cursor = result["cursor"]
+                                print(f"  [*] 捕获到 API cursor: {result['cursor']} (conv_id 匹配)")
+                                cursor_captured_event.set()
+                            else:
+                                print(f"  [!] 忽略不匹配的 API 请求: conv_id={req_conv_id} (期望 {conv_id})")
+                except Exception:
+                    pass
+
+
+        self.page.on("request", capture_api_request)
+        try:
+            # 3. 重新加载聊天页面（SDK 内存缓存随页面销毁而清除）
+            print(f"  [*] 重新加载聊天页面...")
+            await self.page.goto(CHAT_URL, wait_until="domcontentloaded")
+            # 重载完也要先等几秒：列表只画出一部分时，马上找会话会找不到
+            # （表现为「重新加载后未找到会话」）。等列表补齐再找，代价是这个会话慢几秒。
+            await self._wait_chat_page_settled()
+            await self._ensure_conv_list_loaded()
+
+            # 4. 重新点击目标会话（触发 SDK 从 API 加载消息）
+            print(f"  [*] 重新点击会话: {clean_name}...")
+            result = await self._find_and_click_conversation(clean_name)
+            if not result.get("found"):
+                dbg = result.get("names", [])
+                print(f"  [!] 重新加载后未找到会话「{clean_name}」 (DOM: {result.get('count', 0)} items: {dbg})")
+                return None
+            print(f"  [*] 已重新点击: {result.get('text', '')}")
+
+            # 5. 等待 SDK 发出 API 请求（缓存已清，应该很快）
+            print(f"  [*] 等待 SDK 发出 API 请求...")
+            try:
+                await asyncio.wait_for(cursor_captured_event.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                # 15 秒内没捕获到，尝试轻微滚动触发
+                print(f"  [*] 未立即捕获到，尝试滚动触发...")
+                for i in range(50):
+                    await self.page.evaluate("""() => {
+                        const el = document.querySelector('[class*="messageMessageListlist"]');
+                        if (el) el.scrollTop += 3000;
+                    }""")
+                    await asyncio.sleep(0.3)
+                    if self._captured_api_cursor:
+                        break
+            return self._captured_api_cursor
+        finally:
+            self.page.remove_listener("request", capture_api_request)
+
+
+    def _backup_conv_messages(self, conv_id):
+        """把该会话的消息快照到临时表，返回条数。
+
+        TEMP 表跟随连接存在，不受中途 commit 影响，正好用来兜住"全量抓取先删后抓"
+        的窗口期。
+        """
+        conn = self._db_conn
+        conn.execute("DROP TABLE IF EXISTS temp.msg_backup")
+        conn.execute("DROP TABLE IF EXISTS temp.voice_transcription_backup")
+        conn.execute(
+            "CREATE TEMP TABLE msg_backup AS SELECT * FROM messages WHERE conv_id = ?",
+            (conv_id,),
+        )
+        # 语音转写与消息一起回滚；全量抓取在窗口期失败时不能丢掉已完成的转写。
+        conn.execute(
+            """CREATE TEMP TABLE voice_transcription_backup AS
+               SELECT vt.* FROM voice_transcriptions vt
+               JOIN messages m ON m.msg_id = vt.msg_id
+               WHERE m.conv_id = ?""",
+            (conv_id,),
+        )
+        return conn.execute("SELECT COUNT(*) FROM temp.msg_backup").fetchone()[0]
+
+    def _restore_conv_messages_if_empty(self, conv_id, backed_up):
+        """全量抓取一条都没入库时，把快照的旧消息放回去。
+
+        一个会话在抖音那边真的被清空、导致抓到 0 条的概率，远低于抓取本身出问题。
+        宁可留着旧记录（要清空有面板的删除功能），也不能让一次失败的抓取把历史抹掉。
+        """
+        conn = self._db_conn
+        if not backed_up:
+            # _backup_conv_messages creates both TEMP tables even when the
+            # message snapshot is empty.  Always clean them up so a later
+            # full scrape on the same connection can create a fresh backup.
+            conn.execute("DROP TABLE IF EXISTS temp.msg_backup")
+            conn.execute("DROP TABLE IF EXISTS temp.voice_transcription_backup")
+            conn.commit()
+            return
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE conv_id = ?", (conv_id,)
+        ).fetchone()[0]
+        if remaining == 0:
+            conn.execute("INSERT INTO messages SELECT * FROM temp.msg_backup")
+            conn.execute(
+                """INSERT OR REPLACE INTO voice_transcriptions
+                   SELECT * FROM temp.voice_transcription_backup"""
+            )
+            update_conversation_stats(conn, conv_id)
+            print(f"  [!] 本次全量抓取一条消息都没拿到，已还原原有的 {backed_up} 条旧消息")
+        conn.execute("DROP TABLE IF EXISTS temp.msg_backup")
+        conn.execute("DROP TABLE IF EXISTS temp.voice_transcription_backup")
+        conn.commit()
+
+    def _reuse_backed_up_voice_transcriptions(self, conv_id):
+        """Restore successful cache entries for messages found by a full refetch."""
+        conn = self._db_conn
+        backup_exists = conn.execute(
+            """SELECT 1 FROM sqlite_temp_master
+               WHERE type = 'table' AND name = 'voice_transcription_backup'"""
+        ).fetchone()
+        if not backup_exists:
+            return 0
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO voice_transcriptions
+               (msg_id, message_id, text_result, status, error, updated_at)
+               SELECT b.msg_id, b.message_id, b.text_result, b.status,
+                      b.error, b.updated_at
+               FROM temp.voice_transcription_backup b
+               JOIN messages m ON m.msg_id = b.msg_id
+               WHERE m.conv_id = ? AND b.status = 'success'""",
+            (conv_id,),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
+    async def _clear_sdk_cache(self):
+        """清除 IM SDK 的本地缓存（localStorage/sessionStorage/IndexedDB），保留 cookies。
+
+        SDK 会在 IndexedDB 和 localStorage 中缓存消息数据。
+        清除后重新加载页面，SDK 将被迫从 API 重新拉取消息。
+        """
+        await self.page.evaluate("""async () => {
+            // 清除 localStorage 和 sessionStorage
+            try { localStorage.clear(); } catch(e) {}
+            try { sessionStorage.clear(); } catch(e) {}
+
+            // 删除所有 IndexedDB 数据库
+            try {
+                const dbs = await indexedDB.databases();
+                for (const db of dbs) {
+                    if (db.name) {
+                        indexedDB.deleteDatabase(db.name);
+                    }
+                }
+            } catch(e) {
+                // indexedDB.databases() 可能不支持，逐个尝试已知的数据库名
+                const knownDbs = ['im_sdk', 'im_db', 'douyin_im', 'bytedance_im'];
+                for (const name of knownDbs) {
+                    try { indexedDB.deleteDatabase(name); } catch(e2) {}
+                }
+            }
+        }""")
+        print(f"  [*] 已清除 localStorage/sessionStorage/IndexedDB")
+
+    async def _get_scroll_info(self):
+        """获取滚动容器的详细状态。"""
+        return await self.page.evaluate(f"""() => {{
+            const el = document.querySelector('{SEL_MSG_LIST}');
+            if (!el) return null;
+            // 找到真正可滚动的元素（可能是 msg list 本身或其父/子元素）
+            let scrollEl = el;
+            if (el.scrollHeight <= el.clientHeight) {{
+                // 尝试父元素
+                if (el.parentElement && el.parentElement.scrollHeight > el.parentElement.clientHeight) {{
+                    scrollEl = el.parentElement;
+                }}
+            }}
+            return {{
+                scrollTop: scrollEl.scrollTop,
+                scrollHeight: scrollEl.scrollHeight,
+                clientHeight: scrollEl.clientHeight,
+                scrollable: scrollEl.scrollHeight > scrollEl.clientHeight,
+                tagName: scrollEl.tagName,
+                className: (scrollEl.className || '').substring(0, 60),
+            }};
+        }}""")
+
+    async def _inject_api_tools(self):
+        """注入 protobuf 编解码 + IM API 调用工具到页面中。"""
+        await self.page.evaluate("""() => {
+            if (window.__imApi) return; // 已注入
+            // ── protobuf 编码 ──
+            function encodeVarint(value) {
+                const bytes = [];
+                let v = typeof value === 'bigint' ? value : BigInt(value);
+                do {
+                    let b = Number(v & 0x7Fn);
+                    v >>= 7n;
+                    if (v > 0n) b |= 0x80;
+                    bytes.push(b);
+                } while (v > 0n);
+                if (bytes.length === 0) bytes.push(0);
+                return new Uint8Array(bytes);
+            }
+            function encodeTag(fn, wt) { return encodeVarint((fn << 3) | wt); }
+            function encodeString(fn, s) {
+                const e = new TextEncoder().encode(s);
+                return concatArrays([encodeTag(fn, 2), encodeVarint(e.length), e]);
+            }
+            function encodeVarintField(fn, v) { return concatArrays([encodeTag(fn, 0), encodeVarint(v)]); }
+            function encodeBytes(fn, d) { return concatArrays([encodeTag(fn, 2), encodeVarint(d.length), d]); }
+            function concatArrays(arrs) {
+                const t = arrs.reduce((s, a) => s + a.length, 0);
+                const r = new Uint8Array(t); let o = 0;
+                for (const a of arrs) { r.set(a, o); o += a.length; }
+                return r;
+            }
+
+            // ── protobuf 解码 ──
+            function decodeVarint(buf, pos) {
+                let result = 0, shift = 0;
+                while (pos < buf.length) {
+                    const b = buf[pos++]; result |= (b & 0x7F) << shift;
+                    if ((b & 0x80) === 0) break; shift += 7; if (shift > 35) break;
+                }
+                return [result, pos];
+            }
+            function decodeVarintBig(buf, pos) {
+                let result = 0n, shift = 0n;
+                while (pos < buf.length) {
+                    const b = buf[pos++]; result |= BigInt(b & 0x7F) << shift;
+                    if ((b & 0x80) === 0) break; shift += 7n;
+                }
+                return [result, pos];
+            }
+            function extractField(buf, targetField) {
+                let pos = 0;
+                while (pos < buf.length) {
+                    let tag; [tag, pos] = decodeVarint(buf, pos);
+                    const fn = tag >> 3, wt = tag & 7;
+                    if (wt === 0) { let v; [v, pos] = decodeVarintBig(buf, pos); }
+                    else if (wt === 2) { let len; [len, pos] = decodeVarint(buf, pos); if (fn === targetField) return buf.slice(pos, pos + len); pos += len; }
+                    else if (wt === 1) pos += 8; else if (wt === 5) pos += 4; else break;
+                }
+                return null;
+            }
+
+            function buildRequest(convId, cursor, timestamp) {
+                const inner = concatArrays([
+                    encodeString(1, convId), encodeVarintField(2, 1),
+                    encodeVarintField(3, cursor), encodeVarintField(4, 1),
+                    encodeVarintField(5, timestamp), encodeVarintField(6, 50),
+                ]);
+                const queryMsg = encodeBytes(301, inner);
+                return concatArrays([
+                    encodeVarintField(1, 301), encodeVarintField(2, 10027),
+                    encodeString(3, '0.1.6'), encodeString(4, ''),
+                    encodeVarintField(5, 3), encodeVarintField(6, 0),
+                    encodeString(7, 'fef1a80:p/lzg/store'),
+                    encodeBytes(8, queryMsg), encodeString(9, '0'),
+                    encodeString(11, 'douyin_pc'), encodeString(14, '360000'),
+                    encodeVarintField(18, 1), encodeString(21, 'douyin_pc'),
+                ]);
+            }
+
+            // 通用 protobuf 递归解析器（返回所有字段）
+            function parseProto(buf, depth) {
+                if (!depth) depth = 0;
+                const fields = {}; let pos = 0;
+                while (pos < buf.length) {
+                    let tag; [tag, pos] = decodeVarint(buf, pos);
+                    const fn = tag >> 3, wt = tag & 7;
+                    if (fn === 0 || fn > 200) break;
+                    if (wt === 0) {
+                        let v; [v, pos] = decodeVarintBig(buf, pos);
+                        fields['f'+fn] = v.toString();
+                    } else if (wt === 2) {
+                        let len; [len, pos] = decodeVarint(buf, pos);
+                        if (pos + len > buf.length) break;
+                        const slice = buf.slice(pos, pos+len);
+                        // 尝试解码为 UTF-8 文本
+                        let text = null;
+                        try { text = new TextDecoder('utf-8', {fatal:true}).decode(slice); } catch {}
+                        if (text !== null && text.length < 5000) {
+                            fields['f'+fn] = text;
+                        } else if (depth < 3 && len > 4) {
+                            // 尝试递归解析为嵌套 protobuf
+                            try {
+                                const sub = parseProto(slice, depth + 1);
+                                if (Object.keys(sub).length > 0) fields['f'+fn] = sub;
+                            } catch {}
+                        }
+                        pos += len;
+                    } else if (wt === 1) { pos += 8; }
+                    else if (wt === 5) { pos += 4; }
+                    else break;
+                }
+                return fields;
+            }
+
+            // 整包字段留档用的辅助函数。
+            // 整包留档的体积上限。实测最大的消息包也只有 15.8 KB，这里留 64 KB
+            // 余量：正常采集也把整包原样存下来，不再只留一部分字段。
+            const RAW_PACKET_LIMIT = 65536;
+
+            function toHex(buf) {
+                let s = '';
+                for (let i = 0; i < buf.length; i++) s += (buf[i] < 16 ? '0' : '') + buf[i].toString(16);
+                return s;
+            }
+
+            function bytesToBase64(buf) {
+                let binary = ''; const chunk = 0x8000;
+                for (let i = 0; i < buf.length; i += chunk) {
+                    binary += String.fromCharCode.apply(null, buf.subarray(i, i + chunk));
+                }
+                return btoa(binary);
+            }
+
+            // 把一个消息包拆成「字段号 → 值」，同号重复出现时合并成数组。
+            function dumpAllFields(buf) {
+                const out = {};
+                const add = (key, value) => {
+                    if (!(key in out)) { out[key] = value; return; }
+                    if (Array.isArray(out[key])) { out[key].push(value); return; }
+                    out[key] = [out[key], value];
+                };
+                let pos = 0;
+                while (pos < buf.length) {
+                    let tag, len, v;
+                    [tag, pos] = decodeVarint(buf, pos);
+                    const fn = tag >> 3, wt = tag & 7;
+                    if (fn === 0 || fn > 500) break;
+                    if (wt === 0) {
+                        [v, pos] = decodeVarintBig(buf, pos);
+                        add('f' + fn, v.toString());
+                    } else if (wt === 1) {
+                        add('f' + fn, 'fixed64:' + toHex(buf.slice(pos, pos + 8))); pos += 8;
+                    } else if (wt === 5) {
+                        add('f' + fn, 'fixed32:' + toHex(buf.slice(pos, pos + 4))); pos += 4;
+                    } else if (wt === 2) {
+                        [len, pos] = decodeVarint(buf, pos);
+                        if (pos + len > buf.length) break;
+                        const slice = buf.slice(pos, pos + len);
+                        let text = null;
+                        try { text = new TextDecoder('utf-8', {fatal: true}).decode(slice); } catch {}
+                        if (text !== null && text.length <= 2000) add('f' + fn, text);
+                        else add('f' + fn, {bytes: len, head: toHex(slice.slice(0, 32))});
+                        pos += len;
+                    } else break;
+                }
+                return out;
+            }
+
+            function parseMessage(buf) {
+                const r = {}; let pos = 0;
+                while (pos < buf.length) {
+                    let tag; [tag, pos] = decodeVarint(buf, pos);
+                    const fn = tag >> 3, wt = tag & 7;
+                    if (fn === 0 || fn > 500) break;
+                    if (wt === 0) { let v; [v, pos] = decodeVarintBig(buf, pos);
+                        if (fn===3) r.server_id=v.toString(); else if (fn===4) r.created_at_us=v.toString();
+                        else if (fn===5) r.order=v.toString(); else if (fn===7) r.sender_uid=v.toString();
+                        else if (fn===6) r.type_code=Number(v); else if (fn===11) r.is_recalled=Number(v);
+                        else if (fn===12) r.visible=Number(v);
+                    } else if (wt === 2) { let len; [len, pos] = decodeVarint(buf, pos);
+                        const slice = buf.slice(pos, pos+len);
+                        if (fn===1) r.conv_id=new TextDecoder().decode(slice);
+                        else if (fn===8) { try { r.content_json=new TextDecoder().decode(slice); } catch {} }
+                        // Field 14: 发送者 sec_uid。群聊补全昵称/头像的唯一线索——
+                        // IM 用户信息接口只认 sec_uid，不认 f7 的数字 uid。
+                        else if (fn===14) { try { r.sender_sec_uid=new TextDecoder().decode(slice); } catch {} }
+                        else if (fn===18) {
+                            // Field 18: 引用/回复消息
+                            // 结构: f1=被引用消息server_id, f2=JSON(content, nickname, refmsg_sec_uid, refmsg_content)
+                            try {
+                                const refProto = parseProto(slice, 0);
+                                if (refProto.f1 && refProto.f2) {
+                                    const refJson = JSON.parse(refProto.f2);
+                                    r._ref_msg = {
+                                        server_id: refProto.f1,
+                                        content: refJson.content || '',
+                                        nickname: refJson.nickname || '',
+                                        sec_uid: refJson.refmsg_sec_uid || '',
+                                        refmsg_content: refJson.refmsg_content || '',
+                                    };
+                                }
+                            } catch {}
+                        }
+                        pos += len;
+                    } else if (wt === 1) pos += 8; else if (wt === 5) pos += 4; else break;
+                }
+                // 整包字段留档：抖音把「撤回 / 编辑 / 表情快捷回复」都写进同一个字段
+                // （第 11 号），只解析固定字段就再也分不出它们，所以这里把整包字段
+                // 原样带出去。超大字段（就是我们已经完整保存的 content_json / 引用）
+                // 只记长度和头部，避免把整包体积翻倍。
+                try { r._raw_size = buf.length; } catch {}
+                try { r._all_fields = dumpAllFields(buf); } catch {}
+                if (buf.length <= RAW_PACKET_LIMIT) {
+                    try { r._raw_packet = bytesToBase64(buf); } catch {}
+                }
+                return r;
+            }
+
+            function parseResponse(data) {
+                const f6 = extractField(data, 6);
+                if (!f6) return { msgs: [], hasMore: 0, nextTs: null };
+                const f301 = extractField(f6, 301);
+                if (!f301) return { msgs: [], hasMore: 0, nextTs: null };
+                let pos = 0; const msgs = []; let nextTs = null, hasMore = 0;
+                while (pos < f301.length) {
+                    let tag; [tag, pos] = decodeVarint(f301, pos);
+                    const fn = tag >> 3, wt = tag & 7;
+                    if (wt === 0) { let v; [v, pos] = decodeVarintBig(f301, pos);
+                        if (fn===2) nextTs=v.toString(); if (fn===3) hasMore=Number(v);
+                    } else if (wt === 2) { let len; [len, pos] = decodeVarint(f301, pos);
+                        if (fn===1) msgs.push(parseMessage(f301.slice(pos, pos+len)));
+                        pos += len;
+                    } else if (wt === 1) pos += 8; else if (wt === 5) pos += 4; else break;
+                }
+                return { msgs, nextTs, hasMore };
+            }
+
+            // ── API 调用 ──
+            window.__imApi = {
+                buildRequest, parseResponse,
+                call: async function(convId, cursor, timestamp, retries = 3) {
+                    for (let attempt = 0; attempt < retries; attempt++) {
+                        try {
+                            const result = await new Promise((resolve, reject) => {
+                                const reqBody = buildRequest(convId, BigInt(cursor), BigInt(timestamp));
+                                const xhr = new XMLHttpRequest();
+                                xhr.open('POST', 'https://imapi.douyin.com/v1/message/get_by_conversation');
+                                xhr.setRequestHeader('Content-Type', 'application/x-protobuf');
+                                xhr.setRequestHeader('Accept', 'application/x-protobuf');
+                                xhr.responseType = 'arraybuffer';
+                                xhr.withCredentials = true;
+                                xhr.timeout = 30000;
+                                xhr.onload = () => resolve({ status: xhr.status, data: new Uint8Array(xhr.response) });
+                                xhr.onerror = () => reject(new Error('XHR failed'));
+                                xhr.ontimeout = () => reject(new Error('XHR timeout'));
+                                xhr.send(reqBody.buffer);
+                            });
+                            return result;
+                        } catch (e) {
+                            if (attempt < retries - 1) {
+                                const wait = (attempt + 1) * 3000;
+                                console.log('[imApi] call attempt ' + (attempt+1) + '/' + retries + ' failed: ' + e.message + ', retry in ' + (wait/1000) + 's');
+                                await new Promise(r => setTimeout(r, wait));
+                            } else {
+                                throw e;
+                            }
+                        }
+                    }
+                },
+                fetchBatch: async function(convId, cursor, timestamp, maxPages) {
+                    const allMsgs = [];
+                    let ts = timestamp;
+                    let hasMore = 1;
+                    let consecutiveErrors = 0;
+                    for (let i = 0; i < maxPages && hasMore; i++) {
+                        try {
+                            const r = await this.call(convId, cursor, ts);
+                            if (r.status !== 200) {
+                                console.log('[imApi] page ' + i + ': HTTP ' + r.status);
+                                consecutiveErrors++;
+                                if (consecutiveErrors >= 3) break;
+                                await new Promise(r => setTimeout(r, 3000));
+                                continue;
+                            }
+                            consecutiveErrors = 0;
+                            const p = this.parseResponse(r.data);
+                            if (!p.msgs || p.msgs.length === 0) break;
+                            for (const m of p.msgs) allMsgs.push(m);
+                            hasMore = p.hasMore;
+                            ts = p.nextTs;
+                            if (i % 10 === 9) await new Promise(r => setTimeout(r, 50));
+                        } catch (e) {
+                            console.log('[imApi] page ' + i + ' error: ' + e.message);
+                            consecutiveErrors++;
+                            if (consecutiveErrors >= 3) {
+                                return { msgs: allMsgs, nextTs: ts, hasMore, error: e.message };
+                            }
+                            await new Promise(r => setTimeout(r, 3000));
+                        }
+                    }
+                    return { msgs: allMsgs, nextTs: ts, hasMore };
+                },
+            };
+        }""")
+
+    async def _lookup_sender_sec_uids(
+        self,
+        conv_id: str,
+        conv_short_id: str,
+        sender_uids: set[str],
+        *,
+        max_pages: int = 20,
+    ) -> tuple[dict[str, str], dict[str, int]]:
+        """Find missing sender identities without importing remote messages.
+
+        The normal message API returns ``sender_uid`` and protobuf field 14
+        (``sender_sec_uid``) together.  For voice backfill we only need that
+        identity pair, so fetch one page at a time and stop as soon as every
+        requested sender has been observed.  The returned messages are never
+        passed to ``_store_messages``.
+        """
+        targets = {str(uid) for uid in sender_uids if str(uid)}
+        stats = {"target_senders": len(targets), "pages": 0, "matched": 0}
+        if not targets or not conv_short_id:
+            return {}, stats
+
+        await self._inject_api_tools()
+        observed: defaultdict[str, set[str]] = defaultdict(set)
+        next_ts = "9999999999999999"
+        has_more = True
+
+        while targets and has_more and stats["pages"] < max_pages:
+            try:
+                result = await self.page.evaluate(
+                    """async (args) => {
+                        const [convId, cursor, ts] = args;
+                        return await window.__imApi.fetchBatch(convId, cursor, ts, 1);
+                    }""",
+                    [conv_id, conv_short_id, next_ts],
+                )
+            except Exception as exc:
+                print(f"  [!] sec_uid 定向补取失败: {exc}")
+                break
+
+            stats["pages"] += 1
+            if not result or not result.get("msgs"):
+                break
+            has_more = result.get("hasMore", 0) == 1
+            next_ts = result.get("nextTs", next_ts)
+
+            for message in result["msgs"]:
+                message_conv_id = str(message.get("conv_id") or "")
+                if message_conv_id and message_conv_id != conv_id:
+                    continue
+                sender_uid = str(message.get("sender_uid") or "")
+                sec_uid = str(message.get("sender_sec_uid") or "")
+                if sender_uid in targets and sec_uid:
+                    observed[sender_uid].add(sec_uid)
+
+            # A sender is complete only when this lookup has one consistent
+            # identity. Conflicts stay unresolved instead of guessing.
+            targets = {
+                uid for uid in targets if len(observed.get(uid, set())) != 1
+            }
+
+        mapping = {
+            uid: next(iter(sec_uids))
+            for uid, sec_uids in observed.items()
+            if len(sec_uids) == 1
+        }
+        stats["matched"] = len(mapping)
+        return mapping, stats
+
+    async def _api_fetch_all_messages(self, conv_id, cursor, incremental=False, refresh=False):
+        """用 API 直接获取全部历史消息。
+
+        `cursor` 是 short_id（imapi 请求 field 3，每会话固定，非分页游标）；真正翻页靠
+        请求 field 5 的时间戳，本方法从 9999999999999999 开始逐批往旧推。
+
+        ``refresh`` 是「字段回填」模式：只更新/补全消息与整包字段，不下载媒体、
+        不做语音转写、不补合并转发，跑得快也不动已有附件。
+        """
+        await self._inject_api_tools()
+
+        api_cursor = cursor
+        next_ts = "9999999999999999"
+        print(f"  [*] API 直取模式: cursor={api_cursor}, 从最新开始向旧获取")
+
+        # 3. 增量模式：获取已有消息的最旧时间戳
+        existing_count = 0
+        existing_oldest_ts = None
+        if incremental:
+            row = self._db_conn.execute(
+                "SELECT COUNT(*), MIN(timestamp) FROM messages WHERE conv_id = ?", (conv_id,)
+            ).fetchone()
+            existing_count = row[0] or 0
+            existing_oldest_ts = row[1] if row[1] else None
+            if existing_count:
+                print(f"  [*] 增量模式: 已有 {existing_count} 条消息")
+
+        # 4. 循环分页获取所有消息
+        sec_by_uid = {}  # sender_uid -> sec_uid，抓完后批量补全昵称/头像
+        total_saved = 0
+        total_updated = 0
+        total_fetched = 0
+        batch_num = 0
+        zero_saved_streak = 0  # 连续 saved=0 的批次计数
+        voice_message_ids = []  # 只转写本次实际新增的语音
+        # 每批获取的页数：回填模式带着整包字段，单批体积更大，取小一点。
+        pages_per_batch = 4 if refresh else 20
+        has_more = True
+        start_time = time.time()
+
+        while has_more:
+            batch_num += 1
+
+            # 带重试的批量 API 调用
+            batch_result = None
+            for attempt in range(3):
+                try:
+                    batch_result = await self.page.evaluate("""async (args) => {
+                        const [convId, cursor, ts, maxPages] = args;
+                        return await window.__imApi.fetchBatch(convId, cursor, ts, maxPages);
+                    }""", [conv_id, api_cursor, next_ts, pages_per_batch])
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        wait = (attempt + 1) * 5
+                        print(f"  [!] batch #{batch_num} 失败 (attempt {attempt+1}/3): {e}")
+                        print(f"  [*] 等待 {wait}s 后重试...")
+                        await asyncio.sleep(wait)
+                    else:
+                        print(f"  [!] batch #{batch_num} 连续 3 次失败，停止")
+                        has_more = False
+
+            if batch_result and batch_result.get("error"):
+                print(f"  [!] batch #{batch_num} JS 端报错: {batch_result['error']}")
+
+            if not batch_result or not batch_result.get("msgs"):
+                if has_more:
+                    print(f"  [*] API 返回空结果，停止")
+                break
+
+            msgs = batch_result["msgs"]
+            has_more = batch_result.get("hasMore", 0) == 1
+            next_ts = batch_result.get("nextTs", next_ts)
+            total_fetched += len(msgs)
+
+            # 前3批打印引用消息统计
+            if batch_num <= 3:
+                ref_count = sum(1 for m in msgs if m.get("_ref_msg"))
+                if ref_count:
+                    print(f"  [debug] 发现 {ref_count} 条引用/回复消息")
+
+            # 过滤掉不属于目标会话的消息（防止 cursor 错误导致拉到其他会话的数据）
+            filtered_msgs = []
+            for m in msgs:
+                msg_conv_id = m.get("conv_id", "")
+                if msg_conv_id and msg_conv_id != conv_id:
+                    continue
+                filtered_msgs.append(m)
+            if len(filtered_msgs) < len(msgs):
+                print(f"  [!] 过滤掉 {len(msgs) - len(filtered_msgs)} 条不属于当前会话的消息")
+            msgs = filtered_msgs
+
+            # 转换 API 消息格式 → _store_messages 期望的格式
+            converted = []
+            for m in msgs:
+                if m.get("sender_uid") and m.get("sender_sec_uid"):
+                    sec_by_uid.setdefault(m["sender_uid"], m["sender_sec_uid"])
+                content_json = m.get("content_json", "")
+                # 解析 content JSON
+                text = ""
+                msg_type = "other"
+                awe_type = -1
+                image_src = None
+                try:
+                    cj = json.loads(content_json)
+                    awe_type = cj.get("aweType", -1)
+                    text = cj.get("text", "") or cj.get("description", "")
+                    # Voice payloads currently use aweType=0 on the web.  Do
+                    # this test before the generic aweType=0 text branch, or
+                    # they are stored as msg_type=1 and never transcribed.
+                    voice_resource = cj.get("resource_url")
+                    voice_duration = cj.get("duration")
+                    if (
+                        isinstance(voice_resource, dict)
+                        and voice_duration in (None, "")
+                    ):
+                        voice_duration = voice_resource.get("duration")
+                    if (
+                        isinstance(voice_resource, dict)
+                        and voice_duration not in (None, "")
+                        and not (
+                            isinstance(cj.get("video"), dict)
+                            and cj.get("video", {}).get("vid")
+                        )
+                        and cj.get("aweType") not in (
+                            2702, 2703, 2704, "2702", "2703", "2704"
+                        )
+                    ):
+                        msg_type = "other"  # keep DB type=0 for voice
+                        try:
+                            dur_sec = round(float(voice_duration) / 1000)
+                        except (TypeError, ValueError):
+                            dur_sec = 0
+                        text = text or (f"[语音 {dur_sec}秒]" if dur_sec else "[语音]")
+                    elif awe_type in (500, 501, 507, 508, 510, 514, 516):
+                        # 表情包/贴纸
+                        msg_type = "emoji"
+                        if not text:
+                            text = cj.get("display_name") or "[表情]"
+                        # URL 在 cj.url.url_list[0]
+                        url_obj = cj.get("url")
+                        if isinstance(url_obj, dict):
+                            url_list = url_obj.get("url_list", [])
+                            if url_list:
+                                image_src = url_list[0] if isinstance(url_list[0], str) else None
+                    elif awe_type in (2702, 2703, 2704):
+                        # 图片消息
+                        msg_type = "image"
+                        if not text:
+                            text = "[图片]"
+                        # URL 在 cj.resource_url.large_url_list[0]
+                        ru = cj.get("resource_url") or {}
+                        for key in ("large_url_list", "medium_url_list", "origin_url_list", "thumb_url_list"):
+                            ul = ru.get(key, [])
+                            if ul and isinstance(ul[0], str):
+                                image_src = ul[0]
+                                break
+                    else:
+                        text, msg_type, image_src = _classify_json_message(cj)
+                except (json.JSONDecodeError, AttributeError):
+                    text = content_json
+                    msg_type = "text"
+
+                if not text and msg_type == "text":
+                    text = content_json
+
+                # 时间戳：serverId 是 snowflake ID，高32位是 Unix 秒时间戳
+                server_id_int = int(m.get("server_id", "0"))
+                timestamp_sec = server_id_int >> 32 if server_id_int > 0 else 0
+
+                # order 用于排序：created_at_us 是单调递增的，用作排序键
+                created_at_us = int(m.get("created_at_us", "0"))
+
+                # 引用/回复消息
+                ref_msg = m.get("_ref_msg")
+                ref_msg_json = json.dumps(ref_msg, ensure_ascii=False) if ref_msg else None
+
+                converted_message = {
+                    "server_id": m.get("server_id", ""),
+                    "content": text,
+                    "msg_type": msg_type,
+                    "awe_type": awe_type,
+                    "is_self": False,  # API 不直接给出，后面可从 sender_uid 判断
+                    "sender_uid": m.get("sender_uid", ""),
+                    "sender_sec_uid": m.get("sender_sec_uid", ""),
+                    "sender_name": "",  # API 不返回名字，抓完后按 sec_uid 批量补全
+                    "conversation_id": m.get("conv_id", conv_id),
+                    "created_at": datetime.utcfromtimestamp(timestamp_sec).isoformat() + "Z" if timestamp_sec > 0 else "",
+                    "order_high": created_at_us >> 32,
+                    "order_low": created_at_us & 0xFFFFFFFF,
+                    "image_src": image_src,
+                    "visible": m.get("visible", 0),
+                    "is_recalled": m.get("is_recalled", 0),
+                    "content_json": content_json,
+                    "ref_msg": ref_msg_json,
+                }
+                # Keep the original protobuf type in raw_data when present.
+                # Recognition still uses its separate, fixed message_type=7 contract.
+                if m.get("type_code") is not None:
+                    converted_message["type_code"] = m["type_code"]
+                # 抖音返回的整包字段（撤回 / 编辑 / 表情快捷回复都挤在第 11 号字段里，
+                # 只有留下的字段足够多，事后才分得清这几件事）。
+                if m.get("_all_fields"):
+                    converted_message["fields"] = m["_all_fields"]
+                if m.get("_raw_packet"):
+                    converted_message["_raw_packet"] = m["_raw_packet"]
+                    converted_message["_raw_packet_size"] = m.get("_raw_size", 0)
+                converted.append(converted_message)
+
+            # 语音文件、图片/表情/视频封面：正常采集与字段回填都要下（已存在的
+            # 文件会直接跳过，只补没下到的那些）。
+            await self._download_voice_files(converted)
+            await self._download_image_files(converted)
+
+            newly_inserted, inserted_message_ids, updated_rows = self._store_messages(
+                converted, conv_id, batch_seq_start=0, refresh=refresh
+            )
+            total_updated += updated_rows
+            total_saved += newly_inserted
+            voice_ids = {
+                self._make_msg_id(conv_id, message)
+                for message in converted
+                if is_voice_message(message)
+            }
+            voice_message_ids.extend(
+                msg_id for msg_id in inserted_message_ids if msg_id in voice_ids
+            )
+
+            elapsed = time.time() - start_time
+            speed = total_fetched / elapsed if elapsed > 0 else 0
+            # 计算时间范围
+            if converted:
+                times = [c["created_at"] for c in converted if c["created_at"]]
+                oldest_time = min(times)[:19] if times else "?"
+            else:
+                oldest_time = "?"
+
+            print(
+                f"  [*] batch #{batch_num}: fetched={len(msgs)} saved={newly_inserted} "
+                f"updated={updated_rows} total={total_fetched}/{total_saved} oldest={oldest_time} "
+                f"speed={speed:.0f}msg/s elapsed={elapsed:.1f}s hasMore={has_more}"
+            )
+
+            # 增量模式：连续 2 批 saved=0 说明已追上历史，停止
+            if incremental and existing_count > 0:
+                if newly_inserted == 0:
+                    zero_saved_streak += 1
+                    if zero_saved_streak >= 2:
+                        print(f"  [*] 增量模式: 连续 {zero_saved_streak} 批无新消息，已追上历史记录")
+                        break
+                else:
+                    zero_saved_streak = 0
+
+            if not has_more:
+                print(f"  [*] 已到达聊天记录起点")
+                break
+
+        if not refresh:
+            # 合并转发资源沿用当前网页登录态；失败不影响已保存的消息。
+            try:
+                forward_stats = await backfill_uploaded_forwards(
+                    self.page, self._db_conn, conv_id, api_cursor,
+                )
+                if any(forward_stats.values()):
+                    print(f"  [forward] 正文补全: {forward_stats}")
+            except Exception as exc:
+                print(f"  [!] 合并转发补全失败（消息已保存）: {type(exc).__name__}")
+
+        # 5. 原生语音识别使用同一浏览器上下文的 cookies；放在消息落库之后，
+        # 只处理本次实际新增的语音。历史语音由面板里的独立回填任务处理，
+        # 避免每次增量采集都扫描整个会话。
+        if voice_message_ids and not refresh:
+            try:
+                self._reuse_backed_up_voice_transcriptions(conv_id)
+                voice_stats = await self._transcribe_voice_messages(
+                    conv_id, api_cursor, message_ids=voice_message_ids
+                )
+                if voice_stats.get("voices"):
+                    print(
+                        "  [voice] 识别统计: "
+                        f"总数={voice_stats['voices']} "
+                        f"缓存={voice_stats['cached']} "
+                        f"请求={voice_stats['requested']} "
+                        f"成功={voice_stats['succeeded']} "
+                        f"失败={voice_stats['failed']} "
+                        f"跳过={voice_stats['skipped']}"
+                    )
+            except Exception as e:
+                # 转写失败不应回滚已经抓到的聊天记录。
+                print(f"  [!] 原生语音识别失败（消息已保存）: {e}")
+
+        # 6. 补全发送者身份（群聊必需）。失败不能影响已抓到的消息。
+        if not refresh:
+            try:
+                await self._resolve_sender_identities(sec_by_uid)
+            except Exception as e:
+                print(f"  [!] 补全发送者信息失败: {e}")
+
+        # 7. 归一化 seq
+        print(f"  [*] 归一化消息序号 (按服务端排序)...")
+        count = self._normalize_message_order(conv_id)
+        print(f"  [*] 已归一化 {count} 条消息的序号")
+
+        elapsed = time.time() - start_time
+        print(
+            f"  [*] API 获取完成: {total_fetched} 条消息, {total_saved} 条新增, "
+            f"{total_updated} 条更新, 耗时 {elapsed:.1f}s"
+        )
+        return total_saved
+
+    def _normalize_message_order(self, conv_id):
+        # seq is a reader position after normalization, not a durable sort key.
+        # Rebuild from archived timestamps and original server order so new
+        # microsecond keys and existing compact positions never get mixed.
+        rows = self._db_conn.execute(
+            """SELECT msg_id FROM messages WHERE conv_id = ?
+               ORDER BY timestamp ASC,
+                 CASE WHEN json_valid(raw_data) THEN COALESCE(
+                   CAST(json_extract(raw_data, '$.created_at_us') AS INTEGER),
+                   CAST(json_extract(raw_data, '$.order_high') AS INTEGER) * 4294967296
+                     + (CAST(json_extract(raw_data, '$.order_low') AS INTEGER) & 4294967295),
+                   seq) ELSE seq END ASC,
+                 msg_id ASC""", (conv_id,),
+        ).fetchall()
+        self._db_conn.executemany(
+            "UPDATE messages SET seq = ? WHERE msg_id = ?",
+            ((seq, row[0]) for seq, row in enumerate(rows, 1)),
+        )
+        self._db_conn.commit()
+        return len(rows)
+
+    async def _transcribe_voice_messages(self, conv_id, conv_short_id, message_ids=None):
+        """识别指定消息中的语音；不传 IDs 时用于显式历史回填。"""
+        return await VoiceTranscriber(
+            self.page, self._db_conn
+        ).transcribe_conversation(
+            conv_id, conv_short_id, message_ids=message_ids
+        )
+
+    async def backfill_voice_transcriptions(self, name_filter=None):
+        """补充当前数据库中尚未成功识别的历史语音。
+
+        This deliberately starts from locally stored voice candidates.  It
+        does not fetch the conversation history again; the browser is used
+        only for authentication, UUID lookup, and short-id discovery when a
+        one-to-one conversation needs it.
+        """
+        filter_parts = [
+            part.strip()
+            for part in (name_filter or "").split(",")
+            if part.strip()
+        ]
+        rows = pending_voice_rows(self._db_conn, filter_parts or None)
+        candidates = [row for row in rows if is_voice_message(row)]
+        candidates, sec_stats = backfill_sender_sec_uids(
+            self._db_conn, candidates
+        )
+        if sec_stats["missing"]:
+            print(
+                "[voice] 检测到语音消息缺少 sec_uid: "
+                f"{sec_stats['missing']} 条；"
+                f"从本地已有消息获取到 {sec_stats['mapped_sender_uids']} 个"
+                " sender_uid→sec_uid 映射"
+            )
+        print(
+            "[voice] sec_uid 回填: "
+            f"检查消息={sec_stats['checked']} 缺失={sec_stats['missing']} "
+            f"匹配发送者={sec_stats['mapped_sender_uids']} "
+            f"已写入={sec_stats['updated']} "
+            f"无法补齐={sec_stats['unresolved']}"
+        )
+        grouped = {}
+        for row in candidates:
+            grouped.setdefault(str(row["conv_id"]), []).append(row)
+
+        print(
+            f"[*] 历史语音回填: 数据库筛选到 {len(candidates)} 条待处理语音，"
+            f"涉及 {len(grouped)} 个会话"
+        )
+        if not grouped:
+            return {"voices": 0, "cached": 0, "requested": 0,
+                    "succeeded": 0, "failed": 0, "skipped": 0}
+
+        await self.navigate_to_chat()
+        await asyncio.sleep(2)
+
+        # A local mapping is normally enough.  If it is not, ask the message
+        # API for only the sender identities still needed by this backfill.
+        # The lookup stops as soon as all target sender_uids are found and does
+        # not write any fetched messages into the database.
+        unresolved_by_conv = {}
+        for conv_id, conv_rows in grouped.items():
+            sender_uids = {
+                str(row["sender_uid"])
+                for row in conv_rows
+                if row["sender_uid"]
+                and not str(row.get("sender_sec_uid") or "").strip()
+            }
+            if sender_uids:
+                unresolved_by_conv[conv_id] = sender_uids
+
+        remote_short_ids = {}
+        remote_mapping = {}
+        for conv_id, sender_uids in unresolved_by_conv.items():
+            conv_rows = grouped[conv_id]
+            conv_name = str(conv_rows[0]["conversation_name"] or conv_id)
+            if conv_id.isdigit():
+                conv_short_id = conv_id
+            else:
+                conv_short_id = await self._acquire_short_id(conv_id, conv_name)
+            remote_short_ids[conv_id] = conv_short_id or ""
+            mapping, lookup_stats = await self._lookup_sender_sec_uids(
+                conv_id, conv_short_id or "", sender_uids
+            )
+            remote_mapping.update(mapping)
+            print(
+                "  [voice] sec_uid 定向补取: "
+                f"会话={conv_name} 目标发送者={lookup_stats['target_senders']} "
+                f"请求页数={lookup_stats['pages']} 命中={lookup_stats['matched']} "
+                f"未命中={lookup_stats['target_senders'] - lookup_stats['matched']}"
+            )
+
+        if remote_mapping:
+            candidates, remote_stats = backfill_sender_sec_uids(
+                self._db_conn, candidates, extra_mapping=remote_mapping
+            )
+            print(
+                "[voice] 远程 sec_uid 回填: "
+                f"匹配发送者={remote_stats['mapped_sender_uids']} "
+                f"已写入={remote_stats['updated']} "
+                f"无法补齐={remote_stats['unresolved']}"
+            )
+
+        # The rows may have been enriched by the remote lookup; regroup them
+        # before transcription so every request sees the updated sec_uid.
+        grouped = {}
+        for row in candidates:
+            grouped.setdefault(str(row["conv_id"]), []).append(row)
+
+        total = {"voices": 0, "cached": 0, "requested": 0,
+                 "succeeded": 0, "failed": 0, "skipped": 0}
+        for conv_id, conv_rows in grouped.items():
+            conv_name = str(conv_rows[0]["conversation_name"] or conv_id)
+            conv_short_id = remote_short_ids.get(conv_id)
+            if conv_short_id is None:
+                if conv_id.isdigit():
+                    conv_short_id = conv_id
+                else:
+                    conv_short_id = await self._acquire_short_id(conv_id, conv_name)
+            stats = await VoiceTranscriber(
+                self.page, self._db_conn
+            ).transcribe_rows(conv_rows, conv_short_id or "")
+            for key, value in stats.items():
+                total[key] += value
+            print(
+                f"  [voice] 回填会话完成: 总数={stats['voices']} "
+                f"请求={stats['requested']} 成功={stats['succeeded']} "
+                f"失败={stats['failed']} 跳过={stats['skipped']}"
+            )
+
+        print(
+            "[voice] 历史回填完成: "
+            f"总数={total['voices']} 请求={total['requested']} "
+            f"成功={total['succeeded']} 失败={total['failed']} "
+            f"跳过={total['skipped']}"
+        )
+        return total
+
+    @staticmethod
+    def _make_msg_id(conv_id, msg):
+        """生成消息ID，优先使用 serverId（稳定唯一）。"""
+        server_id = msg.get("server_id")
+        if server_id:
+            return f"srv_{server_id}"
+        # fallback: 基于内容 hash
+        image_src = msg.get("image_src") or ""
+        content = msg.get("content", "")
+        is_self = msg.get("is_self", False)
+        sender = msg.get("sender_uid", "") or msg.get("sender", "")
+        msg_hash = hashlib.md5(
+            f"{conv_id}:{content}:{is_self}:{sender}:{image_src}".encode()
+        ).hexdigest()
+        return f"web_{msg_hash}"
+
+    def _store_messages(self, messages, conv_id, batch_seq_start=0, refresh=False):
+        """Store a batch and return its inserted row count and message IDs.
+
+        ``refresh`` 是「字段回填」模式：抖音能返回的消息用这次抓到的完整数据
+        覆盖旧记录（旧的 media_local_path / sender_name 保留），抖音已不再返回
+        的旧消息原样不动。
+        """
+        conn = self._db_conn
+        newly_inserted = 0
+        updated = 0
+        inserted_message_ids = []
+
+        for idx, msg in enumerate(messages):
+            content = msg.get("content", "")
+            # 没有标题的分享卡正文就是空的（见 _classify_json_message）：界面按分享卡
+            # 渲染（封面 + 作者），正文留白。这类记录带着卡片数据，不能当空载荷丢掉。
+            if not content and msg.get("msg_type") != "share":
+                continue
+
+            msg_id = self._make_msg_id(conv_id, msg)
+
+            # 整包字段单独留档：raw_data 里只放轻量摘要，避免阅读端加载变慢。
+            packet_b64 = msg.pop("_raw_packet", None)
+            packet_size = msg.pop("_raw_packet_size", 0) or 0
+            if packet_b64:
+                conn.execute(
+                    """INSERT OR REPLACE INTO message_packets
+                       (msg_id, conv_id, captured_at, size, packet, fields)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (msg_id, conv_id, int(time.time()), int(packet_size), packet_b64,
+                     json.dumps(msg.get("fields") or {}, ensure_ascii=False)),
+                )
+                # 撤回 / 编辑 / 表情快捷回复 / 仅看一次 都挤在第 11 号字段上，
+                # 只有整包能分清，所以落库时就把结论写进 raw_data.modify。
+                try:
+                    modify = parse_modify(base64.b64decode(packet_b64))
+                except Exception:
+                    modify = None
+                if modify:
+                    msg["modify"] = modify
+
+            # Sender: use real UID from fiber data
+            sender_uid = msg.get("sender_uid", "")
+            sender_name = msg.get("sender_name", "")
+            if msg.get("is_self"):
+                sender_name = sender_name or "__self__"
+            if not sender_uid:
+                sender_uid = hashlib.md5(
+                    (sender_name or "unknown").encode()
+                ).hexdigest()[:12]
+
+            msg_type_map = {"text": 1, "emoji": 2, "image": 3, "share": 4, "other": 0, "video": 5}
+            msg_type = msg_type_map.get(msg.get("msg_type", "text"), 0)
+
+            # 图片/表情/分享/视频 都记录 media_url (ensure it's a string)
+            raw_media = msg.get("image_src") if msg.get("msg_type") in ("image", "emoji", "share", "video") else None
+            media_url = str(raw_media) if raw_media and isinstance(raw_media, str) else None
+            local_path = msg.get("local_path")
+
+            # Timestamp: use precise createdAt from fiber (ISO string → Unix seconds)
+            timestamp = 0
+            created_at = msg.get("created_at")
+            if created_at:
+                try:
+                    dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    timestamp = int(dt.timestamp())
+                except (ValueError, AttributeError):
+                    pass
+
+            # Seq: use orderInConversation (high << 32 | low) for precise ordering
+            order_high = msg.get("order_high", 0) or 0
+            order_low = msg.get("order_low", 0) or 0
+            # Convert to a single sortable integer (use as seq)
+            # order_high is the upper 32 bits, order_low is the lower 32 bits
+            # We use (order_high * 2^32 + unsigned(order_low)) for sorting
+            unsigned_low = order_low if order_low >= 0 else order_low + (1 << 32)
+            seq = order_high * (1 << 32) + unsigned_low if (order_high or order_low) else (batch_seq_start + idx)
+
+            ref_msg = msg.get("ref_msg")
+
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO messages
+                   (msg_id, conv_id, sender_uid, sender_name, content, msg_type,
+                    media_url, media_local_path, timestamp, seq, raw_data, ref_msg)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (msg_id, conv_id, sender_uid, sender_name, content, msg_type,
+                 media_url, local_path, timestamp, seq,
+                 json.dumps(msg, ensure_ascii=False), ref_msg),
+            )
+            if cursor.rowcount > 0:
+                newly_inserted += 1
+                inserted_message_ids.append(msg_id)
+            else:
+                replaced = False
+                if refresh and msg.get("fields"):
+                    old = conn.execute(
+                        "SELECT content, raw_data FROM messages WHERE msg_id = ?", (msg_id,)
+                    ).fetchone()
+                    if old is not None:
+                        payload = json.dumps(msg, ensure_ascii=False)
+                        if (old["content"] or "") != (content or "") and old["raw_data"]:
+                            # 重抓到的正文和上次不一样（典型情况：抓完之后才被撤回，
+                            # 服务端已经把正文换成了 Recall Content Hided）。旧版本
+                            # 塞进 previous_capture，别把原文直接丢掉。
+                            try:
+                                merged = json.loads(payload)
+                                merged["previous_capture"] = old["raw_data"]
+                                payload = json.dumps(merged, ensure_ascii=False)
+                            except (ValueError, TypeError):
+                                pass
+                        conn.execute(
+                            """UPDATE messages SET content = ?, msg_type = ?, media_url = ?,
+                                   timestamp = ?, seq = ?, raw_data = ?, ref_msg = ?
+                               WHERE msg_id = ?""",
+                            (content, msg_type, media_url, timestamp, seq, payload,
+                             ref_msg, msg_id),
+                        )
+                        updated += 1
+                        replaced = True
+                if not replaced and ref_msg:
+                    # 已存在的消息：更新 ref_msg（如果新数据包含引用信息）
+                    conn.execute(
+                        "UPDATE messages SET ref_msg = ? WHERE msg_id = ? AND (ref_msg IS NULL OR ref_msg = '')",
+                        (ref_msg, msg_id),
+                    )
+                if local_path:
+                    # 已存在的消息：这次刚下载到的媒体路径补进去（只填空缺，不覆盖）。
+                    conn.execute(
+                        """UPDATE messages SET media_local_path = ?
+                           WHERE msg_id = ? AND (media_local_path IS NULL OR media_local_path = '')""",
+                        (local_path, msg_id),
+                    )
+
+            if sender_uid and sender_name and sender_name != "__self__":
+                upsert_user(conn, sender_uid, nickname=sender_name)
+
+        update_conversation_stats(conn, conv_id)
+        conn.commit()
+
+        # 每 1000 条做一次 WAL checkpoint，防止 WAL 文件膨胀
+        self._commit_counter = getattr(self, "_commit_counter", 0) + len(messages)
+        if self._commit_counter >= 1000:
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            self._commit_counter = 0
+
+        if refresh and updated:
+            conn.commit()
+        return newly_inserted, inserted_message_ids, updated
+
+    async def close(self):
+        if self._db_conn:
+            try:
+                self._db_conn.commit()
+                self._db_conn.close()
+            except Exception:
+                pass
+            self._db_conn = None
+        if self.context:
+            await self.context.close()
+        if self.pw:
+            await self.pw.stop()
+        print("[+] 浏览器已关闭")

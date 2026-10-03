@@ -1,0 +1,8 @@
+# The panel route contract compares the served HTML byte-for-byte with this
+# baseline. Keep both files LF-only even on Windows checkouts.
+backend/panel/static/panel.html text eol=lf
+tests/baseline/panel.html text eol=lf
+
+# Windows 的 cmd 按 GBK 读 .bat，并按 CRLF 认行尾（LF-only 会让 goto / if 失效）。
+# 写死成 CRLF：不然在 Linux / macOS 上 clone 出来会是 LF，CI 也会因为这条检查报错。
+*.bat text eol=crlf

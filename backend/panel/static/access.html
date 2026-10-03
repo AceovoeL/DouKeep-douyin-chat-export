@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="__LANG_TAG__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>__PAGE_TITLE__</title>
+<style>
+/* 局域网访问的解锁页。配色 / 字体取自面板的「外观」设置（服务端填进 :root），
+   所以它跟控制面板看起来是同一套界面，而不是另做一个风格。 */
+:root {
+__THEME_VARS__
+  --panel-font: __FONT_STACK__;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: var(--bg); color: var(--text);
+  font-family: var(--panel-font); font-size: 14px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.card {
+  width: 100%; max-width: 380px; padding: 30px 28px 26px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+}
+.brand { display: flex; align-items: center; gap: 8px; color: var(--text2); font-size: 12px; }
+.brand i { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+h1 { margin: 16px 0 6px; font-size: 19px; font-weight: 700; letter-spacing: 0.2px; }
+.desc { margin-bottom: 18px; color: var(--text2); font-size: 13px; }
+.pw-row { display: flex; gap: 8px; }
+input[type=password] {
+  flex: 1; min-width: 0; padding: 10px 13px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--bg3); color: var(--text);
+  font-family: inherit; font-size: 14px; outline: none;
+}
+input[type=password]:focus { border-color: var(--accent); }
+button {
+  padding: 10px 18px; border: 1px solid transparent; border-radius: 8px;
+  background: var(--accent); color: #fff; font-family: inherit; font-size: 14px;
+  font-weight: 600; cursor: pointer;
+}
+button:hover { background: var(--accent2); }
+.err {
+  margin-top: 12px; padding: 8px 11px; border-radius: 8px; font-size: 12.5px;
+  background: var(--red-bg); color: var(--red); border: 1px solid var(--red);
+}
+.tip { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--text3); font-size: 12px; }
+</style>
+</head>
+<body>
+  <form class="card" method="post" action="/api/access/login">
+    <div class="brand"><i></i><span>__BRAND__</span></div>
+    <h1>__TITLE__</h1>
+    <p class="desc">__DESC__</p>
+    <input type="hidden" name="next" value="__NEXT__">
+    <div class="pw-row">
+      <input type="password" name="password" id="pw" placeholder="__PLACEHOLDER__"
+             autocomplete="current-password" autofocus>
+      <button type="submit">__BTN__</button>
+    </div>
+    __ERROR__
+    <div class="tip">__TIP__</div>
+  </form>
+</body>
+</html>

@@ -1,0 +1,19 @@
+data/
+venv/
+.env
+__pycache__/
+*.pyc
+node_modules/
+# 表情图片是运行时要下载的资源，不进仓库（见 NOTICE）
+assets/emoji/
+.pytest-tmp/
+.pytest-cache/
+.pytest_cache/
+tmp-pytest/
+.DS_Store
+.server.pid
+.server.log
+.claude/
+CLAUDE.md
+TECHNICAL.md
+frontend/node_modules/
