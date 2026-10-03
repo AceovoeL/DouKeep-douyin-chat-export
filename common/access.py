@@ -11,7 +11,7 @@
 访问密码保护的是「只有知道密码的设备才连得上」。两个都设了，别的设备就要先过访问
 密码、再输面板密码。
 
-本模块是这些设置的唯一实现处，配置都存在 ``data/panel_config.json`` 里：
+本模块是这些设置的唯一实现处，配置都存在 ``config/panel_config.json`` 里：
 
     lan_access            : true  = 允许局域网访问（默认 false，只监听 127.0.0.1）
     lan_password_hash     : 访问密码的 sha256；空/没有 = 不要访问密码

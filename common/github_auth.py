@@ -4,9 +4,9 @@
 登录。所以这里保存一个用户自己生成的 **只读** Personal Access Token，面板用它
 读更新信息。
 
-存哪儿：``data/github_token``（单独一个文件，不是 panel_config.json）。这样
+存哪儿：``config/github_token``（单独一个文件，不是 panel_config.json）。这样
 既不会混进配置的读写逻辑，也省得万一有人在接口里整包返回配置时把 Token 带出去。
-``data/`` 本来就在 .gitignore 里，不会被提交。
+``config/`` 本来就在 .gitignore 里，不会被提交。
 
 **什么时候用它**：只有面板打开「开发者模式」时才用（``load_for_use``）。关着时
 Token 文件仍然留着，但不再拿去读私有仓库 —— 用户重新打开开发者模式就能接着用，
@@ -21,7 +21,9 @@ import stat
 
 from common import config, paths
 
-TOKEN_PATH = os.path.join(paths.DATA_DIR, "github_token")
+#: 路径的单一来源在 common/paths.py（config/github_token）；留一个模块级名字，
+#: 一来面板那边一直这么引用，二来测试可以把它指到临时文件、不碰真实凭据。
+TOKEN_PATH = paths.TOKEN_PATH
 
 #: Token 里不该出现的字符（粘贴时常见的换行/引号/空白）
 _FORBIDDEN = set(" \t\r\n\"'`")

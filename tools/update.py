@@ -1,6 +1,6 @@
 """一键更新：把代码换成最新 → 装 Python 依赖 → 构建前端。
 
-由控制面板「关于 → 更新」在后台运行，输出被重定向到 data/update.log，面板里直接
+由控制面板「关于 → 更新」在后台运行，输出被重定向到 config/logs/update.log，面板里直接
 显示这份日志。也可以手动执行：
 
     python tools/update.py                # 安全模式：本地有真实改动时中止
@@ -17,9 +17,10 @@
   必须是开着的 —— 关掉即「不再从私有仓库取代码」，Token 文件仍然留着）。下载过程会
   **边下边报进度**（已下载多少 / 共多少 / 百分之几），免得看着像卡死。
 
-两套换法都只碰**仓库里的代码文件**：``data/``（聊天数据库、登录态、下载的媒体）、
-``venv/``、``frontend/node_modules/`` 都不在代码包里，不会被覆盖 —— 所以「只用来
-跑、不用来改」的第二台电脑可以不装 git，照样点按钮更新。
+两套换法都只碰**仓库里的代码文件**：``data/``（聊天数据库、下载的媒体）、
+``config/``（面板设置、登录态、日志）、``venv/``、``frontend/node_modules/`` 都不在
+代码包里，不会被覆盖 —— 所以「只用来跑、不用来改」的第二台电脑可以不装 git，照样点
+按钮更新。
 
 每一步失败都会立刻停下并返回非零退出码（GitHub Actions 的 CI 是独立的一层，
 这里只管把代码和构建产物换成最新）。
@@ -351,7 +352,7 @@ def update_code_via_archive() -> int:
     else:
         print("[i] 这个目录里没有 .git（多半是整体拷贝过来的副本），没法用 git pull", flush=True)
     print("[i] 没有 git 就没法检查本地改动：项目里的代码文件会被换成最新版。"
-          "data/、venv/、frontend/node_modules/ 不在代码包里，不会被覆盖。", flush=True)
+          "data/、config/、venv/、frontend/node_modules/ 不在代码包里，不会被覆盖。", flush=True)
 
     token = github_auth.load_for_use()
     if not token:

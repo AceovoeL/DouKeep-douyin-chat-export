@@ -26,8 +26,8 @@ MANIFEST_PATH = paths.EMOJI_MANIFEST
 #: 图片下载到这里（不进仓库，见 .gitignore 里的 assets/emoji/）
 EMOJI_DIR = paths.EMOJI_ASSET_DIR
 
-#: 自检对不上的记录写在这里（data/ 本来就不进仓库）
-LOG_PATH = os.path.join(paths.DATA_DIR, "emoji_pack.log")
+#: 自检对不上的记录写在这里（config/ 本来就不进仓库）
+LOG_PATH = paths.EMOJI_PACK_LOG
 
 #: 抖音的图片 CDN 对没有 UA / Referer 的请求会比较挑剔，带上更稳。
 _HEADERS = {

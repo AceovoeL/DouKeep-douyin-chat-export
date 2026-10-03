@@ -25,12 +25,10 @@ from extractor.im_media import collect_cenc_jobs
 from extractor.web_scraper import WebChatScraper
 from extractor.models import get_db
 from extractor.cenc import decrypt_cenc_mp4
+from common import paths
 
 
-VIDEOS_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data", "media", "videos",
-)
+VIDEOS_DIR = paths.VIDEOS_DIR
 
 BATCH_SIZE = 10
 BATCH_API_PATH = (

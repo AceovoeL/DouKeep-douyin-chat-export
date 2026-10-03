@@ -48,7 +48,7 @@ with open(_PANEL_HTML_PATH, encoding="utf-8") as _f:
     PANEL_HTML = _f.read()
 
 
-# ── Persistent config (data/panel_config.json) — implemented in common.config ──
+# ── Persistent config (config/panel_config.json) — implemented in common.config ──
 def _load_config():
     return _cfg.load_config()
 
@@ -81,7 +81,7 @@ def _decode_log_bytes(chunk: bytes) -> str:
 def _read_utf8_or_gbk(path: str) -> str:
     """读日志：优先 UTF-8，回退到旧的 Windows GBK/GB18030 日志。
 
-    判断编码时**按行**来，不是整份文件挑一种：data/server.log 是一直往后追加的，只要
+    判断编码时**按行**来，不是整份文件挑一种：config/logs/server.log 是一直往后追加的，只要
     这台机器上先后出现过两种编码的服务，同一个文件里就会一段 UTF-8、一段 GBK。原因是
     服务的输出变成什么编码取决于它是怎么起来的 —— start.ps1 /「启动服务（双击）.bat」/
     面板的自动重启助手都会带上 PYTHONUTF8=1（写 UTF-8），但照着 README 手敲
@@ -230,7 +230,7 @@ DISCOVER_LOG_PATH = paths.DISCOVER_LOG
 CONV_LIST_PATH = paths.CONVERSATIONS_LIST
 # 「关于 → 更新」的输出：拉取代码 / 装依赖 / 构建前端，与采集日志同一份格式，
 # 复用面板上的日志框。
-UPDATE_LOG_PATH = os.path.join(paths.DATA_DIR, "update.log")
+UPDATE_LOG_PATH = paths.UPDATE_LOG
 
 
 # ── Job errors: auto-pause + dialog queue + persistent corner notices ──
@@ -1296,9 +1296,8 @@ async def _run_backfill():
         from extractor.web_scraper import _save_emoji, _save_image
         from backend.database import get_db
 
-        media_root = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "media")
-        img_dir = os.path.join(media_root, "images")
-        emoji_dir = os.path.join(media_root, "emoji")
+        img_dir = paths.IMAGES_DIR
+        emoji_dir = paths.EMOJI_DIR
         os.makedirs(img_dir, exist_ok=True)
         os.makedirs(emoji_dir, exist_ok=True)
 
@@ -1357,11 +1356,13 @@ async def _run_backfill():
             if not await _wait_while_job_paused(_backfill_state):
                 stopped = True
                 break
-            paths = await loop.run_in_executor(
+            # 注意别把这个局部变量叫 paths：这个函数上面还要用模块级的 common.paths
+            # （img_dir/emoji_dir），一旦这里也叫 paths，上面那几句就变成读局部变量了。
+            materialized = await loop.run_in_executor(
                 None, lambda r=raw: materialize_bodies(list(iter_message_bodies(r))),
             )
-            _backfill_state["ok"] += len(paths)
-            _backfill_state["done"] += len(paths)
+            _backfill_state["ok"] += len(materialized)
+            _backfill_state["done"] += len(materialized)
 
         conn.close()
 
@@ -2036,7 +2037,7 @@ def _update_error_response(exc: Exception) -> JSONResponse:
 
 # ── 私有仓库的 GitHub 凭据（「关于」页里的只读 Token） ──
 #
-# Token 存在 data/github_token，接口只回「有没有、是谁」，从不回 Token 本身。
+# Token 存在 config/github_token，接口只回「有没有、是谁」，从不回 Token 本身。
 class _GithubTokenRequest(BaseModel):
     token: str = ""
 
@@ -2519,8 +2520,8 @@ _AUTO_UPDATE_BUSY_JOBS = (
 
 #: 自动更新出问题时的提示里统一带上这几份日志在哪儿（用户照着一看就知道卡在哪一步）。
 _UPDATE_LOG_HINT = (
-    "相关日志：data/update.log（更新过程）、data/restart.log（重启过程）、"
-    "data/server.log（服务输出），面板「日志」页也能直接看。"
+    "相关日志：config/logs/update.log（更新过程）、config/logs/restart.log（重启过程）、"
+    "config/logs/server.log（服务输出），面板「日志」页也能直接看。"
 )
 
 
@@ -2630,7 +2631,7 @@ async def _handle_new_version(result: dict) -> dict | None:
         "",
         "正在后台拉代码、装依赖、构建前端，"
         + ("完成后会自动重启服务。" if started["auto_restart"] else "完成后需要手动重启服务。"),
-        "过程中的日志：data/update.log；出问题时面板也会弹提示。",
+        "过程中的日志：config/logs/update.log；出问题时面板也会弹提示。",
     ]
     if not gate["dirty_checked"]:
         # 本机没装 git（或目录没有 git 记录）：脚本会用「下载代码包覆盖」换代码，
@@ -2767,13 +2768,13 @@ async def set_update_schedule(req: UpdateScheduleRequest):
 #: 助手脚本（重启流程全在它里面，见 tools/restart_server.py）
 _RESTART_SCRIPT = os.path.join(_version.REPO_ROOT, "tools", "restart_server.py")
 #: 重启过程的日志：助手自己的输出（只有它在写这个文件）
-RESTART_LOG_PATH = os.path.join(paths.DATA_DIR, "restart.log")
+RESTART_LOG_PATH = paths.RESTART_LOG
 #: 后端服务自己的输出（启动脚本把它重定向到这里，自动重启起来的新服务也写这里）
-SERVER_LOG_PATH = os.path.join(paths.DATA_DIR, "server.log")
+SERVER_LOG_PATH = paths.SERVER_LOG
 
 
 def _display_path(path: str) -> str:
-    """给面板显示的项目内相对路径（统一成正斜杠，Windows 上也显示成 data/server.log）。"""
+    """给面板显示的项目内相对路径（统一成正斜杠，Windows 上也显示成 config/logs/server.log）。"""
     try:
         return os.path.relpath(path, paths.REPO_ROOT).replace("\\", "/")
     except ValueError:                    # 跨盘符时 relpath 会抛，那就原样给
@@ -2795,7 +2796,7 @@ _RESTART_FORCE_EXIT_DELAY = 8.0
 # 弹窗倒计时 2 分钟（PAUSE_AUTO_RESUME_SECONDS），时间到就收进右下角常驻，直到用户
 # 自己点「×」才消失。
 #: 更新完成记录（读完即删，所以只会弹一次）
-UPDATE_DONE_PATH = os.path.join(paths.DATA_DIR, "update-done.json")
+UPDATE_DONE_PATH = paths.UPDATE_DONE_PATH
 
 
 def _update_done_payload(to_version: str) -> dict:
@@ -3061,7 +3062,7 @@ async def _finish_update_after_success(to_version: str, restart: dict | None,
                 f"**已更新到**：v{to_version}",
                 "",
                 "服务正在自动重启，重启完成后控制面板会自动弹出这次的更新内容。",
-                "如果几分钟后面板还是打不开：看一眼 data/restart.log 与 data/server.log，"
+                "如果几分钟后面板还是打不开：看一眼 config/logs/restart.log 与 config/logs/server.log，"
                 "或重新运行 start.ps1 / start.sh。",
             ]),
         )
@@ -3438,10 +3439,10 @@ async def logs_read(name: str, lines: int = 300):
 
     目前有两份，用名字选：
 
-    * ``server``  —— 后端服务自己的输出（``data/server.log``）。不管服务是怎么起来的
+    * ``server``  —— 后端服务自己的输出（``config/logs/server.log``）。不管服务是怎么起来的
       （双击「启动服务（双击）.bat」在后台起、``start.ps1`` 起，还是自动更新后由
       tools/restart_server.py 重新拉起），输出都写在这一份里；
-    * ``restart`` —— 重启过程本身的记录（``data/restart.log``）：什么时候等旧服务
+    * ``restart`` —— 重启过程本身的记录（``config/logs/restart.log``）：什么时候等旧服务
       退出、端口多久空出来、新服务起没起来，都写在这份里。
 
     文件不存在是**正常情况**（还没触发过自动重启、或者日志被清理掉了），所以照样
@@ -3503,11 +3504,11 @@ def _reveal_command(target: str | None, folder: str, *, platform: str = "") -> l
 async def logs_open_folder(name: str = ""):
     """在文件管理器里打开日志文件夹（认出是哪份日志就顺手选中它）。
 
-    面板可能被远程打开，所以这里**只**打开项目里的 data 目录、名字只认白名单：
+    面板可能被远程打开，所以这里**只**打开放日志的 config/logs 目录、名字只认白名单：
     绝不接受调用方给的路径。命令发出去就算成功（发不出去才报错）—— Windows 上
     explorer 即使成功也返回退出码 1，看退出码会把好事当坏事。
     """
-    folder = paths.DATA_DIR
+    folder = paths.LOG_DIR
     try:
         os.makedirs(folder, exist_ok=True)
     except OSError as exc:
@@ -3599,7 +3600,7 @@ async def stop_server():
 # 时没有任何进程在读它，起回来的服务读到的就是新的那一份产物。
 #
 # 和「更新完成后自动重启」共用同一套机制：同一个助手脚本、同一条发 Ctrl+C 的优雅退出
-# 路径、同一份 data/restart.log。区别只是多传一个 --build-frontend（构建输出也写进
+# 路径、同一份 config/logs/restart.log。区别只是多传一个 --build-frontend（构建输出也写进
 # 那份日志，所以面板「日志」页上能直接看到 npm 的报错）。
 #
 # 三处安全阀和更新那条路一致：

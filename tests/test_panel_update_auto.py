@@ -346,14 +346,14 @@ def test_auto_update_failure_shows_up_on_the_panel_and_in_the_notification(
 
     assert dialogs[0]["job"] == cp.JOB_UPDATE
     assert "自动更新失败" in dialogs[0]["message"]
-    assert "data/update.log" in dialogs[0]["detail"]
-    assert "data/restart.log" in dialogs[0]["detail"]
+    assert "config/logs/update.log" in dialogs[0]["detail"]
+    assert "config/logs/restart.log" in dialogs[0]["detail"]
     assert "日志" in dialogs[0]["detail"]
     title, desp = notifications[0]
     assert "自动更新没能完成" in title
     assert "自动更新失败" in desp
     assert "git pull 失败" in desp, "通知里要带上日志末尾，否则用户不知道错在哪"
-    assert "data/update.log" in desp
+    assert "config/logs/update.log" in desp
 
 
 def test_run_update_notifies_when_the_script_fails(monkeypatch, update_log):
@@ -475,7 +475,7 @@ def test_finish_update_notifies_before_handing_over_to_the_restart(monkeypatch, 
     title, desp = notifications[0]
     assert "已更新到 v1.3.2" in title
     assert "自动重启" in desp
-    assert "data/restart.log" in desp, "重启失败时用户要知道去哪里看日志"
+    assert "config/logs/restart.log" in desp, "重启失败时用户要知道去哪里看日志"
 
 
 def test_finish_update_stays_quiet_without_notify(monkeypatch, notifications):

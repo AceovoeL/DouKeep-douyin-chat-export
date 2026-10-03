@@ -118,7 +118,7 @@ def describe_request(method: str, path: str, query: str, status: int, elapsed_ms
 def force_utf8_output(streams=None) -> None:
     """把**重定向走的**标准输出固定成 UTF-8，别让日志文件里 UTF-8 和 GBK 混着。
 
-    面板「日志」页是按 UTF-8 读 ``data/server.log`` 的，这份文件越干净越好。用
+    面板「日志」页是按 UTF-8 读 ``config/logs/server.log`` 的，这份文件越干净越好。用
     start.ps1 /「启动服务（双击）.bat」/ 面板的自动重启助手起服务时，环境里已经带了
     ``PYTHONUTF8=1``（写出来就是 UTF-8）；但服务也可能是别的方式起的 —— 照着 README
     手敲 ``python -m uvicorn``、nssm、计划任务，或者旧版本的启动脚本 —— 那时 Windows

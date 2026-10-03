@@ -1,6 +1,6 @@
 """外观（主题/字体/尺寸）配置：默认值 + 校验，浏览器端与后端共用同一份规则。
 
-配置存在 ``data/panel_config.json`` 的 ``appearance`` 字段里。所有进入浏览器
+配置存在 ``config/panel_config.json`` 的 ``appearance`` 字段里。所有进入浏览器
 的值都必须先过 ``normalize_appearance()``：多余的字段丢掉、数字夹到安全范围、
 颜色必须是十六进制，手改或导入一份乱七八糟的 JSON 也绝不会把界面弄坏。
 

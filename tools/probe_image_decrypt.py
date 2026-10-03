@@ -10,6 +10,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from extractor.web_scraper import WebChatScraper
+from common import paths
 
 
 def fetch_with_referer(url):
@@ -22,7 +23,7 @@ def fetch_with_referer(url):
 
 
 async def main():
-    db = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "chat.db"))
+    db = sqlite3.connect(paths.DB_PATH)
     row = db.execute("SELECT msg_id, raw_data FROM messages WHERE msg_type=3 LIMIT 1").fetchone()
     data = json.loads(row[1])
     cj = json.loads(data["content_json"])

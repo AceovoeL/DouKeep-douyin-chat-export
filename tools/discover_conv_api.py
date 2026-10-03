@@ -13,8 +13,9 @@ from urllib.parse import urlparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from extractor.web_scraper import WebChatScraper
+from common import paths
 
-DUMP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "api_dumps")
+DUMP_DIR = paths.API_DUMP_DIR
 CONV_HINTS = ("conversation", "inbox", "recent", "session", "dialog", "participants", "get_by_", "get_msg", "message_list")
 
 

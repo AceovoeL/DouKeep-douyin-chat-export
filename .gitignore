@@ -1,4 +1,7 @@
+# 聊天记录（数据库、媒体、导出）
 data/
+# 配置、凭据、登录态与日志
+config/
 venv/
 .env
 __pycache__/

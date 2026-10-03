@@ -27,9 +27,9 @@
 日志分两份（故意的：两个进程往同一个文件里追加会互相覆盖——Windows 上「追加」是
 「先跳到末尾再写」，两边的定位会撞在一起）：
 
-* ``data/restart.log`` —— 本助手自己的过程日志（面板重定向它的输出到这里，npm 的
+* ``config/logs/restart.log`` —— 本助手自己的过程日志（面板重定向它的输出到这里，npm 的
   输出也走这里，因为它是本助手拉起来的子进程）；
-* ``data/server.log``  —— 被重新启动起来的新服务自己的输出（``--log`` 可以改）。
+* ``config/logs/server.log``  —— 被重新启动起来的新服务自己的输出（``--log`` 可以改）。
 
 一般不需要手敲这个脚本：面板「关于 → 更新」在跑完 ``tools/update.py`` 之后会自动
 调用它，面板「日志 → 重启服务」也会（多一个 ``--build-frontend``）。手动排查重启用：
@@ -50,12 +50,13 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from tools import update as update_tool  # noqa: E402  (必须在 sys.path 调整之后)
+from common import paths  # noqa: E402
 
 #: 新服务自己的输出写这里（只有新服务一个进程写，不会和谁抢文件）。
-#: 本助手自己的日志走 stdout/stderr：由面板重定向到 data/restart.log，手动运行时
+#: 本助手自己的日志走 stdout/stderr：由面板重定向到 config/logs/restart.log，手动运行时
 #: 直接打在终端上。两份分开是故意的 —— 两个进程往同一个文件里追加会互相覆盖
 #: （Windows 上「追加」是「先跳到末尾再写」，两边的定位会撞在一起）。
-DEFAULT_LOG = os.path.join(REPO_ROOT, "data", "server.log")
+DEFAULT_LOG = paths.SERVER_LOG
 PID_FILE = os.path.join(REPO_ROOT, ".server.pid")
 
 #: 起新服务用的 Windows 标志：不弹控制台窗口（CREATE_NO_WINDOW），并且单独一个进程组

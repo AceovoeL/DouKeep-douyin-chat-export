@@ -25,9 +25,11 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.message_modify import modify_from_raw, parse_modify  # noqa: E402
-from common.paths import DATA_DIR, DB_PATH  # noqa: E402
+from common import paths  # noqa: E402
+from common.paths import DB_PATH  # noqa: E402
 
-UNDO_PATH = os.path.join(DATA_DIR, "backfill_modify_undo.json")
+#: 回滚记录跟着数据库走（记的是被改写的那几行的原值）
+UNDO_PATH = paths.BACKFILL_MODIFY_UNDO
 
 
 def _load_raw(raw_data):

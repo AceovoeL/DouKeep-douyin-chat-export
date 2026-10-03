@@ -37,22 +37,23 @@ fi
 
 cd "$DIR"
 
-# 监听地址由面板「设置 → 局域网访问」决定（配置在 data/panel_config.json）：
+# 监听地址由面板「设置 → 局域网访问」决定（配置在 config/panel_config.json）：
 #   打开 = 监听 0.0.0.0（局域网里的设备也能连），关闭 = 只监听 127.0.0.1。
 # 读不到配置或读失败时一律退回「只监听本机」这个安全默认值。
-mkdir -p "$DIR/data"
+# data/ 只放聊天记录，config/ 放设置、登录态和日志。
+mkdir -p "$DIR/data" "$DIR/config/logs"
 LISTEN_HOST="127.0.0.1"
-if [ -f "$DIR/data/panel_config.json" ] && grep -Eq '"lan_access"[[:space:]]*:[[:space:]]*"?true"?' "$DIR/data/panel_config.json"; then
+if [ -f "$DIR/config/panel_config.json" ] && grep -Eq '"lan_access"[[:space:]]*:[[:space:]]*"?true"?' "$DIR/config/panel_config.json"; then
   LISTEN_HOST="0.0.0.0"
 fi
 
 # 启动后端（同时 serve 前端 dist）
-# 输出写进 data/server.log，和 Windows 那边（start.ps1 / 「启动服务（双击）.bat」）一致：
+# 输出写进 config/logs/server.log，和 Windows 那边（start.ps1 / 「启动服务（双击）.bat」）一致：
 # 面板左侧「日志」页读的就是这份文件，服务没有窗口时也能回头看它打了什么。
 PYTHONUTF8=1 PYTHONIOENCODING=utf-8 \
   nohup "$DIR/venv/bin/python3" -m uvicorn backend.main:app \
   --host "$LISTEN_HOST" --port 8000 \
-  >> "$DIR/data/server.log" 2>&1 &
+  >> "$DIR/config/logs/server.log" 2>&1 &
 
 echo $! > "$PID_FILE"
 sleep 1
@@ -63,11 +64,11 @@ if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   if [ "$LISTEN_HOST" = "0.0.0.0" ]; then
     echo "  已向局域网开放（监听 0.0.0.0）：同一个局域网里的设备可以用这台电脑的 IP 加端口访问"
   fi
-  echo "  服务输出: data/server.log（面板「日志」页也能直接看）"
+  echo "  服务输出: config/logs/server.log（面板「日志」页也能直接看）"
   echo "  停止服务: 面板「日志」页 →「停止程序」，或运行 ./stop.sh"
   open "http://127.0.0.1:8000"
 else
-  echo "✗ 启动失败，查看日志: $DIR/data/server.log"
+  echo "✗ 启动失败，查看日志: $DIR/config/logs/server.log"
   rm -f "$PID_FILE"
   exit 1
 fi

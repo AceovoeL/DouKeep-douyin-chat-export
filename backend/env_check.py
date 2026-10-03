@@ -242,16 +242,18 @@ def _check_project_dir() -> dict:
         except OSError:
             pass
     return _item("project_dir", "项目目录可写", True, writable,
-                 "可写（要创建 venv、node_modules、data 等）",
+                 "可写（要创建 venv、node_modules、data、config 等）",
                  "可写" if writable else "不可写", path=paths.REPO_ROOT,
                  current_en="writable" if writable else "read-only",
-                 detail="启动过程要在项目目录里创建 venv/、frontend/node_modules/、frontend/dist/ 和 data/",
-                 detail_en="The start-up creates venv/, frontend/node_modules/, frontend/dist/ and data/ inside the project folder",
+                 detail="启动过程要在项目目录里创建 venv/、frontend/node_modules/、frontend/dist/，"
+                        "以及存聊天记录的 data/ 和存配置与日志的 config/",
+                 detail_en="The start-up creates venv/, frontend/node_modules/, frontend/dist/, "
+                           "plus data/ (chat records) and config/ (settings, logs) inside the project folder",
                  hint="" if writable else "把项目放到「文档 / 桌面」这类个人目录下，"
                                           "不要放在 C:\\Program Files 或只读盘里",
                  hint_en="" if writable else "Keep the project in your own folders (Documents/Desktop), not in C:\\Program Files or on a read-only drive",
                  name_en="Project folder writable",
-                 requirement_en="writable (venv, node_modules, data live here)")
+                 requirement_en="writable (venv, node_modules, data, config live here)")
 
 
 def _check_disk() -> dict:

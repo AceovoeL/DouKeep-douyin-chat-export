@@ -6,9 +6,9 @@
 能力（Get-Command、.NET、注册表、TcpClient）来判断，检测完把结果写成一个
 JavaScript 文件给 start.html 读取：
 
-    data/env-report.js   ->   window.__DOUYIN_ENV_REPORT__ = {...};
+    config/env-report.js   ->   window.__DOUYIN_ENV_REPORT__ = {...};
 
-start.html 用 <script src="data/env-report.js"> 这种方式读它就绕开了浏览器
+start.html 用 <script src="config/env-report.js"> 这种方式读它就绕开了浏览器
 「file:// 页面不能读本地文件」的限制（file:// 页面允许加载同目录/子目录的脚本）。
 
 用法：
@@ -17,7 +17,7 @@ start.html 用 <script src="data/env-report.js"> 这种方式读它就绕开了�
 #>
 [CmdletBinding()]
 param(
-    # 报告文件（默认 data/env-report.js）
+    # 报告文件（默认 config/env-report.js）
     [string]$ReportPath = "",
     # 另外把紧凑 JSON 写一份到这个路径，给 bridge.ps1 解析
     # （不能靠管道回收：这个脚本 Write-Host 的人看输出也会进 stdout，会和 JSON 混在一起）
@@ -31,8 +31,8 @@ try { $ProgressPreference = 'SilentlyContinue' } catch { }
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 $ProjectDir = Split-Path -Parent $PSScriptRoot
-if (-not $ReportPath) { $ReportPath = Join-Path $ProjectDir 'data\env-report.js' }
-$LogPath = Join-Path $ProjectDir 'data\env-check.log'
+if (-not $ReportPath) { $ReportPath = Join-Path $ProjectDir 'config\env-report.js' }
+$LogPath = Join-Path $ProjectDir 'config\logs\env-check.log'
 
 # ── 结果收集 ──────────────────────────────────────────────────────────────
 $items = New-Object System.Collections.ArrayList
@@ -210,9 +210,9 @@ try {
 catch { $writable = $false }
 finally { if (Test-Path $probe) { Remove-Item $probe -Force -ErrorAction SilentlyContinue } }
 Add-Check -Id 'project_dir' -Name '项目目录可写' -Required $true -Ok $writable `
-    -Requirement '可写（要创建 venv、node_modules、data 等）' `
+    -Requirement '可写（要创建 venv、node_modules、data、config 等）' `
     -Current $(if ($writable) { '可写' } else { '不可写' }) -Path $ProjectDir `
-    -Detail '启动过程要在项目目录里创建 venv/、frontend/node_modules/、frontend/dist/ 和 data/' `
+    -Detail '启动过程要在项目目录里创建 venv/、frontend/node_modules/、frontend/dist/，以及存聊天记录的 data/ 和存配置与日志的 config/' `
     -Hint '把项目放到「文档 / 桌面」这类个人目录下（不要放在 C:\Program Files 或只读盘里），或右键属性取消只读'
 
 # ── 5. 磁盘可用空间 ───────────────────────────────────────────────────────
@@ -495,6 +495,8 @@ catch {
 
 # 追加一行日志，方便排查"点了检测但页面没反应"
 try {
+    $logDir = Split-Path -Parent $LogPath
+    if ($logDir -and -not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
     $line = "{0}  必需 {1}/{2}  可选 {3}/{4}  结论 {5}" -f `
         (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $requiredPassed, $requiredItems.Count, `
         $optionalPassed, $optionalItems.Count, $(if ($allRequiredOk) { '通过' } else { '未通过' })

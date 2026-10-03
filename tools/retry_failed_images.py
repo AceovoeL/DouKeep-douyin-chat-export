@@ -17,10 +17,11 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from extractor.web_scraper import WebChatScraper, _save_image
+from common import paths
 
 
 async def main():
-    db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "chat.db")
+    db_path = paths.DB_PATH
     db = sqlite3.connect(db_path)
 
     # Failed messages grouped by conv
@@ -51,7 +52,7 @@ async def main():
     await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
     await asyncio.sleep(5)
 
-    img_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "media", "images")
+    img_dir = paths.IMAGES_DIR
     os.makedirs(img_dir, exist_ok=True)
 
     total_ok = 0

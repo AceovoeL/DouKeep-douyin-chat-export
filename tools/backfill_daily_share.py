@@ -26,9 +26,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.message_kinds import daily_share_text, is_daily_share  # noqa: E402
-from common.paths import DATA_DIR, DB_PATH  # noqa: E402
+from common import paths  # noqa: E402
+from common.paths import DB_PATH  # noqa: E402
 
-UNDO_PATH = os.path.join(DATA_DIR, "backfill_daily_share_undo.json")
+#: 回滚记录跟着数据库走（记的是被改写的那几行的原值）
+UNDO_PATH = paths.BACKFILL_DAILY_SHARE_UNDO
 
 
 def _content_json(raw_data):

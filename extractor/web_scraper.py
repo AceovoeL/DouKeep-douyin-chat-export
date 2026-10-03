@@ -43,7 +43,8 @@ from extractor.voice_transcriber import (
 )
 
 CHAT_URL = "https://www.douyin.com/chat?isPopup=1"
-USER_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "browser_profile")
+#: 登录态（Chromium profile）—— 和面板、login.py 用同一个来源，别再各拼一份
+USER_DATA_DIR = paths.BROWSER_PROFILE
 
 # 刚打开私信页时，会话列表是前端异步渲染出来的：DOM 里先出现一部分，剩下的过几秒才补上。
 # 页面一打开就往下走（list_conversations / extract_all 直接开始滚动收集，或者采集时
@@ -419,7 +420,7 @@ class WebChatScraper:
         await asyncio.sleep(2)
 
         dom_info = await self._dump_dom_structure()
-        debug_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "debug")
+        debug_dir = paths.DEBUG_DIR
         os.makedirs(debug_dir, exist_ok=True)
         filepath = os.path.join(debug_dir, f"dom_structure_{int(time.time()*1000)}.json")
         with open(filepath, "w", encoding="utf-8") as f:
@@ -468,7 +469,7 @@ class WebChatScraper:
         if not conversations:
             print("[-] 未找到会话")
             # Save debug screenshot
-            debug_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "debug_no_conv.png")
+            debug_path = os.path.join(paths.DEBUG_DIR, "debug_no_conv.png")
             try:
                 await self.page.screenshot(path=debug_path)
                 print(f"[*] 调试截图已保存: {debug_path}")
@@ -754,7 +755,7 @@ class WebChatScraper:
 
     async def _download_voice_files(self, messages):
         """下载语音消息的音频文件到本地"""
-        voice_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "media", "voice")
+        voice_dir = paths.VOICE_DIR
         os.makedirs(voice_dir, exist_ok=True)
 
         voice_msgs = []
@@ -810,9 +811,8 @@ class WebChatScraper:
         """
         if not self.download_images:
             return
-        media_root = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "media")
-        img_dir = os.path.join(media_root, "images")
-        emoji_dir = os.path.join(media_root, "emoji")
+        img_dir = paths.IMAGES_DIR
+        emoji_dir = paths.EMOJI_DIR
         os.makedirs(img_dir, exist_ok=True)
         os.makedirs(emoji_dir, exist_ok=True)
 
@@ -1032,7 +1032,7 @@ class WebChatScraper:
         if not avatar_url or not avatar_url.startswith('http'):
             return
 
-        avatar_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "media", "avatars")
+        avatar_dir = paths.AVATARS_DIR
         os.makedirs(avatar_dir, exist_ok=True)
 
         ext = "jpg"

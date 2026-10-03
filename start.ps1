@@ -140,15 +140,19 @@ Write-Step "返回项目根目录"
 Set-Location $projectDir
 
 # ============ 启动后端服务 ============
+# data\ 只放聊天记录（数据库、下载的媒体），config\ 放设置、登录态和日志。
 $dataDir = Join-Path $projectDir "data"
-$serverLog = Join-Path $dataDir "server.log"
+$configDir = Join-Path $projectDir "config"
+$logDir = Join-Path $configDir "logs"
+$serverLog = Join-Path $logDir "server.log"
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-# 监听地址由面板「设置 → 局域网访问」决定（配置在 data\panel_config.json）：
+# 监听地址由面板「设置 → 局域网访问」决定（配置在 config\panel_config.json）：
 #   打开 = 监听 0.0.0.0（局域网里的设备也能连），关闭 = 只监听 127.0.0.1。
 # 这里只读文件、不引 JSON 解析（不同 PowerShell 版本上 ConvertFrom-Json 的严格程度不同），
 # 因此失败一律退回「只监听本机」这个安全默认值。
-$lanConfig = Join-Path $dataDir "panel_config.json"
+$lanConfig = Join-Path $configDir "panel_config.json"
 $listenHost = "127.0.0.1"
 if (Test-Path $lanConfig) {
     $lanText = Get-Content $lanConfig -Raw -ErrorAction SilentlyContinue
@@ -161,11 +165,11 @@ Write-Host "控制面板: http://127.0.0.1:8000/panel"
 if ($listenHost -eq "0.0.0.0") {
     Write-Host "已向局域网开放（监听 0.0.0.0）：同一个局域网里的设备可以用这台电脑的 IP 加端口访问" -ForegroundColor Yellow
 }
-Write-Host "服务输出: data\server.log（面板左侧「日志」页可以直接看）" -ForegroundColor Cyan
+Write-Host "服务输出: config\logs\server.log（面板左侧「日志」页可以直接看）" -ForegroundColor Cyan
 Write-Host "停止服务: 面板「日志」页 →「停止程序」（也可以在这个窗口里按 Ctrl+C）" -ForegroundColor Cyan
 Write-Host ""
 
-# 服务的输出写进 data\server.log，而不是只打在屏幕上：
+# 服务的输出写进 config\logs\server.log，而不是只打在屏幕上：
 #   · 用「启动服务（双击）.bat」启动时根本没有窗口，不落文件就等于什么都没留下；
 #   · 面板「日志」页读的正是这份文件（旁边还有「停止程序」按钮）。
 # 这里必须用 cmd 的重定向（不是 PowerShell 的 >）：PowerShell 会把输出转成 UTF-16
@@ -177,5 +181,5 @@ $env:PYTHONIOENCODING = "utf-8"
 $serverExitCode = $LASTEXITCODE
 
 Write-Host ""
-Write-Host "后端服务已退出（退出码 $serverExitCode），它的完整输出在: data\server.log" -ForegroundColor Yellow
+Write-Host "后端服务已退出（退出码 $serverExitCode），它的完整输出在: config\logs\server.log" -ForegroundColor Yellow
 exit $serverExitCode

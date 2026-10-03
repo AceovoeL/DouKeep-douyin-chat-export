@@ -383,6 +383,9 @@ app.include_router(chatlab_router)
 @app.on_event("startup")
 async def startup():
     from common.db import init_db
+    # 老版本把配置、日志、登录态都堆在 data/ 里；新版分到 config/。先搬一次
+    # （幂等，搬不动也不拦着启动），后面读配置才会读到用户原来那份。
+    paths.migrate_legacy_layout()
     init_db()
     config.ensure_api_token()
     await restore_schedule_on_startup()

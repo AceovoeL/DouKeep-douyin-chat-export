@@ -96,9 +96,9 @@ async def run():
             await scraper.run_discovery(duration=duration)
         elif args["mode"] == "list_conversations":
             convs = await scraper.list_conversations()
-            out_path = os.path.join(
-                os.path.dirname(__file__), "data", "conversations_list.json"
-            )
+            # 会话清单属于聊天数据本身，跟数据库一起放在 data/（路径见 common/paths.py）
+            from common import paths
+            out_path = paths.CONVERSATIONS_LIST
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             import json as _json
             import time as _time

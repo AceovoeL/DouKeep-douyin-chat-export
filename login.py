@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""打开本机浏览器扫码登录抖音，把登录态存进 data/browser_profile/。"""
+"""打开本机浏览器扫码登录抖音，把登录态存进 config/browser_profile/。"""
 import asyncio
 import os
+import sys
 
 from playwright.async_api import async_playwright
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROFILE_DIR = os.path.join(PROJECT_DIR, "data", "browser_profile")
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
+
+from common import paths  # noqa: E402  (必须在 sys.path 调整之后)
+
+PROFILE_DIR = paths.BROWSER_PROFILE
 DOUYIN_URL = "https://www.douyin.com/"
 
 

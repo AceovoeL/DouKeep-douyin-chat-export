@@ -2,7 +2,7 @@
 启动器（浏览器与 PowerShell 之间的桥）
 
 start.html 是浏览器页面，浏览器出于安全限制不能直接跑本地命令，所以由这个脚本来干
-活：检测环境、把结果写成 data/env-report.js、在需要时运行 start.ps1。页面通过下面两条
+活：检测环境、把结果写成 config/env-report.js、在需要时运行 start.ps1。页面通过下面两条
 路调用它：
 
   1. 首次运行：页面把命令复制到剪贴板，用户按 Win+R 粘贴回车（手动，但只需一次）；
@@ -10,8 +10,10 @@ start.html 是浏览器页面，浏览器出于安全限制不能直接跑本地
      系统根据注册表里的记录调用这个脚本（注册也由本脚本完成，写在 HKCU，不需要管理员）。
 
 启动前先看 8000 端口和正在运行的 start.ps1 进程，已经在跑就直接返回，只把状态写进
-data/launcher-state.js；start.html 读这个文件，看到「启动器正在启动」就只等结果，
+config/launcher-state.js；start.html 读这个文件，看到「启动器正在启动」就只等结果，
 自己不启动第二份 start.ps1。
+
+（2026-10-04 起：配置、状态文件与日志都从 data/ 挪到了 config/ —— data/ 只放聊天记录。）
 
 用法：
     powershell -ExecutionPolicy Bypass -File tools\bridge.ps1 -Action check
@@ -35,12 +37,12 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $ProtocolName = 'douyin-chat-export'
-$LogPath = Join-Path $ProjectDir 'data\env-check.log'
+$LogPath = Join-Path $ProjectDir 'config\logs\env-check.log'
 $StartScript = Join-Path $ProjectDir 'start.ps1'
 $StartHtml = Join-Path $ProjectDir 'start.html'
 # 启动状态文件（JSONP 形式，和 env-report.js 一样是给 start.html 用 <script src> 读的）。
 # 作用：记录「start.ps1 已经由启动器拉起来了」，避免 start.html 再启动一遍。
-$StatePath = Join-Path $ProjectDir 'data\launcher-state.js'
+$StatePath = Join-Path $ProjectDir 'config\launcher-state.js'
 
 function Write-Msg($text, $color = 'Gray') {
     Write-Host $text -ForegroundColor $color
@@ -185,7 +187,7 @@ function Start-Backend {
     $existing = Get-StartScriptProcess
     if ($existing) {
         Write-Msg "start.ps1 已经在运行（进程号 $($existing.ProcessId)），不重复启动" Green
-        Write-Msg "等它跑完即可，8000 端口能连上就表示就绪（服务输出在 data\server.log）" Gray
+        Write-Msg "等它跑完即可，8000 端口能连上就表示就绪（服务输出在 config\logs\server.log）" Gray
         Write-Log "start.ps1 已在运行（PID $($existing.ProcessId)），跳过启动"
         Save-LauncherState -State 'starting' -ProcessId $existing.ProcessId -Note 'start.ps1 已经在运行'
         return $true
@@ -202,7 +204,7 @@ function Start-Backend {
             -WindowStyle Normal -PassThru
         # 先记状态再打印，网页那边一读到就知道「启动器正在启动」，不必自己再启动一次
         Save-LauncherState -State 'starting' -ProcessId $proc.Id -Note '已由启动器拉起 start.ps1'
-        Write-Msg "已启动 start.ps1（建环境 / 装依赖 / 构建前端的进度在这里显示；服务的输出写进 data\server.log，面板「日志」页可以看）" Green
+        Write-Msg "已启动 start.ps1（建环境 / 装依赖 / 构建前端的进度在这里显示；服务的输出写进 config\logs\server.log，面板「日志」页可以看）" Green
         Write-Log "已启动 start.ps1（PID $($proc.Id)）"
         return $true
     }

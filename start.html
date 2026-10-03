@@ -9,15 +9,15 @@
     首次运行入口。
 
     浏览器出于安全限制，网页不能直接执行本地命令，所以这里的流程是：
-      1. 页面去读 data/env-report.js（检测脚本写出来的结果文件，用 <script src> 读，
+      1. 页面去读 config/env-report.js（检测脚本写出来的结果文件，用 <script src> 读，
          因为 file:// 页面允许加载同目录/子目录的脚本，fetch 本地文件则会被拦）；
       2. 检测本身由 tools/env_check.ps1 完成（纯 PowerShell，不需要 Python / Node）；
       3. 触发检测/启动有两条路：自定义协议 douyin-chat-export://（注册一次以后一键）
          和把命令复制到剪贴板让用户按 Win+R 粘贴回车（首次没有协议时用这条）；
       4. 必要条件全部通过后，启动器会运行 start.ps1（建虚拟环境 / 装依赖 / 构建前端
-         的进度实时输出；服务自己的输出写进 data/server.log，面板「日志」页可以直接看）；
+         的进度实时输出；服务自己的输出写进 config/logs/server.log，面板「日志」页可以直接看）；
          页面同时轮询 127.0.0.1:8000（后端就绪才会上线），就绪后自动跳控制面板。
-      5. 启动由启动器（tools/bridge.ps1）负责，它会把状态写进 data/launcher-state.js；
+      5. 启动由启动器（tools/bridge.ps1）负责，它会把状态写进 config/launcher-state.js；
          页面读到「启动器正在启动」就只等结果，不自己再启动一份 start.ps1。
   -->
   <style>
@@ -245,7 +245,7 @@
       </div>
       <div class="card">
         <b>③ 自动跳转</b>
-        <span>后端就绪（<code>127.0.0.1:8000</code> 能连上）后，页面自动打开控制面板；服务输出在 <code>data/server.log</code>，面板「日志」页可以看。</span>
+        <span>后端就绪（<code>127.0.0.1:8000</code> 能连上）后，页面自动打开控制面板；服务输出在 <code>config/logs/server.log</code>，面板「日志」页可以看。</span>
       </div>
     </div>
     <p class="lead" style="margin-top:26px">
@@ -290,7 +290,7 @@
         </ol>
         <div class="cmd" id="cmdText">…</div>
         <div class="guide-note" id="guideNote">
-          命令执行完会自动把结果写到 <code>data/env-report.js</code>，本页面读到后就会刷新出检测结果。
+          命令执行完会自动把结果写到 <code>config/env-report.js</code>，本页面读到后就会刷新出检测结果。
           这条命令只是个启动器：先检测环境，检测通过才启动后端服务。
         </div>
         <div style="margin-top:12px">
@@ -327,8 +327,8 @@
 
     /* ── 常量 ── */
     var PROTOCOL = 'douyin-chat-export';
-    var REPORT_SRC = 'data/env-report.js';           // 检测报告（JSONP 形式）
-    var LAUNCHER_SRC = 'data/launcher-state.js';     // 启动器状态（JSONP 形式）：谁在启动 start.ps1
+    var REPORT_SRC = 'config/env-report.js';         // 检测报告（JSONP 形式）
+    var LAUNCHER_SRC = 'config/launcher-state.js';   // 启动器状态（JSONP 形式）：谁在启动 start.ps1
     var API_READY = 'http://127.0.0.1:8000/api/auth/check';   // 公开端点，用来判断后端是否就绪
     var PANEL_URL = 'http://127.0.0.1:8000/panel';
     var REPORT_FRESH_MS = 10 * 60 * 1000;            // 报告超过 10 分钟就算旧结果
@@ -420,7 +420,7 @@
       } catch (e) { return false; }
     }
 
-    /* ── 读检测报告（JSONP：<script src="data/env-report.js?t=...">） ───── */
+    /* ── 读检测报告（JSONP：<script src="config/env-report.js?t=...">） ───── */
     function pollReport() {
       var script = document.createElement('script');
       script.charset = 'utf-8';
@@ -446,7 +446,7 @@
 
     /* ── 启动器状态（启动器 bridge.ps1 写的文件） ───────────────────────────
        启动器拉起 start.ps1 时（或者发现它已经在跑时）会写一份
-       data/launcher-state.js。页面读到「启动器正在启动」，就只等它，不自己再启动一份。 */
+       config/launcher-state.js。页面读到「启动器正在启动」，就只等它，不自己再启动一份。 */
     function pollLauncherState() {
       var script = document.createElement('script');
       script.charset = 'utf-8';
@@ -515,7 +515,7 @@
         ? (launcherBusy
             ? '启动器已经在启动后端服务了（start.ps1 只启动一次），<span class="spin"></span>正在等它就绪…'
             : '必要条件全部满足，可以启动后端服务了。' +
-              (state.phase === 'waiting' ? ' <span class="spin"></span>正在等待后端服务就绪（输出写进 data/server.log）…' : ''))
+              (state.phase === 'waiting' ? ' <span class="spin"></span>正在等待后端服务就绪（输出写进 config/logs/server.log）…' : ''))
         : '下面标红的条件必须先解决，处理完点「重新检测」。') +
         '<br><span style="color:var(--text3);font-size:12px">检测时间：' + (report.generated_at || '未知') +
         '（' + (report.source === 'powershell' ? 'PowerShell 检测器' : '后端检测') + '）' +

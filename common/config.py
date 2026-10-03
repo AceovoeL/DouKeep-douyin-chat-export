@@ -1,4 +1,4 @@
-"""Load/save the panel config (data/panel_config.json).
+"""Load/save the panel config (config/panel_config.json).
 
 Centralizes the atomic write + corrupt-file fallback that previously lived in
 `backend/control_panel.py` (`_load_config`/`_save_config`) and the password-hash

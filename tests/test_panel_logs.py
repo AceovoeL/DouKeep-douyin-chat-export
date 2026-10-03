@@ -1,9 +1,9 @@
 """控制面板「日志」页：接口 + 接线。
 
-后端服务把自己的输出写进 ``data/server.log``，重启过程本身写进 ``data/restart.log``；
-这一页要能看这两份文件，还要能一键打开日志目录。
+后端服务把自己的输出写进 ``config/logs/server.log``，重启过程本身写进
+``config/logs/restart.log``；这一页要能看这两份文件，还要能一键打开日志目录。
 
-测试不碰真实 data/：两份日志的路径都指到临时文件，「打开文件夹」也把要跑的
+测试不碰真实 config/ 与 data/：两份日志的路径都指到临时文件，「打开文件夹」也把要跑的
 命令记下来（不会真的弹出文件管理器）。
 """
 import os
@@ -48,10 +48,10 @@ def restart_log_path(tmp_path, monkeypatch):
 
 # ── 读日志 ──────────────────────────────────────────────────────────────────
 
-def test_real_log_paths_are_shown_as_data_paths():
-    """真机上这两份日志就在项目的 data/ 里，面板上要显示成 data/xxx.log 这种好认的样子。"""
-    assert cp._display_path(cp.SERVER_LOG_PATH) == "data/server.log"
-    assert cp._display_path(cp.RESTART_LOG_PATH) == "data/restart.log"
+def test_real_log_paths_are_shown_as_config_paths():
+    """真机上这两份日志就在项目的 config/logs/ 里，面板上要显示成 config/logs/xxx.log 这种好认的样子。"""
+    assert cp._display_path(cp.SERVER_LOG_PATH) == "config/logs/server.log"
+    assert cp._display_path(cp.RESTART_LOG_PATH) == "config/logs/restart.log"
 
 
 def test_missing_log_is_an_empty_state_not_an_error(client, log_path):
@@ -64,7 +64,7 @@ def test_missing_log_is_an_empty_state_not_an_error(client, log_path):
     assert body["exists"] is False
     assert body["size"] == 0
     assert body["modified_at"] is None
-    # 路径按临时文件的位置算（真机上是 data/server.log，见上一个用例）
+    # 路径按临时文件的位置算（真机上是 config/logs/server.log，见上一个用例）
     assert body["path"] == cp._display_path(str(log_path))
     assert body["name"] == "server"
 
@@ -128,7 +128,7 @@ def test_mixed_encoding_log_shows_every_line_correctly(client, log_path):
 
 
 def test_restart_log_is_a_second_file(client, restart_log_path):
-    """面板上的「重启过程」看的是另一份文件（data/restart.log）。"""
+    """面板上的「重启过程」看的是另一份文件（config/logs/restart.log）。"""
     restart_log_path.write_bytes("开始重启后端服务\n旧服务进程 1234 已退出\n".encode("utf-8"))
 
     body = client.get("/panel/api/logs/restart").json()
@@ -170,11 +170,11 @@ def _record_popen(monkeypatch):
 
 
 @pytest.fixture
-def panel_data_dir(tmp_path, monkeypatch):
-    """把日志目录也指到临时目录：不在仓库里建 data/，也不去开真文件夹。"""
-    folder = tmp_path / "data"
-    folder.mkdir()
-    monkeypatch.setattr(cp.paths, "DATA_DIR", str(folder))
+def panel_log_dir(tmp_path, monkeypatch):
+    """把日志目录也指到临时目录：不在仓库里建 config/logs，也不去开真文件夹。"""
+    folder = tmp_path / "config" / "logs"
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(cp.paths, "LOG_DIR", str(folder))
     return folder
 
 
@@ -197,7 +197,7 @@ def test_reveal_command_per_platform(tmp_path, platform, expected_head):
     assert folder in " ".join(without_file)
 
 
-def test_open_folder_runs_the_reveal_command(client, log_path, panel_data_dir, monkeypatch):
+def test_open_folder_runs_the_reveal_command(client, log_path, panel_log_dir, monkeypatch):
     log_path.write_bytes("服务日志\n".encode("utf-8"))
     calls = _record_popen(monkeypatch)
 
@@ -206,23 +206,23 @@ def test_open_folder_runs_the_reveal_command(client, log_path, panel_data_dir, m
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    assert body["folder"] == cp._display_path(str(panel_data_dir))
-    assert calls == [cp._reveal_command(str(log_path), str(panel_data_dir))]
+    assert body["folder"] == cp._display_path(str(panel_log_dir))
+    assert calls == [cp._reveal_command(str(log_path), str(panel_log_dir))]
 
 
 def test_open_folder_with_a_missing_file_still_opens_the_folder(client, log_path,
-                                                                panel_data_dir, monkeypatch):
+                                                                panel_log_dir, monkeypatch):
     """日志还没生成也要能打开目录（这是最常见的用法：先去看看有没有日志）。"""
     calls = _record_popen(monkeypatch)          # log_path 故意不创建
 
     response = client.post("/panel/api/logs/open-folder?name=server")
 
     assert response.status_code == 200
-    assert calls == [cp._reveal_command(None, str(panel_data_dir))]
+    assert calls == [cp._reveal_command(None, str(panel_log_dir))]
 
 
 def test_open_folder_never_takes_a_path_from_the_caller(client, log_path,
-                                                       panel_data_dir, monkeypatch):
+                                                       panel_log_dir, monkeypatch):
     """名字只当白名单用：传个路径进来也不能出现在命令里（面板可能被远程打开）。"""
     calls = _record_popen(monkeypatch)
     evil = "../../etc"
@@ -231,10 +231,10 @@ def test_open_folder_never_takes_a_path_from_the_caller(client, log_path,
 
     assert response.status_code == 200
     assert calls and all(evil not in " ".join(command) for command in calls)
-    assert calls == [cp._reveal_command(None, str(panel_data_dir))]
+    assert calls == [cp._reveal_command(None, str(panel_log_dir))]
 
 
-def test_open_folder_reports_a_failure(client, panel_data_dir, monkeypatch):
+def test_open_folder_reports_a_failure(client, panel_log_dir, monkeypatch):
     """文件管理器起不来（例如 Linux 上没有 xdg-open）时要说清楚，不能装作成功。"""
     def _boom(command, **kwargs):
         raise OSError("no such file manager")

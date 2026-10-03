@@ -1,15 +1,17 @@
-"""隐藏启动（根目录的「启动服务（双击）.bat」）+ 服务输出写进 data/server.log。
+"""隐藏启动（根目录的「启动服务（双击）.bat」）+ 服务输出写进 config/logs/server.log。
 
 约定（三个文件一起守住）：
 
 * ``start.ps1``（Windows）和 ``start.sh``（macOS / Linux）都把服务输出写进
-  ``data/server.log``，所以「日志」页不管服务是怎么起来的都有内容；
+  ``config/logs/server.log``，所以「日志」页不管服务是怎么起来的都有内容；
 * Windows 上必须用 **cmd 的重定向**：PowerShell 的 ``>`` 会把输出转成 UTF-16 写文件，
   面板按 UTF-8 读就成了乱码，而且会缓冲（日志半天不刷新）。用 ``>>`` 追加，服务重启
   几次之后还能翻到前面的记录；
 * ``「启动服务（双击）.bat」`` 负责「隐藏启动」和「已经在跑就只开面板」，启动过程
-  （pip / npm 的报错）单独写 ``data/launcher.log``，不和服务的日志抢同一个文件 ——
+  （pip / npm 的报错）单独写 ``config/logs/launcher.log``，不和服务的日志抢同一个文件 ——
   两个进程同时追加一个文件，Windows 上后一个会直接打不开。
+
+（2026-10-04 起日志从 ``data/`` 挪到 ``config/logs/``：data/ 只放聊天记录。）
 
 这一层是脚本文件里的约定，跑不了单元测试，所以按项目的惯例把跨文件契约、编码和
 换行钉住（bat 丢了 GBK/CRLF 会在中文 Windows 上乱码或让 ``goto`` 失效）。
@@ -27,9 +29,9 @@ START_SH = REPO_ROOT / "start.sh"
 README = REPO_ROOT / "README.md"
 
 #: 服务输出落在这里，也是面板「日志」页读的那一份
-SERVER_LOG = "data/server.log"
+SERVER_LOG = "config/logs/server.log"
 #: 启动过程（pip / npm / 建虚拟环境）落在 bat 自己这份里
-LAUNCHER_LOG = "data\\launcher.log"
+LAUNCHER_LOG = "config\\logs\\launcher.log"
 
 
 def _bat_text() -> str:
@@ -92,15 +94,15 @@ def test_the_bat_opens_the_panel_when_the_service_is_ready():
     assert "if(Test-Path $log){ Start-Process $log }" in text
 
 
-# ── start.ps1：服务的输出落进 data/server.log ─────────────────────────────
+# ── start.ps1：服务的输出落进 config/logs/server.log ──────────────────────
 
 def test_start_ps1_redirects_the_service_output_through_cmd():
     text = START_PS1.read_text(encoding="utf-8")
 
     assert "& cmd.exe /c " in text, "要用 cmd 的重定向（PowerShell 的 > 会写成 UTF-16）"
     assert "-m uvicorn backend.main:app" in text
-    assert '>> `"$serverLog`" 2>&1' in text, "服务输出要追加到 data/server.log"
-    assert 'Join-Path $dataDir "server.log"' in text, "日志路径跟项目目录走，不写死"
+    assert '>> `"$serverLog`" 2>&1' in text, "服务输出要追加到 config/logs/server.log"
+    assert 'Join-Path $logDir "server.log"' in text, "日志路径跟项目目录走，不写死"
     assert '`"$venvPython`"' in text, "用 venv 里的 python 起服务"
 
 
@@ -124,7 +126,7 @@ def test_start_ps1_does_not_use_powershell_redirection_or_tee():
 def test_start_ps1_tells_people_where_the_log_is():
     text = START_PS1.read_text(encoding="utf-8")
 
-    assert "data\\server.log" in text
+    assert "config\\logs\\server.log" in text
     assert "停止程序" in text, "顺带告诉他们怎么停（面板上的那个按钮）"
 
 
@@ -133,18 +135,18 @@ def test_start_ps1_tells_people_where_the_log_is():
 def test_start_sh_writes_the_same_log_file():
     text = START_SH.read_text(encoding="utf-8")
 
-    assert 'mkdir -p "$DIR/data"' in text
-    assert '>> "$DIR/data/server.log" 2>&1' in text
-    assert ".server.log" not in text, "日志要落在 data/server.log，不是根目录"
+    assert 'mkdir -p "$DIR/data" "$DIR/config/logs"' in text
+    assert '>> "$DIR/config/logs/server.log" 2>&1' in text
+    assert ".server.log" not in text, "日志要落在 config/logs/server.log，不是根目录"
 
 
 # ── 三份东西必须指向同一个文件 ────────────────────────────────────────────
 
 def test_the_panel_the_scripts_and_the_bat_agree_on_the_log_file():
     assert cp._display_path(cp.SERVER_LOG_PATH) == SERVER_LOG
-    assert 'Join-Path $dataDir "server.log"' in START_PS1.read_text(encoding="utf-8")
-    assert '"$DIR/data/server.log"' in START_SH.read_text(encoding="utf-8")
-    assert "data\\server.log" in _bat_text()
+    assert 'Join-Path $logDir "server.log"' in START_PS1.read_text(encoding="utf-8")
+    assert '"$DIR/config/logs/server.log"' in START_SH.read_text(encoding="utf-8")
+    assert "config\\logs\\server.log" in _bat_text()
 
 
 def test_readme_tells_people_about_the_hidden_launcher():

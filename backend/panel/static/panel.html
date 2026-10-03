@@ -1955,7 +1955,7 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
             <span data-i18n="aboutTokenTitle">私有仓库凭据</span>
             <span class="status status-idle" id="abTokenBadge" data-i18n="aboutTokenNotSet">未设置</span>
           </div>
-          <div class="ab-token-note" data-i18n="aboutTokenWhy">私有仓库需要只读 Token 才能检测更新。它只存在本机 data/github_token（已被 .gitignore 排除），任何接口都不会返回它。</div>
+          <div class="ab-token-note" data-i18n="aboutTokenWhy">私有仓库需要只读 Token 才能检测更新。它只存在本机 config/github_token（已被 .gitignore 排除），任何接口都不会返回它。</div>
           <div class="ab-token-row">
             <input type="password" id="abTokenInput" data-i18n-placeholder="aboutTokenPlaceholder" placeholder="github_pat_… 或 ghp_…" autocomplete="off" spellcheck="false" />
             <button class="btn btn-primary btn-sm" id="abTokenSaveBtn" onclick="saveGithubToken()" data-i18n="aboutTokenSave">保存并验证</button>
@@ -2426,15 +2426,15 @@ const T = {
     logsTitle: '日志文件',
     logsKindServer: '后端服务',
     logsKindRestart: '重启过程',
-    logsNoteServer: '后端服务输出（data/server.log），采集与更新的过程都写在这里。',
-    logsNoteRestart: '重启过程记录（data/restart.log）：等旧服务退出、端口释放、新服务是否起来。',
+    logsNoteServer: '后端服务输出（config/logs/server.log），采集与更新的过程都写在这里。',
+    logsNoteRestart: '重启过程记录（config/logs/restart.log）：等旧服务退出、端口释放、新服务是否起来。',
     logsRefresh: '刷新',
     logsAutoRefresh: '自动刷新（每 3 秒）',
     logsOpenFolder: '打开日志文件夹',
     logsOpenFolderDone: (path) => `已打开 ${path} 文件夹`,
     logsOpenFolderFailed: (why) => `打不开文件管理器：${why}`,
-    logsEmptyServer: '还没有 data/server.log：服务起来之后才会写这份日志。刚启动的话等几秒再点「刷新」。',
-    logsEmptyRestart: '还没有 data/restart.log：面板自动重启服务时才会写这份日志（手动跑 tools/restart_server.py 也算）。',
+    logsEmptyServer: '还没有 config/logs/server.log：服务起来之后才会写这份日志。刚启动的话等几秒再点「刷新」。',
+    logsEmptyRestart: '还没有 config/logs/restart.log：面板自动重启服务时才会写这份日志（手动跑 tools/restart_server.py 也算）。',
     logsMeta: (size, time) => `${size} · 更新于 ${time}`,
     logsLoadFailed: '读不到这份日志，请稍后点「刷新」重试。',
     logsRestart: '重启服务',
@@ -2442,8 +2442,8 @@ const T = {
     logsRestartConfirm: '顺序：停后端 → 重新构建前端（npm run build）→ 再启动。构建期间服务是断的（几十秒到几分钟），完成后本页自动刷新。正在跑的任务会被中断。',
     logsRestartConfirmOk: '重启',
     logsRestartPending: (s) => `正在重启：停服务 → 构建前端 → 启动，页面会自己刷新…（已等 ${s} 秒）`,
-    logsRestartStuck: '服务好像没有停下来（还连得上），这次重启可能没开始。可以查看 data/restart.log，或手动重启一次服务。',
-    logsRestartTimeout: '服务一直没回来。请看 data/restart.log（重启过程与构建报错）和 data/server.log（新服务输出），或手动运行 start.ps1 / start.sh。',
+    logsRestartStuck: '服务好像没有停下来（还连得上），这次重启可能没开始。可以查看 config/logs/restart.log，或手动重启一次服务。',
+    logsRestartTimeout: '服务一直没回来。请看 config/logs/restart.log（重启过程与构建报错）和 config/logs/server.log（新服务输出），或手动运行 start.ps1 / start.sh。',
     logsRestartDone: '服务已重启完成（前端也是最新构建的）。',
     logsRestartFailed: (why) => `没能开始重启：${why}`,
     logsRestartImportFailed: (why) => `新代码没通过启动自检，服务没有停：${why}`,
@@ -2490,7 +2490,7 @@ const T = {
     aboutUpdateRestarting: '更新完成，正在自动重启服务…',
     aboutUpdateRestartWait: (s) => `服务正在重启，页面会自己刷新…（已等 ${s} 秒）`,
     aboutUpdateRestartDone: (v) => `已更新到 v${v}，服务已自动重启完成。`,
-    aboutUpdateRestartTimeout: '服务还没起来：请看 data/restart.log 与 data/server.log，或手动重启一次后端服务。',
+    aboutUpdateRestartTimeout: '服务还没起来：请看 config/logs/restart.log 与 config/logs/server.log，或手动重启一次后端服务。',
     aboutUpdateStale: (v) => `服务已经恢复，但版本还是 v${v}：这次没能自动重启，请手动重启一次。`,
     aboutUpdateLater: '稍后再说',
     aboutUpdateNow: '立即更新',
@@ -2501,7 +2501,7 @@ const T = {
     aboutTokenTitle: '私有仓库凭据',
     aboutTokenNotSet: '未设置',
     aboutTokenSet: '已设置',
-    aboutTokenWhy: '私有仓库需要只读 Token 才能检测更新。它只存在本机 data/github_token（已被 .gitignore 排除），任何接口都不会返回它。',
+    aboutTokenWhy: '私有仓库需要只读 Token 才能检测更新。它只存在本机 config/github_token（已被 .gitignore 排除），任何接口都不会返回它。',
     aboutTokenPlaceholder: 'github_pat_… 或 ghp_…',
     aboutTokenReplace: '粘贴新 Token 可替换现有凭据',
     aboutTokenSave: '保存并验证',
@@ -2896,15 +2896,15 @@ const T = {
     logsTitle: 'Log files',
     logsKindServer: 'Service',
     logsKindRestart: 'Restart',
-    logsNoteServer: 'Backend service output (data/server.log), including scraping and update runs.',
-    logsNoteRestart: 'Restart record (data/restart.log): waiting for the old service, the port coming free, and whether the new service started.',
+    logsNoteServer: 'Backend service output (config/logs/server.log), including scraping and update runs.',
+    logsNoteRestart: 'Restart record (config/logs/restart.log): waiting for the old service, the port coming free, and whether the new service started.',
     logsRefresh: 'Refresh',
     logsAutoRefresh: 'Auto refresh (every 3s)',
     logsOpenFolder: 'Open log folder',
     logsOpenFolderDone: (path) => `Opened the ${path} folder`,
     logsOpenFolderFailed: (why) => `Could not open the file manager: ${why}`,
-    logsEmptyServer: 'No data/server.log yet — the file is written once the service is running. If you just started it, wait a few seconds and press "Refresh".',
-    logsEmptyRestart: 'No data/restart.log yet — the panel writes it when it restarts the service (a manual tools/restart_server.py run counts too).',
+    logsEmptyServer: 'No config/logs/server.log yet — the file is written once the service is running. If you just started it, wait a few seconds and press "Refresh".',
+    logsEmptyRestart: 'No config/logs/restart.log yet — the panel writes it when it restarts the service (a manual tools/restart_server.py run counts too).',
     logsMeta: (size, time) => `${size} · updated ${time}`,
     logsLoadFailed: 'Could not read this log. Press "Refresh" to try again.',
     logsRestart: 'Restart the service',
@@ -2912,8 +2912,8 @@ const T = {
     logsRestartConfirm: 'Order: stop the backend → rebuild the frontend (npm run build) → start it again. The service is down while building (tens of seconds to a few minutes); this page refreshes itself when it is back. Running jobs are interrupted.',
     logsRestartConfirmOk: 'Restart',
     logsRestartPending: (s) => `Restarting: stopping the service → rebuilding the frontend → starting it again; this page refreshes itself… (${s}s so far)`,
-    logsRestartStuck: 'The service does not seem to have stopped (it still answers), so this restart may never have started. Check data/restart.log or restart the service by hand.',
-    logsRestartTimeout: 'The service never came back. Check data/restart.log (restart steps and build errors) and data/server.log (output of the new service), or run start.ps1 / start.sh by hand.',
+    logsRestartStuck: 'The service does not seem to have stopped (it still answers), so this restart may never have started. Check config/logs/restart.log or restart the service by hand.',
+    logsRestartTimeout: 'The service never came back. Check config/logs/restart.log (restart steps and build errors) and config/logs/server.log (output of the new service), or run start.ps1 / start.sh by hand.',
     logsRestartDone: 'The service has restarted (with a freshly built frontend).',
     logsRestartFailed: (why) => `Could not start the restart: ${why}`,
     logsRestartImportFailed: (why) => `The new code failed the start-up self-check, so the service was left running: ${why}`,
@@ -2960,7 +2960,7 @@ const T = {
     aboutUpdateRestarting: 'Update finished — restarting the service automatically…',
     aboutUpdateRestartWait: (s) => `The service is restarting and the page will refresh itself… (${s}s so far)`,
     aboutUpdateRestartDone: (v) => `Updated to v${v}; the service restarted automatically.`,
-    aboutUpdateRestartTimeout: 'The service has not come back. Check data/restart.log and data/server.log, or restart the backend by hand.',
+    aboutUpdateRestartTimeout: 'The service has not come back. Check config/logs/restart.log and config/logs/server.log, or restart the backend by hand.',
     aboutUpdateStale: (v) => `The service is back but still on v${v}: the automatic restart did not take effect — please restart it once by hand.`,
     aboutUpdateLater: 'Later',
     aboutUpdateNow: 'Update now',
@@ -2971,7 +2971,7 @@ const T = {
     aboutTokenTitle: 'Private repo credential',
     aboutTokenNotSet: 'Not set',
     aboutTokenSet: 'Configured',
-    aboutTokenWhy: 'A private repository needs a read-only token to check for updates. It is stored on this machine only (data/github_token, already git-ignored) and is never returned by any API.',
+    aboutTokenWhy: 'A private repository needs a read-only token to check for updates. It is stored on this machine only (config/github_token, already git-ignored) and is never returned by any API.',
     aboutTokenPlaceholder: 'github_pat_… or ghp_…',
     aboutTokenReplace: 'Paste a new token to replace the saved one',
     aboutTokenSave: 'Save & verify',
@@ -6593,7 +6593,7 @@ function forceUpdate() {
 }
 
 /* ── 私有仓库凭据 ──
-   Token 由后端保存到 data/github_token；接口只回「有没有、是谁」，
+   Token 由后端保存到 config/github_token；接口只回「有没有、是谁」，
    前端也从不回显 Token 本身。 */
 async function loadGithubTokenStatus() {
   try {
@@ -6796,17 +6796,17 @@ setInterval(() => {
 }, 4000);
 
 
-/* ── 日志页：两份日志（后端服务 data/server.log / 重启过程 data/restart.log） ─
-   后端服务把自己的输出写进 data/server.log；重启过程本身（等旧服务退出、端口空出来、
-   新服务起没起来、前端构建的结果）写进 data/restart.log。
+/* ── 日志页：两份日志（后端服务 config/logs/server.log / 重启过程 config/logs/restart.log） ─
+   后端服务把自己的输出写进 config/logs/server.log；重启过程本身（等旧服务退出、端口空出来、
+   新服务起没起来、前端构建的结果）写进 config/logs/restart.log。
    这一页把这两份都显示出来，顺带告诉用户在哪儿、多大、什么时候更新过，并能一键
    在文件管理器里打开日志目录。
    还能在这里「重启服务」：停掉后端 → 重新构建前端 → 再把后端拉起来（顺序由后端和
    助手脚本保证，见 control_panel.restart_server 与 tools/restart_server.py）。
    只有停在这一页、且勾着「自动刷新」时才去取，别的页面上不会有额外请求。 */
 const LOG_KINDS = {
-  server: { path: 'data/server.log', note: 'logsNoteServer', empty: 'logsEmptyServer' },
-  restart: { path: 'data/restart.log', note: 'logsNoteRestart', empty: 'logsEmptyRestart' },
+  server: { path: 'config/logs/server.log', note: 'logsNoteServer', empty: 'logsEmptyServer' },
+  restart: { path: 'config/logs/restart.log', note: 'logsNoteRestart', empty: 'logsEmptyRestart' },
 };
 //: 「重启服务」这件事要跨过一次页面刷新（刷新之后才知道是它把页面刷回来的）
 const LOGS_RESTART_KEY = 'panel-logs-restart';
@@ -6967,7 +6967,7 @@ async function openLogFolder() {
                           { method: 'POST' });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || d.ok === false) throw new Error(d.error || ('http ' + r.status));
-    logsFolderNotice = { key: 'logsOpenFolderDone', args: [d.folder || 'data'] };
+    logsFolderNotice = { key: 'logsOpenFolderDone', args: [d.folder || 'config/logs'] };
   } catch (err) {
     logsFolderNotice = { key: 'logsOpenFolderFailed', args: [String(err.message || err)] };
   } finally {
