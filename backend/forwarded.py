@@ -26,6 +26,8 @@ def _array(value):
 
 
 from common.message_kinds import is_view_once
+from common.card_icons import EMOJI_AWE_TYPES as _EMOJI_AWE_TYPES
+from common.card_icons import MUSIC_CARD_AWE_TYPE
 
 # Share-card aweTypes used by the main scraper / preview UI. 800 is the older
 # video share; 11054+ is the current web video/photo share; 10500 is a quoted
@@ -86,10 +88,13 @@ def _inline_row(body, descriptor, preview, parent_id):
     msg_type = 1
     content = cj.get("text") or cj.get("content_title") or ""
     media_url = None
-    if awe in {"500", "501", "507", "508", "510", "514", "516"}:
+    if awe in _EMOJI_AWE_TYPES:
         msg_type, content = 2, cj.get("display_name") or "[表情]"
         urls = as_object(cj.get("url")).get("url_list")
         media_url = urls[0] if isinstance(urls, list) and urls else None
+    elif awe == str(MUSIC_CARD_AWE_TYPE):
+        # 豆包分享卡：转发记录里当卡片画（前端 getMusicCard），正文用标题。
+        msg_type, content = 1, cj.get("title") or cj.get("push_detail") or "[分享视频]"
     elif awe in {"2702", "2703", "2704"}:
         msg_type, content = 3, "[图片]"
     elif as_object(cj.get("video")).get("vid"):

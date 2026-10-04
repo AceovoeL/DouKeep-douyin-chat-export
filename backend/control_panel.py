@@ -1342,7 +1342,9 @@ async def _run_backfill():
         _backfill_state["message"] = f"待下载 {len(rows)} 条"
 
         loop = asyncio.get_event_loop()
+        handled: set[str] = set()
         for msg_id, msg_type, url, raw in rows:
+            handled.add(msg_id)
             if not await _wait_while_job_paused(_backfill_state):
                 stopped = True
                 break
@@ -1380,20 +1382,53 @@ async def _run_backfill():
             _backfill_state["done"] += 1
 
         from extractor.im_media import iter_message_bodies, materialize_bodies
-        for (raw,) in conn.execute(
+
+        # 合并转发里的内嵌媒体：选行 + 解密都在工作线程里做（sqlite 连接所在线程，
+        # 主线程碰它就会报 "SQLite objects created in a thread can only be used in
+        # that same thread"）。这里只把结果行数带回来。
+        def _materialize_forward_media(chunk):
+            done = 0
+            for (raw,) in chunk:
+                done += len(materialize_bodies(list(iter_message_bodies(raw))))
+            return done
+
+        forward_rows = list(conn.execute(
             "SELECT raw_data FROM messages WHERE raw_data LIKE '%aweType%13600%' "
             "OR raw_data LIKE '%forwarded_bodies%'"
-        ):
+        ))
+        for start in range(0, len(forward_rows), 25):
             if not await _wait_while_job_paused(_backfill_state):
                 stopped = True
                 break
-            # 注意别把这个局部变量叫 paths：这个函数上面还要用模块级的 common.paths
-            # （img_dir/emoji_dir），一旦这里也叫 paths，上面那几句就变成读局部变量了。
+            chunk = forward_rows[start:start + 25]
+            # 解密在工作线程里做（sqlite 连接也在那边，主线程碰它会被拒绝）
             materialized = await loop.run_in_executor(
-                None, lambda r=raw: materialize_bodies(list(iter_message_bodies(r))),
+                None, lambda part=chunk: _materialize_forward_media(part),
             )
-            _backfill_state["ok"] += len(materialized)
-            _backfill_state["done"] += len(materialized)
+            _backfill_state["ok"] += materialized
+            _backfill_state["done"] += materialized
+
+        # 「小火人」表情（aweType=519，旧版本落成了普通消息）与卡片自带的图
+        # （群邀请卡群头像、豆包卡封面）：地址还在旧载荷里，顺着补一次下载。
+        # 抖音链接有签名有效期，过期的补不回来，这里只统计成功/失败条数。
+        # 上面那个 conn 是在主线程开的，sqlite 不允许跨线程用，所以在工作线程里
+        # **另开一个连接**做这件事（同一个库文件），用完就关。
+        from extractor.media_backfill import backfill_media
+
+        def _run_legacy_backfill():
+            own = get_db()
+            try:
+                def on_progress(index, partial):
+                    _backfill_state["done"] += 1
+
+                return backfill_media(own, on_progress=on_progress, exclude=handled)
+            finally:
+                own.close()
+
+        legacy = await loop.run_in_executor(None, _run_legacy_backfill)
+        _backfill_state["total"] += legacy["total"]
+        _backfill_state["ok"] += legacy["ok"]
+        _backfill_state["failed"] += legacy["failed"]
 
         conn.close()
 

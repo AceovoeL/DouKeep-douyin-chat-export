@@ -343,10 +343,14 @@ export function isJsonShare(msg) {
   return !!(sharePrefix(msg.content) || /^(?:分享\[.+?\][:：])/.test(msg.content || ''))
 }
 
-const LOOSE_EMOJI_AWES = new Set([515, 517, 520])
+// 「小火人」表情（aweType=519，抖音的表情面板里叫 monster emoji）：载荷里
+// display_name 是「笑死」「续火花」「打招呼」这类文字，url.url_list 才是那张动图。
+// 它跟 515/517/520 一样是 msg_type=0 落库的表情，必须当表情图片画出来，
+// 否则界面上只剩"笑死"这三个字，看着像一句系统提示。
+const LOOSE_EMOJI_AWES = new Set([515, 517, 519, 520])
 const LOOSE_SHARE_AWES = new Set([805, 2104])
 
-// msg_type=0/1 里被漏判的表情包：贴纸 JSON，或 aweType=515/517/520。
+// msg_type=0/1 里被漏判的表情包：贴纸 JSON，或 aweType=515/517/519/520。
 export function isLooseEmoji(msg) {
   if (isJsonSticker(msg)) return true
   const cj = payloadJson(msg)
@@ -516,14 +520,15 @@ export function getImageSrc(msg) {
   return getInlinePic(msg)
 }
 
-// Emoji src: local > 已存 CDN 链接 > 贴纸载荷 > cj.url。
+// Emoji src: local > 已存 CDN 链接 > 贴纸载荷 > cj.url（小火人 519 走这条）。
 export function getEmojiSrc(msg) {
   if (msg.media_local_path) return '/media/' + msg.media_local_path
   if (msg.media_url) return msg.media_url
   const sticker = getStickerUrl(msg)
   if (sticker) return sticker
   const cj = payloadJson(msg)
-  return firstMediaUrl(cj?.url) || null
+  const url = firstMediaUrl(cj?.url)
+  return url.startsWith('http') ? url : null
 }
 
 // Recalled-message detection: the placeholder body, or the recall marker that the
@@ -750,7 +755,12 @@ export function getForwardInfo(msg) {
 export function isSystemMsg(msg) {
   if (getProfileCard(msg) || getForwardInfo(msg) || isVoiceMsg(msg)) return false
   if (isLooseEmoji(msg) || isLooseShare(msg) || isLooseImage(msg)) return false
+  // 豆包分享卡（aweType=6001）落库是 msg_type=0，但它是一张带封面和标题的正经卡片，
+  // 位置跟着发送者走（对方发的在左边、标题在左封面在右），不能当居中的系统提示。
+  // src/lib/cardKinds.js 里对应 getMusicCard。
+  if (Number(payloadJson(msg)?.aweType) === 6001) return false
   // 群公告在抖音里是居中的卡片（带头像和"谁发布了"），所以也走系统提示那一套排版。
+  // 群邀请卡（type_desc=群聊邀请）同样是居中的卡片，由 MessageList 单独排版。
   if (getGroupNotice(msg)) return true
   // 互相关注提示里的纯文本那条是 msg_type=1，内容不是 JSON，按系统提示居中显示。
   if (relationNoticeText(msg)) return true

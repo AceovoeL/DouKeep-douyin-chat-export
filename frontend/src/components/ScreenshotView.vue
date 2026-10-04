@@ -25,6 +25,16 @@ onMounted(async () => {
   applyAppearance(payload, { theme: theme === 'auto' ? undefined : theme })
   // watch(conversation) 无 immediate，须在挂载后赋值才会触发加载
   conv.value = { conv_id: convId, name: '' }
+  // 单聊里消息的昵称用「会话名」（= 用户给对方的备注名，侧边栏显示的那个），
+  // 见 MessageList.displayName。截图页没有侧边栏，这里直接问后端要一次，
+  // 否则对方发的小火人表情会显示成 users 表里的抖音昵称，和查看器不一致。
+  try {
+    const res = await fetch(`/api/conversations/${encodeURIComponent(convId)}`)
+    if (res.ok) {
+      const data = await res.json()
+      if (conv.value?.conv_id === convId) conv.value = { conv_id: convId, name: data.name || '' }
+    }
+  } catch {}
 })
 
 // 所有图片 settle（加载完或出错）后才宣布就绪，超时兜底 15s

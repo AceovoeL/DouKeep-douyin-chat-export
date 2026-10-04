@@ -160,3 +160,31 @@ def test_materialize_bodies_respects_budget(tmp_path, monkeypatch):
     paths = materialize_bodies(bodies, budget=[2])
     assert len(paths) == 2
     assert len(calls) == 2
+
+
+def test_downloads_monster_emoji_519(tmp_path, monkeypatch):
+    """小火人表情（aweType=519）也走表情下载：url.url_list[0] 直接存，不用解密。"""
+    _patch_media(monkeypatch, tmp_path)
+    fetched = []
+    webp = b"RIFF" + b"\x00" * 4 + b"WEBP" + b"x" * 200
+
+    def fake_fetch(url, timeout=20):
+        fetched.append(url)
+        return webp
+
+    monkeypatch.setattr("extractor.im_media._fetch", fake_fetch)
+    path = download_direct_media({
+        "aweType": 519,
+        "display_name": "笑死",
+        "url": {"url_list": ["https://p26-sign.douyinpic.com/obj/tos-cn-i/1010.webp"]},
+    }, SID)
+    # 表情按 URL 哈希存进 emoji/（跟别的表情一样，不按 server_id 命名）。
+    assert path.startswith("emoji/") and path.endswith(".webp")
+    assert os.path.getsize(os.path.join(tmp_path, path)) == len(webp)
+    assert fetched == ["https://p26-sign.douyinpic.com/obj/tos-cn-i/1010.webp"]
+    # 同一张表情再遇到（另一个 server_id）直接用已存的那份，不再下载。
+    assert download_direct_media({
+        "aweType": 519,
+        "url": {"url_list": ["https://p26-sign.douyinpic.com/obj/tos-cn-i/1010.webp"]},
+    }, "1000000000000000047") == path
+    assert len(fetched) == 1

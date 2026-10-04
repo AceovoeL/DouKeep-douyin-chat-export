@@ -170,6 +170,18 @@ function navigateToMessage(item) {
   searchHighlight.value = item.search_query ?? ''
   jumpToSeq.value = item.seq || null
 }
+
+// 群邀请卡上的「发消息」：跳到被邀请的那个群。群名问后端要（卡片里带的是
+// 拉你进群那会儿的名字，可能已经改过），后端说没有这个会话就什么都不做 ——
+// MessageList 只在确认归档过这个群时才画按钮。
+async function openConversation(conv) {
+  if (!conv?.conv_id || activeConversation.value?.conv_id === conv.conv_id) return
+  try {
+    const res = await fetch(`/api/conversations/${encodeURIComponent(conv.conv_id)}`)
+    if (!res.ok) return
+    selectConversation(await res.json())
+  } catch {}
+}
 </script>
 
 <template>
@@ -234,6 +246,7 @@ function navigateToMessage(item) {
           :searchHighlight="searchHighlight"
           :jumpToSeq="jumpToSeq"
           @jumped="jumpToSeq = null"
+          @openConversation="openConversation"
         />
         <div v-if="searchOpen && activeConversation" class="search-slot">
           <SearchBar :convId="activeConversation.conv_id" :convName="activeConversation.name" @navigate="navigateToMessage" @close="setSearchOpen(false)" />

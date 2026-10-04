@@ -38,7 +38,7 @@ SHARE_AWE_TYPES = frozenset([
     11054, 11055, 11063, 11066, 11067, 11069, 11070,
 ])
 
-LOOSE_EMOJI_AWES = frozenset([515, 517, 520])
+LOOSE_EMOJI_AWES = frozenset([515, 517, 519, 520])
 
 LOOSE_SHARE_AWES = frozenset([805, 2104])
 
@@ -462,12 +462,92 @@ def get_watch_together(row):
     return {"title": cj.get("title") or "一起看视频"}
 
 
+# ── 群邀请卡 / 豆包卡（前端对应 frontend/src/lib/cardKinds.js）──
+# 这两类卡片在抖音里都有正经排版，阅读端会把它们画成卡片。它们**始终显示**，
+# 所以 should_show 要认得出来 —— 否则别人改判据时容易把它们当成空系统提示藏掉。
+INVITE_TYPE_DESCS = ("群聊邀请", "群邀请")
+MUSIC_CARD_AWE_TYPE = 6001
+_INVITE_CONV_ID_KEYS = ("conversation_id", "conversation_short_id")
+
+
+def _image_url(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        urls = value.get("url_list")
+        if isinstance(urls, list) and urls and isinstance(urls[0], str):
+            return urls[0]
+    return ""
+
+
+def _str(value):
+    if isinstance(value, str):
+        return value.strip()
+    return "" if value is None else str(value)
+
+
+def _invite_conv_id(cj):
+    card = cj.get("aweme_invite_card")
+    card = card if isinstance(card, dict) else {}
+    for key in _INVITE_CONV_ID_KEYS:
+        found = _str(card.get(key))
+        if found:
+            return found
+    event = cj.get("event")
+    params = event.get("param") if isinstance(event, dict) else None
+    if isinstance(params, dict):
+        for key in _INVITE_CONV_ID_KEYS:
+            found = _str(params.get(key))
+            if found:
+                return found
+    if isinstance(event, dict):
+        return _str(event.get("conversation_id"))
+    return ""
+
+
+def get_invite_card(row):
+    """群邀请卡（type_desc=群聊邀请 + 目标群会话 id）；不是则 None。"""
+    row = _as_row(row)
+    cj = row.content_json() or row.parsed_content()
+    if not isinstance(cj, dict):
+        return None
+    desc = _str(cj.get("type_desc"))
+    conv_id = _invite_conv_id(cj)
+    if desc not in INVITE_TYPE_DESCS and not (desc and "群" in desc and conv_id):
+        return None
+    if not conv_id:
+        return None
+    card = cj.get("aweme_invite_card")
+    card = card if isinstance(card, dict) else {}
+    return {
+        "groupName": _str(card.get("group_name")) or _str(cj.get("title")) or "群聊邀请",
+        "convId": conv_id,
+        "icon": _image_url(cj.get("icon")) or _image_url(card.get("group_icon")),
+    }
+
+
+def get_music_card(row):
+    """豆包分享卡（aweType=6001）；不是则 None。"""
+    row = _as_row(row)
+    cj = row.content_json() or row.parsed_content()
+    if not isinstance(cj, dict) or not _num_eq(cj.get("aweType"), MUSIC_CARD_AWE_TYPE):
+        return None
+    title = _str(cj.get("title")) or _str(cj.get("push_detail"))
+    cover = _image_url(cj.get("icon")) or _image_url(cj.get("cover_url"))
+    if not title and not cover:
+        return None
+    return {"title": title, "cover": cover, "source": _str(cj.get("source_title"))}
+
+
 def should_show(row):
     """对应前端 ``shouldShow``：这条记录在聊天窗口里会不会被画出来。"""
     row = _as_row(row)
     if get_profile_card(row) or get_forward_info(row) or is_voice_msg(row):
         return True
     if get_watch_together(row):
+        return True
+    # 群邀请卡 / 豆包卡画成卡片，哪怕正文是空的（卡片数据本身就有内容）。
+    if get_invite_card(row) or get_music_card(row):
         return True
     if is_loose_emoji(row) or is_loose_share(row) or is_loose_image(row):
         return True

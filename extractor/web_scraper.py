@@ -97,6 +97,42 @@ def _looks_like_uid(text):
 _VIDEO_SHARE_AWE_TYPES = (11054, 11055, 11063, 11066, 11067, 11069, 11070)
 _OTHER_SHARE_AWE_TYPES = (11029, 10500, 10401, 800, 801, 803)
 
+# aweType → 表情包/贴纸：落库 msg_type=2，图在 url.url_list[0]（明文 CDN）。
+# 519 是「小火人」（monster emoji），display_name 是「笑死」「续火花」「打招呼」
+# 这类文字，卡片形状和别的表情一样 —— 以前不在名单里，于是被当成普通消息存成
+# msg_type=0，阅读端只剩那几个字。
+# aweType → 表情包/贴纸：落库 msg_type=2，图在 url.url_list[0]（明文 CDN）。
+# 519 是「小火人」（monster emoji），display_name 是「笑死」「续火花」「打招呼」
+# 这类文字，卡片形状和别的表情一样 —— 以前不在名单里，于是被当成普通消息存成
+# msg_type=0，阅读端只剩那几个字。名单放在 common/card_icons.py 里共用。
+from common.card_icons import EMOJI_AWE_TYPES as _EMOJI_AWE_TYPES
+
+
+def _emoji_payload(cj):
+    """表情的图与默认文字：``(display_name, url)``。图在 cj.url.url_list[0]。"""
+    url_obj = cj.get("url")
+    url_list = url_obj.get("url_list", []) if isinstance(url_obj, dict) else []
+    url = url_list[0] if url_list and isinstance(url_list[0], str) else None
+    return cj.get("display_name") or "", url
+
+
+def _download_card_icon(cj):
+    """卡片自带的图（群邀请卡的群头像、豆包卡的封面）顺手存一份到本地。
+
+    抖音给的是带签名的临时链接（180 天左右过期），存晚了就只剩碎图，
+    所以采集时就落盘（见 common/card_icons.py）。
+    """
+    from common.card_icons import card_icon_url, save_card_icon
+
+    url = card_icon_url(cj)
+    if not url:
+        return None
+    try:
+        return save_card_icon(url)
+    except OSError as exc:
+        print(f"  [media] 卡片图保存失败: {exc}")
+        return None
+
 
 def _share_cover(cj):
     """分享卡片的封面图，取 cover_url.url_list[0]。"""
@@ -2013,6 +2049,7 @@ class WebChatScraper:
                 msg_type = "other"
                 awe_type = -1
                 image_src = None
+                card_icon_dir = None
                 try:
                     cj = json.loads(content_json)
                     awe_type = cj.get("aweType", -1)
@@ -2044,17 +2081,13 @@ class WebChatScraper:
                         except (TypeError, ValueError):
                             dur_sec = 0
                         text = text or (f"[语音 {dur_sec}秒]" if dur_sec else "[语音]")
-                    elif awe_type in (500, 501, 507, 508, 510, 514, 516):
-                        # 表情包/贴纸
+                    elif str(awe_type) in _EMOJI_AWE_TYPES:
+                        # 表情包/贴纸（519 是「小火人」，display_name 是「笑死」这类文字）
                         msg_type = "emoji"
+                        display_name, emoji_url = _emoji_payload(cj)
                         if not text:
-                            text = cj.get("display_name") or "[表情]"
-                        # URL 在 cj.url.url_list[0]
-                        url_obj = cj.get("url")
-                        if isinstance(url_obj, dict):
-                            url_list = url_obj.get("url_list", [])
-                            if url_list:
-                                image_src = url_list[0] if isinstance(url_list[0], str) else None
+                            text = display_name or "[表情]"
+                        image_src = emoji_url
                     elif awe_type in (2702, 2703, 2704):
                         # 图片消息
                         msg_type = "image"
@@ -2069,6 +2102,8 @@ class WebChatScraper:
                                 break
                     else:
                         text, msg_type, image_src = _classify_json_message(cj)
+                    # 卡片自带的图（群头像 / 豆包卡封面）顺手存下来，链接过期就没得救了
+                    card_icon_dir = _download_card_icon(cj)
                 except (json.JSONDecodeError, AttributeError):
                     text = content_json
                     msg_type = "text"
@@ -2101,6 +2136,7 @@ class WebChatScraper:
                     "order_high": created_at_us >> 32,
                     "order_low": created_at_us & 0xFFFFFFFF,
                     "image_src": image_src,
+                    "card_icon_dir": card_icon_dir,
                     "visible": m.get("visible", 0),
                     "is_recalled": m.get("is_recalled", 0),
                     "content_json": content_json,
@@ -2207,6 +2243,23 @@ class WebChatScraper:
                 await self._resolve_sender_identities(sec_by_uid)
             except Exception as e:
                 print(f"  [!] 补全发送者信息失败: {e}")
+
+        # 6.5 老消息漏掉的表情/卡片图（小火人 519、群邀请卡群头像、豆包卡封面）：
+        # 这些消息这次抓不到（或抓到了但旧版本没存图），在这里按库里的旧载荷补一次。
+        # 抖音链接会过期，能补一条是一条，失败只打一行提示。
+        try:
+            from extractor.media_backfill import backfill_media
+
+            media_stats = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: backfill_media(self._db_conn)
+            )
+            if media_stats["total"]:
+                print(
+                    f"  [media] 补齐缺图的消息: 需要 {media_stats['total']} 条，"
+                    f"成功 {media_stats['ok']}，失败 {media_stats['failed']}"
+                )
+        except Exception as e:
+            print(f"  [!] 补齐历史表情/卡片图失败（消息已保存）: {type(e).__name__}")
 
         # 7. 归一化 seq
         print(f"  [*] 归一化消息序号 (按服务端排序)...")
@@ -2451,7 +2504,14 @@ class WebChatScraper:
             # 图片/表情/分享/视频 都记录 media_url (ensure it's a string)
             raw_media = msg.get("image_src") if msg.get("msg_type") in ("image", "emoji", "share", "video") else None
             media_url = str(raw_media) if raw_media and isinstance(raw_media, str) else None
-            local_path = msg.get("local_path")
+            if not media_url and msg.get("msg_type") == "emoji":
+                # 表情的图在 content_json 的 url.url_list 里，而转换那一步只把
+                # 「图或文字」写进 image_src：display_name 先占位时图就丢了。
+                # 这里补记一遍，media_url 才是历史媒体回填要用的下载地址。
+                media_url = _emoji_payload(json.loads(msg.get("content_json") or "{}"))[1]
+            # 卡片图（群头像 / 豆包卡封面）已经在转换时落盘了，直接当本地媒体挂上，
+            # 它会进 raw_data.card_icon_dir，阅读端按 /media/<它> 取图。
+            local_path = msg.get("card_icon_dir") or msg.get("local_path")
 
             # Timestamp: use precise createdAt from fiber (ISO string → Unix seconds)
             timestamp = 0

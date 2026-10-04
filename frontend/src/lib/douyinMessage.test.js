@@ -563,7 +563,7 @@ describe('dynamic and ordinary share layouts', () => {
 })
 
 describe('leftover media payload display', () => {
-  it('treats awe 515/517/520 as loose emoji instead of system lines', () => {
+  it('treats awe 515/517/519/520 as loose emoji instead of system lines', () => {
     const emoji = withCj({
       aweType: 517,
       url: { url_list: ['http://cdn/e.webp'] },
@@ -572,6 +572,39 @@ describe('leftover media payload display', () => {
     expect(getEmojiSrc(emoji)).toBe('http://cdn/e.webp')
     expect(shouldShow(emoji)).toBe(true)
     expect(isSystemMsg(emoji)).toBe(false)
+  })
+
+  // 「小火人」（aweType=519）落库时 msg_type=0、content 是「笑死」这类文字，
+  // 真正的图在 payload 的 url.url_list 里；以前被当系统提示，界面上只剩一行字。
+  it('renders the awe 519 monster emoji as the sticker image', () => {
+    const flame = withCj({
+      aweType: 519,
+      display_name: '笑死',
+      image_id: 1010,
+      image_type: 'webp',
+      sticker_type: 23,
+      url: { url_list: ['https://p26-sign.douyinpic.com/obj/tos-cn-i-wvh0dcswot/emoji-1010'] },
+    }, { msg_type: 0, content: '笑死', sender_uid: 'peer' })
+    expect(isLooseEmoji(flame)).toBe(true)
+    expect(getEmojiSrc(flame)).toBe('https://p26-sign.douyinpic.com/obj/tos-cn-i-wvh0dcswot/emoji-1010')
+    expect(shouldShow(flame)).toBe(true)
+    expect(isSystemMsg(flame)).toBe(false)
+  })
+
+  it('prefers the downloaded file over the CDN link for a 519 sticker', () => {
+    const saved = withCj({
+      aweType: 519,
+      display_name: '续火花',
+      url: { url_list: ['https://cdn/x.webp'] },
+    }, { msg_type: 2, content: '续火花', media_local_path: 'emoji/abc.webp' })
+    expect(getEmojiSrc(saved)).toBe('/media/emoji/abc.webp')
+  })
+
+  it('does not hand out a non-http url as an emoji image', () => {
+    const broken = withCj({ aweType: 519, display_name: '打招呼', url: { uri: 'tos-cn/xx' } },
+      { msg_type: 0, content: '打招呼' })
+    expect(isLooseEmoji(broken)).toBe(true)
+    expect(getEmojiSrc(broken)).toBeNull()
   })
 
   it('renders poi / awe 805 / 2104 as share cards', () => {

@@ -26,10 +26,13 @@ def _object(value):
 
 _HEIF_BRANDS = {b"heic", b"heix", b"mif1", b"msf1", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs"}
 _MP4_BRANDS = {b"mp42", b"mp41", b"isom", b"iso2", b"iso4", b"iso5", b"iso6", b"avc1", b"M4V ", b"qt  "}
-_EMOJI_TYPES = {"500", "501", "507", "508", "510", "514", "516"}
+_EMOJI_TYPES = {"500", "501", "507", "508", "510", "514", "516", "519"}
 _IMAGE_TYPES = {"2702", "2703", "2704"}
 _MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".mpeg", ".m4a")
 DIRECT_FETCH_BUDGET = 40
+
+# 表情里 519 是「小火人」（monster emoji，display_name 写着「笑死」「续火花」），
+# 载荷形状和别的表情一样：url.url_list[0] 就是那张动图，直接存就行。
 
 
 def _detect_media_format(data):

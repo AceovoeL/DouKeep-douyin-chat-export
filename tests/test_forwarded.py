@@ -60,6 +60,31 @@ def test_broken_body_does_not_count_as_full_detail(temp_db):
     conn.close()
 
 
+def test_inline_monster_emoji_and_doubao_card(temp_db):
+    """合并转发里的「小火人」（aweType=519）也是表情；豆包卡（6001）是卡片正文。"""
+    conn = database.get_db()
+    ids = [7700000000000000001, 7700000000000000002]
+    message = forward({
+        'msg_ids': [{'msg_id': i} for i in ids],
+        'inline_content': [
+            {'server_message_id': ids[0], 'sender': 1, 'create_time': 1700000000,
+             'content': json.dumps({'aweType': 519, 'display_name': '笑死',
+                                    'url': {'url_list': ['https://cdn/1010.webp']}})},
+            {'server_message_id': ids[1], 'sender': 1, 'create_time': 1700000001,
+             'content': json.dumps({'aweType': 6001, 'source_title': '豆包',
+                                    'title': '《音乐公开课》',
+                                    'icon': {'url_list': ['https://cdn/cover.jpeg']}})},
+        ],
+    })
+    items = resolve_forward(message, conn, fetch_media=False)['items']
+    assert items[0]['msg_type'] == 2
+    assert items[0]['media_url'] == 'https://cdn/1010.webp'
+    assert items[0]['content'] == '笑死'
+    assert items[1]['msg_type'] == 1
+    assert items[1]['content'] == '《音乐公开课》'
+    conn.close()
+
+
 def test_forward_http_contract(temp_db, monkeypatch):
     from fastapi.testclient import TestClient
     from backend import main

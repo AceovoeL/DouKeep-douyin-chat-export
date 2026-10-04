@@ -62,7 +62,7 @@
         </div>
         <template v-for="(msg, index) in messages" :key="msg.msg_id">
         <div
-          v-if="shouldShow(msg) && !duplicateSystemIds.has(msg.msg_id)"
+          v-if="_shouldShow(msg) && !duplicateSystemIds.has(msg.msg_id)"
           class="msg-item"
           :data-msgid="msg.msg_id"
           :style="enterDelay(index)"
@@ -378,6 +378,45 @@
                   <span v-html="renderText(msg.voice_transcription)"></span>
                 </div>
               </div>
+              <!-- 群邀请卡（type_code=58）：跟普通消息一样按发送者分左右（对方拉的你在左、
+                   你被拉进群的那条也在发送者那一侧），卡片里上头大字是群名，
+                   下头小字是「谁 添加你进群」；这个群已归档时底下多一个「发消息」。 -->
+              <div v-else-if="inviteCard(msg)" class="msg-invite-card" @contextmenu="selectMsgContent">
+                <div class="msg-invite-card-inner">
+                  <img
+                    v-if="cardIcon(msg, inviteCard(msg).icon)"
+                    class="msg-invite-card-icon"
+                    :src="cardIcon(msg, inviteCard(msg).icon)"
+                    :alt="inviteCard(msg).groupName"
+                    :loading="imgLoading"
+                    @error="onCardIconError(msg)"
+                  />
+                  <div class="msg-invite-card-body">
+                    <div class="msg-invite-card-name">{{ inviteCard(msg).groupName }}</div>
+                    <div class="msg-invite-card-desc">{{ inviteCard(msg).description }}</div>
+                  </div>
+                </div>
+                <!-- 群不在归档里就不画按钮：点了也跳不过去 -->
+                <div v-if="groupCache[inviteCard(msg).convId]" class="msg-invite-card-foot">
+                  <button type="button" class="msg-invite-card-btn" @click="openInviteGroup(msg)">发消息</button>
+                </div>
+              </div>
+              <!-- 豆包分享卡（aweType=6001）：正方形封面 + 标题，封面那一侧标着来源
+                   「豆包」。对方发来的封面在左，我发出去的封面在右（见下面的 CSS）。 -->
+              <div v-else-if="musicCard(msg)" class="msg-music-card" @click="openMusicCard(msg)">
+                <img
+                  v-if="cardIcon(msg, musicCard(msg).cover)"
+                  class="msg-music-cover"
+                  :src="cardIcon(msg, musicCard(msg).cover)"
+                  :alt="musicCard(msg).title"
+                  :loading="imgLoading"
+                  @error="onCardIconError(msg)"
+                />
+                <div class="msg-music-body">
+                  <div v-if="musicCard(msg).title" class="msg-music-title">{{ musicCard(msg).title }}</div>
+                  <div v-if="musicCard(msg).source" class="msg-music-source">{{ musicCard(msg).source }}</div>
+                </div>
+              </div>
               <!-- 评论引用视频（aweType=700，文本+关联视频） -->
               <div v-else-if="isVideoComment(msg)" class="msg-share-card" @click="openVideoReference(msg)">
                 <div class="msg-share-comment" v-html="renderText(msg.content)"></div>
@@ -436,7 +475,7 @@
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { renderRichText as _renderRichText } from '@/lib/highlight'
-import { resolveAvatarUrl } from '@/lib/media'
+import { resolveAvatarUrl, iconSrc } from '@/lib/media'
 import MessageLightbox from './MessageLightbox.vue'
 import {
   clearCjCache, getContentJson, tryParseJson, tryParseShareContent, extractShareTitle,
@@ -453,6 +492,7 @@ import {
 import { getGoodsCard, clearGoodsCardCache } from '@/lib/goodsCard'
 import { getFlameGiftCard, isFlameGiftCard, pickFlameAvatar, clearFlameCardCache } from '@/lib/flameCard'
 import { getCallShopCard, isCallShopCard, clearCallShopCardCache } from '@/lib/callShopCard'
+import { getInviteCard, isInviteCard, getMusicCard, clearSystemCardCache } from '@/lib/cardKinds'
 import { retryVideoWithTranscode, retryVideoIfUndecodable } from '@/lib/mediaPlayback'
 
 // 卡片要用的图（项目 assets 里的原图）：火花卡背景 + 火花图标 + 联系门店卡外观。
@@ -471,7 +511,7 @@ const props = defineProps({
   embeddedMessages: Array,
   selfUidOverride: String,
 })
-const emit = defineEmits(['jumped', 'staticLoaded'])
+const emit = defineEmits(['jumped', 'staticLoaded', 'openConversation'])
 
 const messages = ref([])
 const total = ref(0)
@@ -704,11 +744,20 @@ function _isSystem(msg) {
   // 「我们已互相关注，可以开始聊天了」/「我们已成为朋友」是对方发来的消息，
   // 抖音客户端也是按对方消息显示，所以不进系统提示（不居中）。
   if (peerNotice(msg)) return false
+  // 群邀请卡（type_desc=群聊邀请）虽然解析上算"卡片"，但位置跟普通消息一样：
+  // 对方拉的你在左边、自己在右边，自带头像和昵称（见下面的 invite 卡片模板）。
+  if (isInviteCard(msg)) return false
   // 「获得火花见面礼」卡（aweType=110408）解析上算分享卡，但排版是系统提示样式，
   // 也要居中、不要头像和昵称，所以跟系统提示一起走。
   // 「联系门店」引导卡（aweType=110284）同理：抖音里就是会话中间的一条系统卡片。
   // 群公告（type_code=1004）也是居中的卡片，卡片自带头像和"谁发布了"，所以同样走这里。
   return isSystemMsg(msg) || isFlameGiftCard(msg) || isCallShopCard(msg)
+}
+
+// 这条消息画不画。invite/music 卡片的排版自己保证有内容可看，所以不需要
+// douyinMessage.js 的 shouldShow 再认一遍（那边只认"正文是不是空的"）。
+function _shouldShow(msg) {
+  return shouldShow(msg) || isInviteCard(msg) || !!musicCard(msg)
 }
 
 // 群公告卡片：返回 { title, body } 或 null（见 lib/douyinMessage.js）。
@@ -773,6 +822,12 @@ function displayName(msg) {
     const u = userCache[msg.sender_uid]
     return u?.nickname || '我'
   }
+  // 「小火人」这类表情消息、群邀请卡等落库时 sender_name 是空的，而单聊的会话名
+  // 就是"我给对方起的名字"（侧边栏显示的那个）。这里优先用它，界面上的昵称才和
+  // 侧边栏一致 —— 抖音昵称随时会改，users 表里的往往不是用户熟悉的那个名字。
+  if (!isGroupConv.value && !props.embeddedMessages && props.conversation?.name) {
+    return props.conversation.name
+  }
   const u = userCache[msg.sender_uid]
   if (u?.nickname) return u.nickname
   if (msg.sender_name && msg.sender_name !== '__self__') return msg.sender_name
@@ -815,6 +870,71 @@ function callShopAlt(msg) {
   const card = callShopCard(msg)
   if (!card) return ''
   return [card.title, card.subtitle].filter(Boolean).join('，') || '联系门店'
+}
+
+// ── 群邀请卡 / 豆包卡（见 lib/cardKinds.js）──
+// 邀请卡上的「发消息」只在被邀请的那个群**已经归档**时才画出来：群聊的名字要问
+// 后端才知道（卡片里带的是拉你进群那会儿的群名，可能已经改过）。
+const groupCache = reactive({})
+
+// 加载不出来的卡片图，按消息记着，别再画那个碎图占位。
+const brokenCardIcons = reactive({})
+
+function inviteCard(msg) {
+  return getInviteCard(msg)
+}
+
+function musicCard(msg) {
+  return getMusicCard(msg)
+}
+
+// 卡片图（群头像 / 豆包卡封面）的地址：
+//   1. 采集时存下来的那份（raw_data.card_icon_dir → /media/card_icons/…）；
+//   2. 没存过就走 iconSrc()，后端发现链接还没过期会顺手补拉一份存下来。
+//      —— 抖音给的图是带签名的临时链接，过期后 <img> 直接就碎了，所以第一次
+//      看这张卡时就把图"固化"到本地（见 common/card_icons.py）。
+function cardIcon(msg, url) {
+  if (brokenCardIcons[msg.msg_id]) return ''
+  // 采集时存过的那两份都认：media_local_path（消息落库时记的）和
+  // raw_data.card_icon_dir（同一次抓取里另存一份摘要）。
+  for (const saved of [msg.media_local_path, msg.card_icon_dir]) {
+    if (typeof saved === 'string' && saved.startsWith('card_icons/')) return '/media/' + saved
+  }
+  return iconSrc(url)
+}
+
+function onCardIconError(msg) {
+  // 已经存到本地的那份坏了不退回网络（链接早过期了，只会再失败一次），直接记成坏图。
+  if (!msg.media_local_path && !msg.card_icon_dir && !brokenCardIcons[msg.msg_id]) {
+    brokenCardIcons[msg.msg_id] = true
+  }
+}
+
+// 打开豆包卡视频：卡片自带 open_url（v.douyin.com 短链），没有就不给点。
+function openMusicCard(msg) {
+  const card = musicCard(msg)
+  if (card?.url) window.open(card.url, '_blank', 'noopener')
+}
+
+function openInviteGroup(msg) {
+  const card = inviteCard(msg)
+  if (card) emit('openConversation', { conv_id: card.convId, name: card.groupName })
+}
+
+async function loadGroupConversations(msgList) {
+  const ids = new Set()
+  for (const msg of msgList) {
+    const card = getInviteCard(msg)
+    if (card && groupCache[card.convId] === undefined) ids.add(card.convId)
+  }
+  await Promise.all(Array.from(ids).map(async (convId) => {
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(convId)}`)
+      groupCache[convId] = res.ok ? await res.json() : null
+    } catch {
+      groupCache[convId] = null
+    }
+  }))
 }
 
 async function fetchUserInfo(uid) {
@@ -863,6 +983,7 @@ function pickSelf(uid) {
 
 // 系统消息引用的视频：异步加载分享消息的标题和封面
 async function loadSysRefs(msgList) {
+  loadGroupConversations(msgList)
   for (const msg of msgList) {
     if (msg.msg_type !== 0 || sysRefCache[msg.msg_id]) continue
     const smids = extractServerMsgIds(msg)
@@ -1227,6 +1348,9 @@ function resetParseCaches() {
   clearGoodsCardCache()
   clearFlameCardCache()
   clearCallShopCardCache()
+  clearSystemCardCache()
+  for (const key of Object.keys(groupCache)) delete groupCache[key]
+  for (const key of Object.keys(brokenCardIcons)) delete brokenCardIcons[key]
 }
 
 watch(() => props.conversation, (conv) => {
@@ -2038,6 +2162,126 @@ watch(() => props.jumpToSeq, async (seq) => {
 }
 .msg-goods-price-num {
   white-space: nowrap;
+}
+
+/* 群邀请卡（居中）：左边群头像，右边群名（大字加粗）+ 一行「谁 添加你进群」。
+   群已归档时卡片底部再画一个「发消息」。 */
+.msg-invite-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--card-bg);
+  border-radius: 10px;
+  border-top-left-radius: 2px;
+  padding: 12px 14px;
+  max-width: var(--share-card-width);
+  text-align: left;
+}
+/* 自己发的贴右边：圆角反过来，底色用我方气泡色（跟分享卡一个规矩） */
+.msg-item.msg-self > .msg-body > .msg-invite-card {
+  background: var(--bg-message-self);
+  border-top-left-radius: 10px;
+  border-top-right-radius: 2px;
+}
+.msg-invite-card-inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.msg-invite-card-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.msg-invite-card-body {
+  min-width: 0;
+}
+.msg-invite-card-name {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.msg-invite-card-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+.msg-invite-card-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+.msg-invite-card-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.msg-invite-card-btn:hover {
+  background: var(--accent);
+  color: var(--text-on-self);
+}
+
+/* 豆包分享卡（aweType=6001）：正方形封面 + 标题，来源「豆包」紧贴在封面那一侧。
+   封面在左（对方发的）/ 在右（我发的）靠 flex-direction 翻转，封面一律 object-fit: cover。 */
+.msg-music-card {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 10px;
+  background: var(--card-bg);
+  border-radius: 10px;
+  border-top-left-radius: 2px;
+  padding: 10px 12px;
+  max-width: var(--share-card-width);
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.msg-item.msg-self > .msg-body > .msg-music-card {
+  flex-direction: row;
+  background: var(--bg-message-self);
+  border-top-left-radius: 10px;
+  border-top-right-radius: 2px;
+}
+.msg-music-card:hover {
+  filter: brightness(1.1);
+}
+.msg-music-cover {
+  width: 72px;
+  height: 72px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.msg-music-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.msg-music-title {
+  font-size: 13px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.msg-music-source {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: auto;
 }
 
 /* 分享卡片 */
