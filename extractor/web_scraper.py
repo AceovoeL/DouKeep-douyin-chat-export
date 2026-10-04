@@ -59,8 +59,21 @@ BATCH_USER_INFO = 20
 
 # After cache-clear reload, list titles often show UIDs until nicknames hydrate.
 # Poll for the target nickname instead of giving up after one scroll-through.
-CONV_FIND_TIMEOUT_S = 15
+# 每轮「滑动 + 等昵称渲染」大约 1.5 秒，40 秒够把整份列表从头翻到底一遍
+# （90 多个会话约 19 轮），不够的话长列表末尾的会话会被误判成「找不到」。
+CONV_FIND_TIMEOUT_S = 40
 CONV_FIND_POLL_S = 0.5
+
+# 会话列表是「虚拟滚动 + 二次渲染」：滑一下，列表项会先带着 uid 占位标题出现，
+# 过一两秒才被换成真昵称。滑动之后立刻读 DOM，就会把同一个人的 uid 版本也当成
+# 一条新会话收进来 —— 表现为刷新出来的数量忽多忽少（45 / 94 / 45）、面板里有
+# 会话显示成 uid。所以每次滑动会话列表之后都先固定停 CONV_SCROLL_SETTLE_SECONDS，
+# 只要窗口里还看得到 uid 占位就继续等（上限 CONV_NICKNAME_WAIT_SECONDS）。
+CONV_SCROLL_SETTLE_SECONDS = 1.0
+CONV_NICKNAME_WAIT_SECONDS = 4.0
+CONV_NICKNAME_POLL_SECONDS = 0.5
+#: 滚到底之后还要连着几轮「滚不动 + 没新增」才算读完整份列表。
+CONV_LIST_STABLE_ROUNDS = 3
 
 
 def _filter_conversations(conversations, name_filter):
@@ -68,6 +81,16 @@ def _filter_conversations(conversations, name_filter):
     names = {part.strip() for part in name_filter.split(",") if part.strip()}
     return [c for c in conversations
             if c.get("nickname") in names or c.get("name") in names]
+
+
+def _clean_conv_text(text):
+    """会话列表里的文本清洗：抖音用 \\xa0 排版，统一成普通空格再去掉首尾空白。"""
+    return (text or "").replace('\xa0', ' ').strip()
+
+
+def _looks_like_uid(text):
+    """6 位以上纯数字 = 抖音还没渲染出昵称时的 uid 占位标题。"""
+    return bool(re.fullmatch(r"\d{6,}", _clean_conv_text(text)))
 
 
 # aweType → 分享卡片（视频/直播、商品、引用评论）
@@ -180,6 +203,9 @@ class WebChatScraper:
         self.page = None
         self._db_conn = None  # 持久数据库连接
         self._last_known_timestamp = 0  # 跨批次时间戳继承
+        #: 等满上限都不变的「数字标题」——对方昵称本身就是一串数字，不是 uid 占位。
+        #: 记下来，后面的滚动不再为它空等（见 _settle_after_conv_scroll）。
+        self._stable_numeric_titles = set()
 
     async def launch(self):
         os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -534,58 +560,31 @@ class WebChatScraper:
         removed from the DOM, so a single querySelectorAll snapshot misses
         everything above/below the visible window. We scroll from the top
         to the bottom, reading items each round and deduping by nickname.
+
+        每一轮都是「滑动 → 等昵称渲染 → 再读 DOM」的顺序（见
+        _settle_after_conv_scroll）。抖音滑动后会先把标题画成 uid 占位，
+        读早了就会把同一个会话收成两条（uid 一条、昵称一条），数量虚高。
         """
-        # 先滚到顶部，保证从头开始收集
-        await self.page.evaluate(f"""() => {{
-            const list = document.querySelector('{SEL_CONV_LIST}');
-            if (list) {{
-                const scrollable = list.querySelector('[style*="overflow"]') || list;
-                scrollable.scrollTop = 0;
-            }}
-        }}""")
-        await asyncio.sleep(0.6)
+        # 先滚到顶部，保证从头开始收集（helper 自带滑动后的等待）
+        await self._scroll_conv_list_to_top()
 
         seen = {}  # key -> conv info (保持插入顺序 = 列表自上而下)
         stable_rounds = 0
+        confirmed_bottom = False
 
         for _ in range(120):
-            convs = await self.page.evaluate(f"""() => {{
-                const items = document.querySelectorAll('{SEL_CONV_ITEM}');
-                return Array.from(items).map(el => {{
-                    const titleEl = el.querySelector('{SEL_CONV_TITLE}');
-                    const timeEl = el.querySelector('{SEL_CONV_TIME}');
-                    const previewEl = el.querySelector('{SEL_CONV_PREVIEW}');
-                    let nickname = '';
-                    if (titleEl) {{
-                        const innerTitle = titleEl.querySelector('div[class*="conversationConversationItemtitle"]');
-                        nickname = (innerTitle && innerTitle !== titleEl)
-                            ? innerTitle.textContent.trim()
-                            : titleEl.childNodes[0]?.textContent?.trim() || '';
-                    }}
-                    return {{
-                        name: titleEl ? titleEl.textContent.trim() : '',
-                        nickname: nickname,
-                        time: timeEl ? timeEl.textContent.trim() : '',
-                        preview: previewEl ? previewEl.textContent.trim() : '',
-                    }};
-                }});
-            }}""")
+            convs = await self._read_conv_list_items()
 
             added = 0
             for c in convs:
-                key = c.get("nickname") or c.get("name")
+                c["name"] = _clean_conv_text(c.get("name"))
+                c["nickname"] = _clean_conv_text(c.get("nickname"))
+                key = c["nickname"] or c["name"]
                 if key and key not in seen:
                     seen[key] = c
                     added += 1
 
-            reached_bottom = await self.page.evaluate(f"""() => {{
-                const list = document.querySelector('{SEL_CONV_LIST}');
-                if (!list) return true;
-                const scrollable = list.querySelector('[style*="overflow"]') || list;
-                const before = scrollable.scrollTop;
-                scrollable.scrollTop += 400;
-                return scrollable.scrollTop === before;
-            }}""")
+            reached_bottom = await self._scroll_conv_list_down()
 
             if added == 0:
                 stable_rounds += 1
@@ -593,28 +592,123 @@ class WebChatScraper:
                 stable_rounds = 0
                 print(f"  已加载 {len(seen)} 个会话...")
 
-            # 到底且连续 2 轮无新增 → 视为读完
-            if reached_bottom and stable_rounds >= 2:
-                break
-
-            await asyncio.sleep(0.5)
+            # 到底后连续 CONV_LIST_STABLE_ROUNDS 轮「滚不动 + 没新增」才算读完：抖音是
+            # 滚到底才异步拉下一页，刚贴底那几轮经常只是「还没渲染出来」，不是没有了。
+            # 达标后再多读一轮确认——贴底那一瞬间列表可能刚好又插进来几条，直接收工
+            # 就会漏掉它们（刷新出来 45 个而不是 94 个）。
+            if reached_bottom and stable_rounds >= CONV_LIST_STABLE_ROUNDS:
+                if confirmed_bottom:
+                    break
+                confirmed_bottom = True
+                continue
+            confirmed_bottom = False
 
         # 回到顶部，后续点击流程从熟悉的起点开始
-        await self.page.evaluate(f"""() => {{
-            const list = document.querySelector('{SEL_CONV_LIST}');
-            if (list) {{
-                const scrollable = list.querySelector('[style*="overflow"]') || list;
-                scrollable.scrollTop = 0;
-            }}
-        }}""")
-        await asyncio.sleep(0.5)
+        await self._scroll_conv_list_to_top()
 
         all_convs = list(seen.values())
-        for c in all_convs:
-            c["name"] = c["name"].replace('\xa0', ' ').strip()
-            c["nickname"] = c.get("nickname", "").replace('\xa0', ' ').strip()
+        # 名字是一串数字的两种可能：抖音还没渲染出昵称，或者对方昵称本来就是数字。
+        # 两者都照常收进列表（不丢会话），只是日志里说清楚，让人能自己判断。
+        stuck = [c for c in all_convs
+                 if _looks_like_uid(c.get("nickname") or c.get("name"))]
+        if stuck:
+            print(f"  [!] 有 {len(stuck)} 个会话的名字是一串数字："
+                  f"可能是抖音还没渲染出昵称，也可能对方昵称本来就是数字。"
+                  f"过一会儿重新刷新一次会话列表就能确认")
 
         return all_convs
+
+    async def _read_conv_list_items(self):
+        """读当前窗口里的会话项（昵称 / 名称 / 最后活跃 / 预览）。
+
+        必须在滑动之后、页面把标题渲染成昵称之后再调（见
+        _settle_after_conv_scroll），否则拿到的是 uid 占位标题。
+        """
+        return await self.page.evaluate(f"""() => {{
+            const items = document.querySelectorAll('{SEL_CONV_ITEM}');
+            return Array.from(items).map(el => {{
+                const titleEl = el.querySelector('{SEL_CONV_TITLE}');
+                const timeEl = el.querySelector('{SEL_CONV_TIME}');
+                const previewEl = el.querySelector('{SEL_CONV_PREVIEW}');
+                let nickname = '';
+                if (titleEl) {{
+                    const innerTitle = titleEl.querySelector('div[class*="conversationConversationItemtitle"]');
+                    nickname = (innerTitle && innerTitle !== titleEl)
+                        ? innerTitle.textContent.trim()
+                        : titleEl.childNodes[0]?.textContent?.trim() || '';
+                }}
+                return {{
+                    name: titleEl ? titleEl.textContent.trim() : '',
+                    nickname: nickname,
+                    time: timeEl ? timeEl.textContent.trim() : '',
+                    preview: previewEl ? previewEl.textContent.trim() : '',
+                }};
+            }});
+        }}""")
+
+    async def _uid_like_titles(self):
+        """当前窗口里标题是一串数字的会话（多半是还没渲染出昵称的 uid 占位）。
+
+        有些号**昵称本身就是一串数字**，也会被这个规则挑出来 —— 所以这里只返回
+        候选，由 _settle_after_conv_scroll 用「等一会儿会不会变」来区分。
+        """
+        return await self.page.evaluate(f"""() => {{
+            const titles = [];
+            for (const el of document.querySelectorAll('{SEL_CONV_ITEM}')) {{
+                const titleEl = el.querySelector('{SEL_CONV_TITLE}');
+                if (!titleEl) continue;
+                const innerTitle = titleEl.querySelector('div[class*="conversationConversationItemtitle"]');
+                const text = ((innerTitle && innerTitle !== titleEl)
+                    ? innerTitle.textContent
+                    : (titleEl.childNodes[0]?.textContent || '')).trim();
+                if (/^\\d{{6,}}$/.test(text)) titles.push(text);
+            }}
+            return titles;
+        }}""")
+
+    def _stable_numeric_title_set(self):
+        stable = getattr(self, "_stable_numeric_titles", None)
+        if stable is None:                     # 兼容不走 __init__ 的构造方式
+            stable = set()
+            self._stable_numeric_titles = stable
+        return stable
+
+    async def _settle_after_conv_scroll(self):
+        """滑动会话列表之后先停下来，等昵称渲染出来再让调用方读 DOM。
+
+        抖音的私信列表滑动后是「先 uid、后昵称」两步渲染：马上 querySelectorAll
+        拿到的标题是 uid，一两秒后才变成昵称。读早了会把同一个会话的 uid 版本也
+        当成一条新会话（数量虚高、面板显示 uid）。所以每次滑动后固定停
+        CONV_SCROLL_SETTLE_SECONDS；只要窗口里还有数字标题就继续等，
+        最多等到 CONV_NICKNAME_WAIT_SECONDS。
+
+        「数字标题」不一定是占位：有的号昵称本来就全是数字，等多久都不会变。
+        所以等满上限还是这串数字的，就记进 _stable_numeric_titles —— 以后的
+        滚动不再为它空等（真占位通常一两秒就换成昵称了）。
+        """
+        await asyncio.sleep(CONV_SCROLL_SETTLE_SECONDS)
+        stable = self._stable_numeric_title_set()
+        deadline = time.monotonic() + CONV_NICKNAME_WAIT_SECONDS
+        polls = 0
+        pending = []
+        while time.monotonic() < deadline:
+            try:
+                titles = await self._uid_like_titles()
+            except Exception:
+                return
+            pending = [t for t in titles if t not in stable]
+            if not pending:
+                return
+            polls += 1
+            now = time.monotonic()
+            # 等超过一轮才提示，且全局最多每 15 秒提一次，免得滚动循环刷屏
+            if polls >= 2 and now - getattr(self, "_uid_wait_notice_at", 0.0) > 15:
+                self._uid_wait_notice_at = now
+                print(f"  [*] {len(pending)} 个会话标题还是一串数字，先等等看会不会变成昵称...")
+            await asyncio.sleep(CONV_NICKNAME_POLL_SECONDS)
+
+        if pending:
+            stable.update(pending)
 
     async def _ensure_conv_list_loaded(self):
         """Wait for conversation list to load.
@@ -684,17 +778,27 @@ class WebChatScraper:
                 scrollable.scrollTop = 0;
             }}
         }}""")
+        await self._settle_after_conv_scroll()
 
     async def _scroll_conv_list_down(self):
-        """Scroll the conversation list down one step. True if already at bottom (or no list)."""
-        return await self.page.evaluate(f"""() => {{
+        """Scroll the conversation list down one step. True if already at bottom (or no list).
+
+        滑动之后先等昵称渲染（_settle_after_conv_scroll）再返回，调用方拿到返回值时
+        DOM 已经是稳定状态 —— 这是「滑动一次，停 1 秒，再找昵称」的落点。
+        """
+        at_bottom = await self.page.evaluate(f"""() => {{
             const list = document.querySelector('{SEL_CONV_LIST}');
             if (!list) return true;
             const scrollable = list.querySelector('[style*="overflow"]') || list;
             const before = scrollable.scrollTop;
             scrollable.scrollTop += 400;
-            return scrollable.scrollTop === before;
+            if (scrollable.scrollTop !== before) return false;
+            // 已经贴底：把滚动位置顶到最新的内容高度，抖音靠这个继续异步拉下一页
+            scrollable.scrollTop = scrollable.scrollHeight;
+            return true;
         }}""")
+        await self._settle_after_conv_scroll()
+        return at_bottom
 
     async def _find_and_click_conversation(self, target_name, timeout_s=None, poll_s=None):
         """Find a conversation by name and click it.
@@ -702,6 +806,10 @@ class WebChatScraper:
         After a cache-clear reload, titles may show UIDs until nicknames hydrate.
         Poll until `timeout_s`, scrolling the virtual list and wrapping back to
         the top so a later pass can match the real nickname.
+
+        每一次滑动之后都会先停一下等昵称渲染（_scroll_conv_list_down /
+        _scroll_conv_list_to_top 内部调 _settle_after_conv_scroll），所以本循环
+        匹配到的标题都是渲染完成的版本，不会因为「滑完立刻读」而读到 uid 占位。
 
         JS does the matching (with whitespace/nbsp normalization, so Windows
         vs. Linux discrepancies don't break exact checks), but the ACTUAL
