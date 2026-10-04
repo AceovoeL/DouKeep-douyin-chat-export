@@ -54,6 +54,14 @@ describe('renderRichText', () => {
     expect(renderRichText('', '钱')).toBe('')
     expect(renderRichText(null, '钱')).toBe('')
   })
+
+  it('renders the 「表情 | 回应者」 detail of a quick reaction, escaping the nickname', () => {
+    // 消息下方的「表情快捷回复」明细走的就是这里：表情名换成图片，昵称当纯文本转义
+    const html = renderRichText('[爱心] | <b>小明</b>')
+    expect(html).toContain('src="/emoji/%E7%88%B1%E5%BF%83.webp"')
+    expect(html).toContain('&lt;b&gt;小明&lt;/b&gt;')
+    expect(html).not.toContain('<b>')
+  })
 })
 
 describe('emojiUrl', () => {

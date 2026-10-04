@@ -8,7 +8,10 @@
       <div class="msg-header" v-if="!isStatic">
         <h3>{{ conversation.name || '未命名' }}</h3>
         <span class="msg-total">{{ total }} 条消息</span>
-        <button v-if="!selfUid && senders.length === 2" class="msg-pick-self" @click="showPicker = true">
+        <!-- 只要这个会话有两个以上的人就可以设置「我」：群聊同样需要
+             （以前只在正好两个人的会话里出现，群聊里根本点不到，于是群里
+             所有消息都挤在左边）。这个选择存在浏览器里，所有会话共用。 -->
+        <button v-if="!selfUid && senders.length > 1" class="msg-pick-self" @click="showPicker = true">
           设置"我"
         </button>
         <button v-if="selfUid" class="msg-pick-self picked" @click="showPicker = true">
@@ -396,7 +399,8 @@
                   <span
                     v-if="kind === 'reaction' && reactionDetail(msg)"
                     class="msg-reaction-detail"
-                  >{{ reactionDetail(msg) }}</span>
+                    v-html="renderText(reactionDetail(msg))"
+                  ></span>
                 </template>
                 {{ formatTime(msg.timestamp) }}
               </div>
@@ -670,6 +674,8 @@ function isSelf(msg) {
 
 // 表情快捷回复的明细：谁的什么表情。写在「表情快捷回复」标签右边，
 // 形如「[爱心] | 小明」，多条回应用逗号隔开。
+// 表情记号由模板交给 renderText() 渲染，本地有图的会像正文一样变成图片表情
+// （拿不到昵称等纯文本部分照样转义，不会因为 v-html 漏出标签）。
 function reactionDetail(msg) {
   const reactions = getModifyReactions(msg)
   if (!reactions.length) return ''
@@ -1354,6 +1360,9 @@ watch(() => props.jumpToSeq, async (seq) => {
   border-radius: 12px;
   padding: 24px;
   min-width: 280px;
+  /* 群聊里人选可能有一长串，超出屏幕时要能滚，别把对话框顶出去 */
+  max-height: 80vh;
+  overflow-y: auto;
   box-shadow: 0 8px 30px rgba(0,0,0,0.4);
   animation: dialog-in var(--dur-base) var(--ease-out);
 }
@@ -1871,6 +1880,10 @@ watch(() => props.jumpToSeq, async (seq) => {
   flex-direction: row-reverse;
   margin-left: auto;
 }
+/* 我发的消息：正文列（昵称、气泡、图片、卡片、页脚）一律贴右边对齐 */
+.msg-item.msg-self > .msg-body {
+  align-items: flex-end;
+}
 
 .msg-avatar {
   width: var(--msg-avatar-size);
@@ -1900,8 +1913,17 @@ watch(() => props.jumpToSeq, async (seq) => {
   border-radius: 50%;
 }
 
+/* 头像旁边这一列：昵称 / 正文 / 页脚（时间 + 标签）从上到下排。
+   用纵向 flex 是为了让每个子块各自贴住**自己那一侧**——
+   对方的消息贴左，我发的消息贴右（见下面的 .msg-item.msg-self）。
+   普通块级排版做不到这一点：正文块的宽度会被同一列里更宽的那一行撑开，
+   而正文自己是 fit-content，于是短句（正文比时间行还窄）会往另一边倒。
+   实测不带标签的短句要偏十几像素，带上「表情快捷回复」明细能偏出一百多像素。 */
 .msg-body {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .msg-sender {
@@ -2440,6 +2462,8 @@ watch(() => props.jumpToSeq, async (seq) => {
   border: 1px solid color-mix(in srgb, var(--text-primary) 10%, transparent);
   border-radius: 6px;
   user-select: text;
+  /* 调试用的 JSON 面板照旧铺满整列（别的子块是贴边对齐，它是按列宽撑开） */
+  align-self: stretch;
   animation: json-in var(--dur-base) var(--ease-out);
 }
 @keyframes json-in {
