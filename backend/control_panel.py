@@ -269,6 +269,9 @@ _FATAL_ERROR_PATTERNS = tuple(re.compile(pattern) for pattern in (
     r"^\[!\]\s*本次全量抓取一条消息都没拿到",
     r"^\[!\]\s*batch #\d+ 连续 \d+ 次失败",
     r"^\[!\]\s*未能获取 short_id",
+    r"^\[!\]\s*诊断失败",                              # 页面诊断自己都没跑起来
+    r"^\[!\]\s*页面有",                                # 二维码 / 验证码 / 登录按钮
+    r"^\[!\]\s*IM SDK 完全未加载",
     r"^Traceback \(most recent call last\)",
 ))
 
@@ -277,6 +280,9 @@ _FATAL_ERROR_PATTERNS = tuple(re.compile(pattern) for pattern in (
 _MEDIA_FAILURE_PATTERNS = tuple(re.compile(pattern) for pattern in (
     r"^\[(media|voice|forward)\].*失败",
     r"^\[!\]\s*(下载|补全|原生语音识别|合并转发).*失败",
+    r"^\[!\]\s*sec_uid 定向补取失败",                   # 单个会话补 sec_uid 失败
+    r"^\[!\]\s*无法找到会话[「『\"]",                    # 选中的会话没找到，跳过
+    r"^\[!\]\s*batch #\d+ JS 端报错",                   # 某一批消息在 JS 端就报错
 ))
 
 # "…已下载 12 个 (失败 0)" is the summary of that step, not a failure itself.
@@ -783,51 +789,71 @@ def _stop_video_backfill() -> dict:
     return {"status": "stopping"}
 
 
-async def _watch_scrape_log(log_path: str, kind: str) -> None:
+def _new_log_watch_state() -> dict:
+    """盯日志用的共享状态：读到哪儿了、这轮报过几条致命错误、最后那条错误。
+
+    由任务本身持有（而不是留在 watcher 协程里）：任务结束时还要拿它再扫一遍日志
+    尾巴，靠 ``offset`` 避免同一行被报两次。
+    """
+    return {"offset": 0, "fatal": 0, "last_error": None}
+
+
+async def _watch_scrape_log(log_path: str, kind: str, state: dict | None = None) -> None:
     """Tail the scrape log while the job runs: errors pause the job and pop up.
 
     Fatal lines each get their own dialog; per-file download/transcription
     warnings are merged into one dialog per run.
     """
-    job = _scrape_job_kind(kind)
-    offset = 0
+    state = state if state is not None else _new_log_watch_state()
     while True:
         await asyncio.sleep(0.6)
-        try:
-            if not os.path.exists(log_path):
+        await _report_new_scrape_errors(log_path, kind, state)
+
+
+async def _report_new_scrape_errors(log_path: str, kind: str, state: dict) -> None:
+    """把日志里新写出来的可疑行登记成弹窗（致命 / 文件级两类）。"""
+    job = _scrape_job_kind(kind)
+    offset = int(state.get("offset") or 0)
+    try:
+        if not os.path.exists(log_path):
+            return
+        size = os.path.getsize(log_path)
+        if size < offset:
+            offset = 0  # log was rewritten
+        if size <= offset:
+            return
+        with open(log_path, "rb") as handle:
+            handle.seek(offset)
+            chunk = handle.read()
+    except OSError:
+        return
+    cut = chunk.rfind(b"\n")  # keep a half-written last line for next round
+    if cut < 0:
+        return
+    state["offset"] = offset + cut + 1
+    text = _decode_log_bytes(chunk[:cut])
+    fatals: list[str] = []
+    medias: list[str] = []
+    for line in text.splitlines():
+        line_kind = classify_scrape_log_line(line)
+        text_line = line.strip()
+        if line_kind == "fatal":
+            # A traceback belongs to the error printed just before it.
+            if text_line.startswith("Traceback") and fatals:
                 continue
-            size = os.path.getsize(log_path)
-            if size < offset:
-                offset = 0  # log was rewritten
-            if size <= offset:
-                continue
-            with open(log_path, "rb") as handle:
-                handle.seek(offset)
-                chunk = handle.read()
-        except OSError:
-            continue
-        cut = chunk.rfind(b"\n")  # keep a half-written last line for next round
-        if cut < 0:
-            continue
-        offset += cut + 1
-        text = _decode_log_bytes(chunk[:cut])
-        fatals: list[str] = []
-        medias: list[str] = []
-        for line in text.splitlines():
-            line_kind = classify_scrape_log_line(line)
-            text_line = line.strip()
-            if line_kind == "fatal":
-                # A traceback belongs to the error printed just before it.
-                if text_line.startswith("Traceback") and fatals:
-                    continue
-                fatals.append(text_line)
-            elif line_kind == "media":
-                medias.append(text_line)
-        detail = _scrape_log_tail(log_path) if (fatals or medias) else ""
-        for line in fatals:
-            await raise_job_error(job, line, detail)          # one dialog each
-        for line in medias:
-            await raise_job_error(job, line, detail, merge=True)  # merged
+            fatals.append(text_line)
+        elif line_kind == "media":
+            medias.append(text_line)
+    detail = _scrape_log_tail(log_path) if (fatals or medias) else ""
+    # 先记账、再弹窗：弹窗做到一半被取消（任务正好结束）也不能漏掉这条致命错误。
+    if fatals:
+        state["fatal"] = int(state.get("fatal") or 0) + len(fatals)
+    for line in fatals:
+        error = await raise_job_error(job, line, detail)          # one dialog each
+        if error is not None:
+            state["last_error"] = error
+    for line in medias:
+        await raise_job_error(job, line, detail, merge=True)  # merged
 
 
 async def restore_schedule_on_startup():
@@ -3338,12 +3364,13 @@ async def _run_scrape(cmd, *, log_path=None, job_kind="scrape"):
     # prior manual-stop flag; otherwise a scheduled scrape after a manual Stop
     # would be mislabeled '已停止' and its failure notification suppressed.
     job = _scrape_job_kind(job_kind)
+    log_path = log_path or LOG_PATH
+    watch = _new_log_watch_state()
     _scrape_state["stopped"] = False
     await _resume_job(job)          # in case a stale dialog left it frozen
     start_job_error_run(job)        # per-file failures merge per run
     watcher = None
     try:
-        log_path = log_path or LOG_PATH
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         with open(log_path, "w", encoding="utf-8", newline="") as log_file:
             proc = await asyncio.create_subprocess_exec(
@@ -3356,7 +3383,9 @@ async def _run_scrape(cmd, *, log_path=None, job_kind="scrape"):
             _scrape_state["process"] = proc
             # Watch the log while the job runs: an error line pauses the job and
             # pops the panel dialog instead of letting it run past the problem.
-            watcher = asyncio.create_task(_watch_scrape_log(log_path, job_kind))
+            watcher = asyncio.create_task(
+                _watch_scrape_log(log_path, job_kind, watch)
+            )
             await proc.wait()
 
         if _scrape_state.get("stopped"):
@@ -3380,20 +3409,36 @@ async def _run_scrape(cmd, *, log_path=None, job_kind="scrape"):
     finally:
         if watcher is not None:
             watcher.cancel()
+            try:
+                await watcher           # 等它退场，免得留下没跑完的任务
+            except asyncio.CancelledError:
+                pass
+        # 进程退出前最后写下的几行，watcher 往往还没来得及读：收尾补扫一遍，
+        # 这样「日志里的错误行」和「退出码」不会为同一件事弹两个框。
+        try:
+            await _report_new_scrape_errors(log_path, job_kind, watch)
+        except asyncio.CancelledError:
+            pass
         _scrape_state["finished_at"] = time.time()
         _scrape_state["process"] = None
         _scrape_state["paused"] = False
         _scrape_state["paused_at"] = None
         if _scrape_state["status"] == "failed" and not _scrape_state.get("stopped"):
             label = "语音转写补充" if job_kind == "voice_backfill" else "采集"
-            # Show the panel dialog (and keep a corner notice) for a dead job too:
-            # nothing is left to pause, the dialog just reports and the countdown
-            # closes it after the usual two minutes.
-            await raise_job_error(
-                job,
-                _scrape_state["message"],
-                _scrape_log_tail(log_path) or _scrape_state["message"],
-            )
+            if watch.get("fatal"):
+                # 同一件事只弹一个框：错误行已经弹过了，退出码只是它的结果，补进
+                # 那条错误的详情里就够了（面板状态照旧显示退出码）。
+                if watch.get("last_error") is not None:
+                    _append_error_detail(watch["last_error"], _scrape_state["message"])
+            else:
+                # Show the panel dialog (and keep a corner notice) for a dead job too:
+                # nothing is left to pause, the dialog just reports and the countdown
+                # closes it after the usual two minutes.
+                await raise_job_error(
+                    job,
+                    _scrape_state["message"],
+                    _scrape_log_tail(log_path) or _scrape_state["message"],
+                )
             asyncio.create_task(_notify_on_failure(
                 f"抖音聊天导出 · {label}失败",
                 _build_failure_desp(_scrape_state["message"], log_path),
@@ -3857,6 +3902,7 @@ async def _run_discover(cmd):
     proc = None
     watcher = None
     job = JOB_REFRESH
+    watch = _new_log_watch_state()
     await _resume_job(job)          # 上一次的弹窗可能还把它冻着
     start_job_error_run(job)
     try:
@@ -3871,7 +3917,7 @@ async def _run_discover(cmd):
             )
             _discover_state["process"] = proc
             watcher = asyncio.create_task(
-                _watch_scrape_log(DISCOVER_LOG_PATH, "refresh")
+                _watch_scrape_log(DISCOVER_LOG_PATH, "refresh", watch)
             )
             await proc.wait()
 
@@ -3902,6 +3948,15 @@ async def _run_discover(cmd):
     finally:
         if watcher is not None:
             watcher.cancel()
+            try:
+                await watcher           # 等它退场，免得留下没跑完的任务
+            except asyncio.CancelledError:
+                pass
+        # 和采集一样：退出前最后几行补扫一遍，同一件事不弹两个框。
+        try:
+            await _report_new_scrape_errors(DISCOVER_LOG_PATH, "refresh", watch)
+        except asyncio.CancelledError:
+            pass
         _discover_state["finished_at"] = time.time()
         _discover_state["process"] = None
         _discover_state["paused"] = False
@@ -3911,12 +3966,17 @@ async def _run_discover(cmd):
             _discover_state["status"] = "failed"
             _discover_state["message"] = _discover_state["message"] or "刷新中断"
         if _discover_state["status"] == "failed" and not _discover_state.get("stopped"):
-            # 任务已经结束，没有东西可以暂停：弹窗只把原因说清楚，倒计时结束就收进右下角
-            await raise_job_error(
-                job,
-                _discover_state["message"],
-                _scrape_log_tail(DISCOVER_LOG_PATH) or _discover_state["message"],
-            )
+            if watch.get("fatal"):
+                # 日志里的错误行已经弹过框了：退出码/友好提示补进它的详情即可
+                if watch.get("last_error") is not None:
+                    _append_error_detail(watch["last_error"], _discover_state["message"])
+            else:
+                # 任务已经结束，没有东西可以暂停：弹窗只把原因说清楚，倒计时结束就收进右下角
+                await raise_job_error(
+                    job,
+                    _discover_state["message"],
+                    _scrape_log_tail(DISCOVER_LOG_PATH) or _discover_state["message"],
+                )
 
 
 @control_router.get("/api/conversations/refresh/status")

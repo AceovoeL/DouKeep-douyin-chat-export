@@ -76,6 +76,18 @@ def test_fatal_lines_are_recognised():
     assert cp.classify_scrape_log_line("  [!] batch #3 连续 3 次失败，停止") == "fatal"
     assert cp.classify_scrape_log_line("  [+] 共发现 7 个会话") is None
     assert cp.classify_scrape_log_line("") is None
+    # 页面/登录态的诊断结论也要弹：以前只在日志里躺着，用户根本看不到
+    assert cp.classify_scrape_log_line("  [!] 诊断失败: TimeoutError: boom") == "fatal"
+    assert cp.classify_scrape_log_line(
+        "[!] 页面有二维码 → 登录态实际无效，请重新扫码或导入新 Cookie"
+    ) == "fatal"
+    assert cp.classify_scrape_log_line(
+        "[!] 页面有验证码/滑块 → 触发了风控，需要人工通过"
+    ) == "fatal"
+    assert cp.classify_scrape_log_line("[!] 页面有登录按钮 → 大概率未登录") == "fatal"
+    assert cp.classify_scrape_log_line(
+        "[!] IM SDK 完全未加载 → 可能账号无 PC IM 权限，或 JS chunk 被拦截"
+    ) == "fatal"
 
 
 def test_per_file_failures_are_media_kind():
@@ -84,6 +96,14 @@ def test_per_file_failures_are_media_kind():
     assert cp.classify_scrape_log_line("  [voice] 下载失败（空响应 0B）: srv_1") == "media"
     assert cp.classify_scrape_log_line("  [!] 下载头像失败 昵称: boom") == "media"
     assert cp.classify_scrape_log_line("  [!] 原生语音识别失败（消息已保存）: boom") == "media"
+    # 单个会话/单批消息的小毛病：合并成一个框，不刷屏
+    assert cp.classify_scrape_log_line("  [!] sec_uid 定向补取失败: TimeoutError: boom") == "media"
+    assert cp.classify_scrape_log_line(
+        "  [!] 无法找到会话「张三」，跳过 (DOM中有 45 个会话: ['a', 'b'])"
+    ) == "media"
+    assert cp.classify_scrape_log_line(
+        "  [!] batch #7 JS 端报错: TypeError: x is not a function"
+    ) == "media"
     # The step summary is not a failure itself, even when it mentions 失败 0.
     assert cp.classify_scrape_log_line("  [media] 图片/表情/视频封面 已下载 12 个 (失败 0)") is None
     # 统计行同理：带「失败」两个字，但失败数是 0 就不该弹框。
@@ -325,9 +345,9 @@ def test_watcher_queues_each_fatal_line(tmp_path, job_state):
 
 
 def test_failed_scrape_job_reports_dialog(tmp_path, monkeypatch, job_state):
-    """A scrape that dies still opens the dialog (nothing left to pause)."""
+    """没有错误行、只是进程挂掉：仍然弹窗（这时没有东西可以暂停）。"""
     monkeypatch.setattr(cp, "LOG_PATH", str(tmp_path / "scrape.log"))
-    monkeypatch.setattr(cp, "PAUSE_AUTO_RESUME_SECONDS", 0.2)
+    monkeypatch.setattr(cp, "PAUSE_AUTO_RESUME_SECONDS", 60)
 
     async def _no_notify(title, desp):
         return None
@@ -335,7 +355,7 @@ def test_failed_scrape_job_reports_dialog(tmp_path, monkeypatch, job_state):
     monkeypatch.setattr(cp, "_notify_on_failure", _no_notify)
     cmd = [
         sys.executable, "-u", "-c",
-        "print('[-] 错误: nope', flush=True); import time; time.sleep(0.4); raise SystemExit(3)",
+        "print('[+] 正常输出', flush=True); import time; time.sleep(0.3); raise SystemExit(3)",
     ]
 
     async def scenario():
@@ -347,7 +367,97 @@ def test_failed_scrape_job_reports_dialog(tmp_path, monkeypatch, job_state):
     info = asyncio.run(scenario())
     assert cp._scrape_state["status"] == "failed"
     assert info is not None and info["running"] is False
+    assert info["message"] == "采集失败 (exit code 3)"
     assert cp._public_job_alerts()[0]["job"] == cp.JOB_SCRAPE
+
+
+def _dying_scrape_cmd(body: str):
+    """一段跑完就带着退出码 3 结束的子进程脚本（用来验「退出码」那条路径）。"""
+    return [
+        sys.executable, "-u", "-c",
+        f"{body}; import time; time.sleep(0.3); raise SystemExit(3)",
+    ]
+
+
+def test_fatal_line_and_exit_code_share_one_dialog(tmp_path, monkeypatch, job_state):
+    """同一件事只弹一个框：日志里的错误行已经说清了，退出码不再重复弹。"""
+    monkeypatch.setattr(cp, "LOG_PATH", str(tmp_path / "scrape.log"))
+    monkeypatch.setattr(cp, "PAUSE_AUTO_RESUME_SECONDS", 60)
+
+    async def _no_notify(title, desp):
+        return None
+
+    monkeypatch.setattr(cp, "_notify_on_failure", _no_notify)
+    # 进程死得太快，watcher 那一轮（0.6s）根本来不及读 —— 靠收尾补扫兜住
+    cmd = _dying_scrape_cmd("print('[-] 错误: nope', flush=True)")
+
+    async def scenario():
+        await cp._run_scrape(cmd)
+        info = _public()
+        queued = list(cp._job_error_state.get("queue") or [])
+        task = cp._job_error_state.get("resume_task")
+        if task:
+            task.cancel()
+        return info, queued
+
+    info, queued = asyncio.run(scenario())
+    assert info is not None and info["message"] == "[-] 错误: nope"
+    assert queued == []                                  # 没有第二个弹窗
+    assert "采集失败 (exit code 3)" in info["detail"]     # 退出码补进了它的详情
+
+
+def test_watcher_reports_fatal_line_before_the_exit_code(tmp_path, monkeypatch, job_state):
+    """watcher 先读到错误行的情况：同样只有这一个框。"""
+    monkeypatch.setattr(cp, "LOG_PATH", str(tmp_path / "scrape.log"))
+    monkeypatch.setattr(cp, "PAUSE_AUTO_RESUME_SECONDS", 60)
+
+    async def _no_notify(title, desp):
+        return None
+
+    monkeypatch.setattr(cp, "_notify_on_failure", _no_notify)
+    cmd = [
+        sys.executable, "-u", "-c",
+        "print('[-] 未能登录，退出', flush=True); import time; time.sleep(1.0); raise SystemExit(2)",
+    ]
+
+    async def scenario():
+        await cp._run_scrape(cmd)
+        info = _public()
+        queued = list(cp._job_error_state.get("queue") or [])
+        task = cp._job_error_state.get("resume_task")
+        if task:
+            task.cancel()
+        return info, queued
+
+    info, queued = asyncio.run(scenario())
+    assert info is not None and info["message"] == "[-] 未能登录，退出"
+    assert queued == []
+    assert "采集失败 (exit code 2)" in info["detail"]
+
+
+def test_media_failure_keeps_the_exit_code_dialog(tmp_path, monkeypatch, job_state):
+    """只有文件级小毛病时进程又挂了：两件事都要报（第二个排队等）。"""
+    monkeypatch.setattr(cp, "LOG_PATH", str(tmp_path / "scrape.log"))
+    monkeypatch.setattr(cp, "PAUSE_AUTO_RESUME_SECONDS", 60)
+
+    async def _no_notify(title, desp):
+        return None
+
+    monkeypatch.setattr(cp, "_notify_on_failure", _no_notify)
+    cmd = _dying_scrape_cmd("print('  [media] image 失败: http 403', flush=True)")
+
+    async def scenario():
+        await cp._run_scrape(cmd)
+        info = _public()
+        queued = [e["message"] for e in cp._job_error_state.get("queue") or []]
+        task = cp._job_error_state.get("resume_task")
+        if task:
+            task.cancel()
+        return info, queued
+
+    info, queued = asyncio.run(scenario())
+    assert info is not None and info["message"] == "[media] image 失败: http 403"
+    assert queued == ["采集失败 (exit code 3)"]
 
 
 # ── media jobs ────────────────────────────────────────────────────────────
