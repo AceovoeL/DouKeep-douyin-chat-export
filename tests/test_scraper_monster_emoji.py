@@ -16,8 +16,8 @@ REAL_MONSTER_EMOJI = {
     "image_type": "webp",
     "sticker_type": 23,
     "url": {
-        "uri": "tos-cn-i-wvh0dcswot/emoji-1010",
-        "url_list": ["https://p26-sign.douyinpic.com/obj/tos-cn-i-wvh0dcswot/emoji-1010"],
+        "uri": "tos-cn-i-example/emoji-1010",
+        "url_list": ["https://cdn.example.com/obj/emoji-1010"],
     },
 }
 
@@ -31,7 +31,7 @@ def test_monster_emoji_is_in_the_emoji_list():
 def test_monster_emoji_payload_gives_text_and_image():
     assert _emoji_payload(REAL_MONSTER_EMOJI) == (
         "笑死",
-        "https://p26-sign.douyinpic.com/obj/tos-cn-i-wvh0dcswot/emoji-1010",
+        "https://cdn.example.com/obj/emoji-1010",
     )
 
 

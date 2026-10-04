@@ -13,14 +13,10 @@ import pytest
 
 from common import card_icons
 
-# 用户报的两条真实链接（一条群邀请卡的群头像，一条豆包卡封面）
-INVITE_ICON = (
-    "http://p3-aweme-im-img.byteimg.com/tos-cn-i-7lppr0tkux/"
-    "group-icon"
-    "~tplv-7lppr0tkux-original-webp.webp"
-)
+# 示例链接（形状和真实链接一致：群邀请卡的群头像、豆包卡封面）
+INVITE_ICON = "http://p3-aweme-im-img.byteimg.com/tos-cn-i-example/group-icon.webp"
 DOUBAO_COVER = (
-    "http://p26-sign.douyinpic.com/large/tos-cn-i-dy/example-cover.jpeg"
+    "http://p26-sign.douyinpic.com/large/tos-cn-i-example/demo-cover.jpeg"
     "?lk3s=138a59ce&x-expires=1781013600&x-signature=1frPMEUL%2BEuHBSTaVue2XUrPwM4%3D"
     "&from=327834062_large&s=PackSourceEnum_FEED&se=false&sc=cover&biz_tag=aweme_video"
     "&l=20260526224605C571133BC44DED8B0679"
@@ -37,10 +33,10 @@ def media_dir(tmp_path, monkeypatch):
 
 def test_filename_matches_frontend_hash():
     """这两个哈希是前端 media.test.js 里断言过的同一对值。"""
-    assert card_icons.fnv1a_32(INVITE_ICON) == "4b0991ef"
-    assert card_icons.fnv1a_32(DOUBAO_COVER) == "86ef82f2"
-    assert card_icons.icon_filename(INVITE_ICON) == "4b0991ef.webp"
-    assert card_icons.icon_filename(DOUBAO_COVER) == "86ef82f2.jpg"
+    assert card_icons.fnv1a_32(INVITE_ICON) == "e5e49455"
+    assert card_icons.fnv1a_32(DOUBAO_COVER) == "15f52813"
+    assert card_icons.icon_filename(INVITE_ICON) == "e5e49455.webp"
+    assert card_icons.icon_filename(DOUBAO_COVER) == "15f52813.jpg"
 
 
 def test_extension_follows_the_link_path():
@@ -74,7 +70,7 @@ def test_save_card_icon_writes_once_and_reuses(media_dir, monkeypatch):
 
     monkeypatch.setattr(card_icons, "_fetch_icon", fake_fetch)
     rel = card_icons.save_card_icon(INVITE_ICON)
-    assert rel == "card_icons/4b0991ef.webp"
+    assert rel == "card_icons/e5e49455.webp"
     assert os.path.getsize(os.path.join(media_dir, rel)) > 0
     assert card_icons.find_card_icon(INVITE_ICON) == rel
     # 再遇到同一个链接（另一个群里也拉了一次）直接用存好的那份

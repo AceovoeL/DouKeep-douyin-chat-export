@@ -583,10 +583,10 @@ describe('leftover media payload display', () => {
       image_id: 1010,
       image_type: 'webp',
       sticker_type: 23,
-      url: { url_list: ['https://p26-sign.douyinpic.com/obj/tos-cn-i-wvh0dcswot/emoji-1010'] },
+      url: { url_list: ['https://cdn.example.com/emoji/monster.webp'] },
     }, { msg_type: 0, content: '笑死', sender_uid: 'peer' })
     expect(isLooseEmoji(flame)).toBe(true)
-    expect(getEmojiSrc(flame)).toBe('https://p26-sign.douyinpic.com/obj/tos-cn-i-wvh0dcswot/emoji-1010')
+    expect(getEmojiSrc(flame)).toBe('https://cdn.example.com/emoji/monster.webp')
     expect(shouldShow(flame)).toBe(true)
     expect(isSystemMsg(flame)).toBe(false)
   })

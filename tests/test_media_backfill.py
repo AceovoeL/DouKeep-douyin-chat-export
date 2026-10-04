@@ -17,9 +17,9 @@ from common import card_icons
 from extractor import media_backfill, web_scraper
 from tests.conftest import insert_conversation, insert_message
 
-EMOJI_URL = "https://p26-sign.douyinpic.com/obj/tos-cn-i-wvh0dcswot/emoji-1010.webp"
-COVER_URL = "https://p3-sign.douyinpic.com/obj/tos-cn-i-dy/doubao-cover.jpeg"
-GROUP_ICON = "https://p3-aweme-im-img.byteimg.com/tos-cn-i-7lppr0tkux/group-icon.webp"
+EMOJI_URL = "https://cdn.example.com/emoji/monster.webp"
+COVER_URL = "https://p3-sign.douyinpic.com/obj/tos-cn-i-example/doubao-cover.jpeg"
+GROUP_ICON = "https://p3-aweme-im-img.byteimg.com/tos-cn-i-example/group-icon.webp"
 
 
 @pytest.fixture()

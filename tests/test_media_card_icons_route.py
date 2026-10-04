@@ -35,13 +35,13 @@ def _scope(path: str, url: str = "") -> dict:
 
 
 def test_serves_the_archived_file(media_dir):
-    target = media_dir / card_icons.CARD_ICON_DIR_NAME / "4b0991ef.webp"
+    target = media_dir / card_icons.CARD_ICON_DIR_NAME / "e5e49455.webp"
     target.write_bytes(b"RIFF....WEBP" + b"x" * 100)
 
     files = MediaStaticFiles(directory=str(media_dir))
-    response = _run(files._card_icon_response("card_icons/4b0991ef.webp", _scope("card_icons/4b0991ef.webp", INVITE_ICON)))
+    response = _run(files._card_icon_response("card_icons/e5e49455.webp", _scope("card_icons/e5e49455.webp", INVITE_ICON)))
     assert response is not None
-    assert os.path.basename(response.path) == "4b0991ef.webp"
+    assert os.path.basename(response.path) == "e5e49455.webp"
 
 
 def test_fetches_once_when_missing_then_serves_it(media_dir, monkeypatch):
@@ -53,11 +53,11 @@ def test_fetches_once_when_missing_then_serves_it(media_dir, monkeypatch):
 
     monkeypatch.setattr(card_icons, "_fetch_icon", fake_fetch)
     files = MediaStaticFiles(directory=str(media_dir))
-    scope = _scope("card_icons/4b0991ef.webp", INVITE_ICON)
-    first = _run(files._card_icon_response("card_icons/4b0991ef.webp", scope))
+    scope = _scope("card_icons/e5e49455.webp", INVITE_ICON)
+    first = _run(files._card_icon_response("card_icons/e5e49455.webp", scope))
     assert first is not None and calls == [INVITE_ICON]
     # 第二次直接命中本地文件，不再上网
-    second = _run(files._card_icon_response("card_icons/4b0991ef.webp", scope))
+    second = _run(files._card_icon_response("card_icons/e5e49455.webp", scope))
     assert second is not None and calls == [INVITE_ICON]
 
 

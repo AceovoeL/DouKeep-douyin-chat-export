@@ -1,16 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import { iconSrc, resolveAvatarUrl } from './media.js'
 
-const INVITE_ICON = 'http://p3-aweme-im-img.byteimg.com/tos-cn-i-7lppr0tkux/group-icon~tplv-7lppr0tkux-original-webp.webp'
+const INVITE_ICON = 'http://p3-aweme-im-img.byteimg.com/tos-cn-i-example/group-icon.webp'
 // 用户报的那条豆包卡封面（真链接，带签名参数）
-const COVER = 'http://p26-sign.douyinpic.com/large/tos-cn-i-dy/example-cover.jpeg?lk3s=138a59ce&x-expires=1781013600&x-signature=1frPMEUL%2BEuHBSTaVue2XUrPwM4%3D&from=327834062_large&s=PackSourceEnum_FEED&se=false&sc=cover&biz_tag=aweme_video&l=20260526224605C571133BC44DED8B0679'
+const COVER = 'http://p26-sign.douyinpic.com/large/tos-cn-i-example/demo-cover.jpeg?lk3s=138a59ce&x-expires=1781013600&x-signature=1frPMEUL%2BEuHBSTaVue2XUrPwM4%3D&from=327834062_large&s=PackSourceEnum_FEED&se=false&sc=cover&biz_tag=aweme_video&l=20260526224605C571133BC44DED8B0679'
 
 describe('卡片图地址（iconSrc）', () => {
   it('换成 /media/card_icons/<哈希><扩展名>?url=… 并带上原链接', () => {
     // 这两个哈希要和 Python 端 common/card_icons.py 的 fnv1a_32() 一致，
     // 否则「采集时存下的图」阅读端找不到，会白拉一次网。
-    expect(iconSrc(INVITE_ICON)).toBe(`/media/card_icons/4b0991ef.webp?url=${encodeURIComponent(INVITE_ICON)}`)
-    expect(iconSrc(COVER)).toBe(`/media/card_icons/86ef82f2.jpg?url=${encodeURIComponent(COVER)}`)
+    expect(iconSrc(INVITE_ICON)).toBe(`/media/card_icons/e5e49455.webp?url=${encodeURIComponent(INVITE_ICON)}`)
+    expect(iconSrc(COVER)).toBe(`/media/card_icons/15f52813.jpg?url=${encodeURIComponent(COVER)}`)
   })
 
   it('哈希只看链接本身：同一个链接两次算出来一样', () => {
