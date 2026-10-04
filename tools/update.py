@@ -13,8 +13,9 @@
   未提交的改动，也只会动有变化的部分。
 * **没有 git 的目录**（从别的电脑整体拷贝过来的副本、ZIP 解压出来的目录，或者这台
   机器压根没装 git）：走 GitHub API 下载默认分支的代码包，解压后覆盖项目里的代码
-  文件。仓库是私密的，所以这条路要用面板「关于」页里那个只读 Token（且开发者模式
-  必须是开着的 —— 关掉即「不再从私有仓库取代码」，Token 文件仍然留着）。下载过程会
+  文件。这条路**不需要凭据** —— 本项目的仓库是公开的，匿名就能下。只有当项目被
+  放回你自己的**私有仓库**时，才要先在面板「关于」页填那个只读 Token（且开发者模式
+  开着，见 ``common/github_auth.py``）；真下不到时脚本会把该去哪儿填说清楚。下载过程会
   **边下边报进度**（已下载多少 / 共多少 / 百分之几），免得看着像卡死。
 
 两套换法都只碰**仓库里的代码文件**：``data/``（聊天数据库、下载的媒体）、
@@ -201,7 +202,7 @@ def archive_url(slug: str, branch: str) -> str:
 
 
 def download_archive(slug: str, branch: str, token: str) -> bytes:
-    """下载分支代码包，返回 zip 的原始字节。
+    """下载分支代码包，返回 zip 的原始字节；``token`` 为空就是不认证地下载。
 
     走 API 的 zipball 接口而不是 ``github.com/<slug>/archive/refs/heads/<branch>.zip``：
     后者只认浏览器登录态的 cookie，Token 递过去也当没看见（私有仓库会直接 404）。
@@ -212,11 +213,13 @@ def download_archive(slug: str, branch: str, token: str) -> bytes:
     用户会以为卡死了。每读一块就更新「已下载多少 / 共多少（百分之几）」，
     但只按一定的间隔打行，免得把日志刷爆。
     """
-    request = urllib.request.Request(archive_url(slug, branch), headers={
+    headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "douyin-chat-export-updater",
-        "Authorization": f"Bearer {token}",
-    })
+    }
+    if token:                       # 公开仓库不带这个头也能下；私有仓库必须有
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(archive_url(slug, branch), headers=headers)
     started = time.monotonic()
     with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
         total = response_length(response)
@@ -344,6 +347,39 @@ def version_on_disk() -> str:
     return found.group(1) if found else version.VERSION
 
 
+def download_code_archive(slug: str, branch: str, token: str) -> bytes:
+    """下载代码包：有凭据就用凭据，凭据被拒（401 / 403）就退回匿名再试一次。
+
+    公开仓库匿名就能下，所以「Token 过期/被撤销」不该让更新彻底做不成 —— 先按不带
+    凭据的方式再来一次。两次都不行就照实往上抛，由调用方给出「去哪儿填 Token」的提示
+    （见 ``archive_auth_hint``）。
+    """
+    if not token:
+        return download_archive(slug, branch, "")
+    try:
+        return download_archive(slug, branch, token)
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (401, 403):
+            raise
+        print(f"[-] 带凭据的下载被拒（HTTP {exc.code}），改用不带凭据的方式再试一次", flush=True)
+        return download_archive(slug, branch, "")
+
+
+def archive_auth_hint() -> str:
+    """下不到代码包时提示该去哪儿补什么。
+
+    公开仓库匿名就能下载，所以走到这里基本就是「私有仓库 + 凭据没被用起来」。
+    「存过 Token，但开发者模式关着所以没用」和「压根没填过」是两回事，提示要分开
+    —— 不然用户会以为 Token 丢了，又去粘一遍。
+    """
+    if github_auth.load_for_use():
+        return "凭据可能无效，或没有这个仓库的读取权限"
+    if github_auth.load():
+        return ("面板「关于」页的开发者模式关着，这条路不会使用已保存的凭据："
+                "请打开「关于 → 开发者模式」后重试")
+    return "仓库如果是私有的，请在面板「关于 → 私有仓库凭据」里填写只读 Token"
+
+
 def update_code_via_archive() -> int:
     """没有 git（或指定了 --archive）时的更新：下载代码包 → 解压 → 覆盖。"""
     step("改用「下载代码包覆盖」的方式更新代码")
@@ -355,27 +391,16 @@ def update_code_via_archive() -> int:
           "data/、config/、venv/、frontend/node_modules/ 不在代码包里，不会被覆盖。", flush=True)
 
     token = github_auth.load_for_use()
-    if not token:
-        # 存过 Token、但开发者模式关着：Token 还在，只是这条「从私有仓库拿代码」的路
-        # 跟着开发者模式一起关了，提示要说清楚，别让人以为得重新粘贴一遍
-        if github_auth.load():
-            hint = "面板「关于」页的开发者模式关着，自动更新不会使用已保存的凭据：" \
-                   "请打开「关于 → 开发者模式」后重试"
-        else:
-            hint = "请在面板「关于 → 私有仓库凭据」里填写只读 Token"
-        return fail(
-            "这个目录不是 git 仓库，又没有可用的只读 Token，无法自动更新："
-            f"{hint}，或手动下载最新代码覆盖本目录"
-        )
-
     slug = version.REPOSITORY_SLUG
     branch = version.REPOSITORY_BRANCH
-    step(f"从 GitHub 下载 {slug} 的 {branch} 分支代码包")
+    # 不分「先检查有没有 Token」：公开仓库匿名就能下，拿不到代码包时再回头提示填凭据
+    step(f"从 GitHub 下载 {slug} 的 {branch} 分支代码包"
+         f"（{'带凭据' if token else '不带凭据'}）")
     try:
-        data = download_archive(slug, branch, token)
+        data = download_code_archive(slug, branch, token)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403, 404):
-            return fail(f"下载失败（HTTP {exc.code}）：Token 可能无效，或没有该仓库的读取权限")
+            return fail(f"下载失败（HTTP {exc.code}）：{archive_auth_hint()}，或手动下载最新代码覆盖本目录")
         return fail(f"下载失败（HTTP {exc.code}），请稍后重试")
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         return fail(f"下载失败：{exc} —— 检查网络后重试")

@@ -115,35 +115,91 @@ def test_version_on_disk_falls_back_when_file_is_gone(tmp_path, monkeypatch):
     assert updater.version_on_disk() == updater.version.VERSION
 
 
-def test_archive_without_token_stops_with_a_hint(tmp_path, monkeypatch, capsys):
-    """既没有 git 又没有 Token：停下并把该去哪儿填 Token 说清楚。"""
-    monkeypatch.setattr(updater, "REPO_ROOT", str(tmp_path))
+def test_archive_without_token_downloads_anonymously(tmp_path, monkeypatch):
+    """没填凭据也照常更新：本项目的公开仓库匿名就能下，不该先拦下来要 Token。"""
+    repo = fake_repo(tmp_path)
+    data = make_archive({"common/version.py": b'VERSION = "1.2.3"\n'})
+    seen: list = []
+    monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
     monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "")
     monkeypatch.setattr(updater.github_auth, "load", lambda: "")
+    monkeypatch.setattr(updater, "download_archive",
+                        lambda slug, branch, token: seen.append(token) or data)
+    monkeypatch.setattr(updater, "install_and_build", lambda: 0)
+
+    assert updater.main([]) == 0
+
+    assert seen == [""], "没有凭据就用空 Token 匿名下载"
+    assert (repo / "common" / "version.py").read_bytes() == b'VERSION = "1.2.3"\n'
+
+
+def test_archive_hints_at_the_token_when_the_download_needs_one(tmp_path, monkeypatch, capsys):
+    """没填过凭据、匿名又下不到（私有仓库）时，提示去哪儿填只读 Token。"""
+    repo = fake_repo(tmp_path)
+    tried: list = []
+    monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
+    monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "")
+    monkeypatch.setattr(updater.github_auth, "load", lambda: "")
+
+    def not_found(slug, branch, token):
+        tried.append(token)
+        raise updater.urllib.error.HTTPError(slug, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(updater, "download_archive", not_found)
 
     assert updater.main([]) == 1
 
     out = capsys.readouterr().out
+    assert tried == [""], "先匿名试一次"
+    assert "404" in out
     assert "只读 Token" in out
     assert "没有 .git" in out
 
 
-def test_archive_stops_while_developer_mode_is_off(tmp_path, monkeypatch, capsys):
-    """存过 Token、但开发者模式关着：这条路也不走（Token 只是不再被使用）。
+def test_archive_points_at_developer_mode_when_a_saved_token_is_not_used(
+        tmp_path, monkeypatch, capsys):
+    """存过 Token、但开发者模式关着：这条路不用它，下不到时要指向「关于 → 开发者模式」。
 
-    提示要指向「关于 → 开发者模式」，不能让人以为 Token 丢了、又去粘一遍。
+    不能让人以为 Token 丢了、又去粘一遍。
     """
-    monkeypatch.setattr(updater, "REPO_ROOT", str(tmp_path))
+    repo = fake_repo(tmp_path)
+    monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
     monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "")
     monkeypatch.setattr(updater.github_auth, "load", lambda: "tok")
-    monkeypatch.setattr(updater, "download_archive",
-                        lambda *a, **k: pytest.fail("开发者模式关着时不该去下载"))
+
+    def not_found(slug, branch, token):
+        raise updater.urllib.error.HTTPError(slug, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(updater, "download_archive", not_found)
 
     assert updater.main([]) == 1
 
     out = capsys.readouterr().out
     assert "开发者模式" in out
     assert "没有 .git" in out
+
+
+def test_archive_retries_without_the_token_when_it_is_rejected(tmp_path, monkeypatch):
+    """凭据过期/被撤销（401）时不该整个更新失败：退回匿名再下一次。"""
+    repo = fake_repo(tmp_path)
+    data = make_archive({"common/version.py": b'VERSION = "1.2.3"\n'})
+    seen: list = []
+    monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
+    monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "ghp_" + "b" * 36)
+    monkeypatch.setattr(updater, "install_and_build", lambda: 0)
+
+    def download(slug, branch, token):
+        seen.append(token)
+        if token:
+            raise updater.urllib.error.HTTPError(slug, 401, "Unauthorized", None, None)
+        return data
+
+    monkeypatch.setattr(updater, "download_archive", download)
+
+    assert updater.main([]) == 0
+
+    assert len(seen) == 2 and seen[0] != "" and seen[1] == ""
+    assert (repo / "common" / "version.py").read_bytes() == b'VERSION = "1.2.3"\n'
 
 
 def test_archive_mode_replaces_code_and_keeps_data(tmp_path, monkeypatch):
@@ -356,6 +412,23 @@ def test_response_length_tolerates_missing_or_broken_headers():
     assert updater.response_length(FakeResponse(b"x", headers={"Content-Length": "123"})) == 123
     assert updater.response_length(FakeResponse(b"x", headers={})) == 0
     assert updater.response_length(FakeResponse(b"x", headers={"Content-Length": "abc"})) == 0
+
+
+def test_download_headers_only_carry_a_token_when_there_is_one(monkeypatch):
+    """公开仓库匿名下载：没有凭据就不要带 Authorization 头（带着反而会被拒）。"""
+    seen: dict = {}
+
+    def fake_urlopen(request, timeout=None):
+        seen["headers"] = {k.lower(): v for k, v in request.header_items()}
+        return FakeResponse(b"x")
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", fake_urlopen)
+
+    updater.download_archive("owner/repo", "main", "")
+    assert "authorization" not in seen["headers"]
+
+    updater.download_archive("owner/repo", "main", "tok")
+    assert seen["headers"]["authorization"] == "Bearer tok"
 
 
 def test_download_reports_percent_progress_and_keeps_the_bytes(monkeypatch, capsys):

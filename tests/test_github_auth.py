@@ -1,7 +1,7 @@
 """私有仓库凭据：只读 Token 的存取、校验与使用。
 
 关键约束（这里都钉住）：
-* Token 只落在 data/github_token，不进 panel_config.json，也不进代码仓库；
+* Token 只落在 config/github_token，不进 panel_config.json，也不进代码仓库；
 * 任何接口都不返回 Token 本身，只说「有没有、是谁」；
 * **只有开发者模式开着时它才会被用到**：关着时 API 不带 Authorization 头、git 也拿不到
   凭据助手，但 Token 文件留着（重新打开开关就能接着用，不用重新粘贴）；
@@ -21,7 +21,7 @@ TOKEN = "github_pat_" + "A" * 40
 
 @pytest.fixture
 def token_file(tmp_path, monkeypatch):
-    """把 Token 文件指到临时目录，别碰真实 data/。"""
+    """把 Token 文件指到临时目录，别碰真实 config/。"""
     path = tmp_path / "github_token"
     monkeypatch.setattr(github_auth, "TOKEN_PATH", str(path))
     return path
@@ -273,6 +273,62 @@ def test_git_auth_failure_maps_to_credentials_missing(monkeypatch, token_file):
     assert "Token" in payload["error"]
 
 
+def test_public_repo_without_token_falls_back_to_api(monkeypatch, token_file):
+    """公开仓库没填凭据时：本地 git 拿不到就改用**不带凭据**的 API，而不是报缺凭据。
+
+    仓库公开之后谁都能匿名读 API，只有私有仓库才真的需要 Token；以前没 Token 时
+    只走本地 git，git 一旦失败（目录里没有 .git、没装 git、Windows 上环境被换掉）
+    就被笼统地说成「需要私有仓库凭据」。
+    """
+    calls: list = []
+
+    async def reachable():
+        return True
+
+    def via_git(branch):
+        calls.append("git")
+        return None
+
+    async def via_api():
+        calls.append("api")
+        return 1, [{"sha": "c" * 40,
+                    "commit": {"message": "公开仓库的新提交", "author": {"date": "2026-10-02T00:00:00Z"}}}]
+
+    monkeypatch.setattr(cp, "_remote_reachable", reachable)
+    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", via_git)
+    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", via_api)
+    monkeypatch.setattr(cp, "_order_oldest_first", lambda raw: list(raw))
+    monkeypatch.setattr(cp._version, "local_commit_count", lambda: 8)
+    monkeypatch.setattr(cp, "_update_cache", None)
+
+    result = cp.asyncio.run(cp.update_check())
+
+    assert result["update_available"] is True
+    assert result["versions"][0]["subject"] == "公开仓库的新提交"
+    assert calls == ["git", "api"], "git 走不通时才轮到匿名 API"
+
+
+def test_git_needing_auth_does_not_try_the_anonymous_api(monkeypatch, token_file):
+    """git 明确说要凭据（私有仓库）时，别再把匿名 API 试一遍 —— 白等一轮。"""
+    async def reachable():
+        return True
+
+    def git_needs_auth(branch):
+        raise cp._GitFetchAuthError("Authentication failed")
+
+    def api_must_not_run():
+        pytest.fail("git 已经说要凭据了，不该再试匿名 API")
+
+    monkeypatch.setattr(cp, "_remote_reachable", reachable)
+    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", git_needs_auth)
+    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", api_must_not_run)
+
+    with pytest.raises(cp._UpdateCheckError) as excinfo:
+        cp.asyncio.run(cp._fetch_ahead_best_source())
+
+    assert str(excinfo.value) == "credentials_missing"
+
+
 def test_api_is_used_first_when_token_present(monkeypatch, token_file):
     """有 Token 时优先走 API（私有仓库也能读，而且快）。"""
     calls: list = []
@@ -350,6 +406,37 @@ def test_git_env_skips_token_for_ssh_remote(monkeypatch, token_file):
     github_auth.save(TOKEN)
     monkeypatch.setattr(cp, "_remote_repository", lambda: "git@github.com:AceovoeL/x.git")
     assert cp._git_env(with_token=True) is None
+
+
+def test_git_run_keeps_the_parent_environment_when_prompts_are_off(monkeypatch, tmp_path):
+    """关 git 交互提示的两个变量要叠加在父进程环境上，不能整个替换掉它。
+
+    以前这里给子进程的环境只有 ``GIT_TERMINAL_PROMPT`` / ``GIT_ASKPASS``（子进程的
+    环境是被整个替换的），Windows 上 git 因此丢掉 SystemRoot，连 github.com 都解析
+    不了（"Could not resolve host: github.com"），检查更新就被误报成「需要私有仓库
+    凭据」—— 仓库其实早就公开了。
+    """
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(cp._version, "REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("DSH_ENV_PROBE", "kept")
+    seen: dict = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen.update(kwargs)
+        return Result()
+
+    monkeypatch.setattr(cp.subprocess, "run", fake_run)
+
+    assert cp._git_run(["status"], prompt_off=True) is not None
+    assert seen["env"]["DSH_ENV_PROBE"] == "kept"        # 父进程的环境还在
+    assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"     # 提示仍然关着
+    assert seen["env"]["GIT_ASKPASS"] == ""
 
 
 # ── 开发者模式关着时：一律不用它 ──────────────────────────────────────────

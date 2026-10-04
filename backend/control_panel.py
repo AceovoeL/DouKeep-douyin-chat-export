@@ -1827,7 +1827,9 @@ async def _fetch_ahead_best_source() -> tuple[int, list[dict]]:
     """选一条路拿「落后的 commit」。
 
     有 Token（且开发者模式开着，见 _github_token）时直接用 API：私有仓库也能读，一条
-    请求就拿到版本与逐条提交说明，不必等 git。没 Token（或 API 这条路失败）时退回本地 git。
+    请求就拿到版本与逐条提交说明，不必等 git。**没有** Token 时先试本地 git（本机凭据
+    可能已经能读那个私有仓库），git 也不行再用不带凭据的 API 兜一次 —— 公开仓库本来就
+    允许匿名读，不该因为「没填凭据」就报「需要私有仓库凭据」。
     """
     errors: list[_UpdateCheckError] = []
     if _github_token():
@@ -1838,17 +1840,25 @@ async def _fetch_ahead_best_source() -> tuple[int, list[dict]]:
             errors.append(exc)           # Token 可能没有这个仓库的权限，再试 git
             _check_log_add("API 这条路走不通，改试本地 git")
     else:
-        _check_log_add("没有可用的 Token，用本地 git 拉取远端")
+        _check_log_add("没有可用的 Token，先用本地 git 拉取远端")
+    git_needs_auth = False
     try:
         fetched = await asyncio.to_thread(_fetch_ahead_commits_via_git, _version.REPOSITORY_BRANCH)
-    except _GitFetchAuthError:
-        # git 需要登录：这时若 API 报的是 Token 问题，用 Token 的提示更准确
-        raise errors[0] if errors else _UpdateCheckError("credentials_missing")
+    except _GitFetchAuthError as exc:
+        # git 要登录：这个仓库多半是私有的（公开仓库 git 不会要凭据）
+        git_needs_auth = True
+        _check_log_add(f"git 说需要凭据：{str(exc)[:120]}")
+        fetched = None
     if fetched is not None:
         return fetched
     if errors:
-        raise errors[0]
-    raise _UpdateCheckError("credentials_missing")
+        raise errors[0]                  # 用过 Token 时 API 的说法更准（凭据/权限）
+    if git_needs_auth:
+        raise _UpdateCheckError("credentials_missing")
+    # 没用 Token、git 又拿不到远端（目录里没有 .git、没装 git、网络或代理挡住）：
+    # 公开仓库不带凭据也能读 API，最后再试一次，别把「读不到」说成「缺凭据」
+    _check_log_add("本地 git 拿不到远端，改用不带凭据的 GitHub API 再试一次")
+    return await _fetch_ahead_commits_via_api()
 
 
 async def _collect_update_uncached() -> dict:
@@ -1998,7 +2008,7 @@ def _local_version_payload() -> dict:
 def _update_error_message(code: str) -> str:
     """错误码对应的中文提示（接口和进度日志共用一份，免得两处说法不一致）。"""
     messages = {
-        "repo_missing": "更新源暂时读不到（仓库不存在或还没公开）",
+        "repo_missing": "更新源暂时读不到：仓库可能还没公开，或私有仓库需要先在「关于」页填写只读 Token",
         "repo_forbidden": "读不到仓库：Token 可能没有这个仓库的权限，或仓库地址不对",
         "token_invalid": "GitHub Token 无效或已过期，请在「关于」页重新填写",
         "credentials_missing": "需要 GitHub 凭据才能读取私有仓库，请在「关于」页填写只读 Token",
@@ -2213,10 +2223,12 @@ def _git_run(
     if not os.path.isdir(os.path.join(_version.REPO_ROOT, ".git")):
         return None
     env = _git_env(with_token=with_token)
-    if env is None and prompt_off:
-        env = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": ""}
-    elif prompt_off and env is not None:
-        env = {**env, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": ""}
+    if prompt_off:
+        # 关提示的这两个变量要**叠加**在已有环境上，绝不能另起一个只有它俩的环境：
+        # ``env=`` 是整个替换子进程的环境，缺了 SystemRoot 的 git 在 Windows 上连
+        # 域名都解析不了（报 "Could not resolve host"），代理变量、PATH 也一起丢。
+        env = {**(env if env is not None else os.environ),
+               "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": ""}
     try:
         return subprocess.run(
             ["git", *args], cwd=_version.REPO_ROOT,
