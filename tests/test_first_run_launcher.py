@@ -42,7 +42,7 @@ def test_powershell_scripts_keep_their_utf8_bom():
     这些脚本里全是中文注释和提示语，一旦丢了 BOM，轻则输出乱码，重则直接报
     「语句块或类型定义中缺少右 }」。编辑工具经常把 BOM 弄丢，所以钉在这里。
     """
-    for name in ("start.ps1", "tools/bridge.ps1", "tools/env_check.ps1"):
+    for name in ("start.ps1", "tools/bridge.ps1", "tools/env_check.ps1", "tools/launcher_progress.ps1"):
         data = (REPO_ROOT / name).read_bytes()
         assert data.startswith(BOM), f"{name} 丢了 UTF-8 BOM（改完记得补回来）"
 

@@ -1,11 +1,17 @@
 ﻿# 启动脚本：准备 venv 与依赖 → 构建前端 → 启动后端服务。
 # 目录跟随本脚本所在位置，项目整体移动或改名后都无需修改路径。
 #
+# 双击「启动服务（双击）.bat」时，本脚本是在**隐藏窗口**里跑的，输出写进
+# config\logs\launcher.log；用户看到的那个窗口是 tools\launcher_progress.ps1，
+# 它读这份日志报进度 —— 所以下面每一步都要有「=====> 说明」给别人看。
+#
 # 用法（在项目根目录执行）：
 #   powershell -ExecutionPolicy Bypass -File .\start.ps1
 # 直接运行报「禁止运行脚本」时，用上面这条命令即可。
 
 # ============ 工具函数 ============
+# 前缀「=====>」是 tools\launcher_progress.ps1 判断"现在进行到哪一步"的依据，
+# 改提示语没关系，别把这个前缀去掉（去掉之后双击启动的窗口就只能显示已等待时间了）。
 function Write-Step($msg) {
     Write-Host ""
     Write-Host "=====> $msg" -ForegroundColor Cyan
@@ -15,6 +21,14 @@ function Write-Step($msg) {
 $projectDir = $PSScriptRoot
 Write-Step "切换到项目目录: $projectDir"
 Set-Location $projectDir
+
+# ============ 去掉下载标记（Zone.Identifier） ============
+# 从网上下载的 ZIP 解出来的文件带一条「来自 Internet」的附加数据流，双击 .bat 时 Windows
+# 会先弹「无法验证发布者」——那个框在我们的代码跑起来之前就弹，拦不住，只能事后清掉。
+# 这里只清项目根目录这一层（会被双击的启动脚本都在这儿，也就十来个文件，很快）；
+# 整个项目的清理由后端启动时的 common/download_mark.py 统一做（那份还带单元测试）。
+Get-ChildItem -LiteralPath $projectDir -File -Force -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue }
 
 # ============ 创建虚拟环境（仅在不存在时） ============
 $venvPython = Join-Path $projectDir "venv\Scripts\python.exe"
@@ -170,7 +184,7 @@ Write-Host "停止服务: 面板「日志」页 →「停止程序」（也可�
 Write-Host ""
 
 # 服务的输出写进 config\logs\server.log，而不是只打在屏幕上：
-#   · 用「启动服务（双击）.bat」启动时根本没有窗口，不落文件就等于什么都没留下；
+#   · 双击 bat 时服务跑在隐藏窗口里（看得见的那个窗口只显示启动进度），不落文件就等于什么都没留下；
 #   · 面板「日志」页读的正是这份文件（旁边还有「停止程序」按钮）。
 # 这里必须用 cmd 的重定向（不是 PowerShell 的 >）：PowerShell 会把输出转成 UTF-16
 # 再写文件，面板按 UTF-8 读就成了乱码；cmd 是把子进程的字节原样写进文件，不缓冲、

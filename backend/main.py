@@ -15,7 +15,7 @@ from . import database
 from .media_files import MediaStaticFiles
 from .access_log import AccessLogMiddleware, configure_logging, log as access_log
 from .panel.access_gate import access_gate_router, gate_middleware as lan_access_middleware
-from common import appearance as appearance_cfg, config, paths
+from common import appearance as appearance_cfg, config, download_mark, paths
 from common.version import VERSION as APP_VERSION
 
 configure_logging()
@@ -386,6 +386,11 @@ async def startup():
     # 老版本把配置、日志、登录态都堆在 data/ 里；新版分到 config/。先搬一次
     # （幂等，搬不动也不拦着启动），后面读配置才会读到用户原来那份。
     paths.migrate_legacy_layout()
+    # 从网上下载的 ZIP 解出来的项目带「来自 Internet」的下载标记，双击 .bat 时 Windows 会先
+    # 弹「无法验证发布者」（那个框在我们跑起来之前就出现，拦不住）。这里把它清掉，之后就安静了。
+    unmarked = download_mark.strip_project_download_marks()
+    if unmarked:
+        print(f"[i] 已清除 {len(unmarked)} 个文件的下载标记，下次双击启动脚本不会再弹安全警告", flush=True)
     init_db()
     config.ensure_api_token()
     await restore_schedule_on_startup()
