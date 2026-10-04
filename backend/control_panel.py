@@ -282,6 +282,11 @@ _MEDIA_FAILURE_PATTERNS = tuple(re.compile(pattern) for pattern in (
 # "…已下载 12 个 (失败 0)" is the summary of that step, not a failure itself.
 _MEDIA_SUMMARY_PATTERN = re.compile(r"已下载 \d+ 个 \(失败")
 
+# "[voice] 识别统计: 总数=47 … 失败=0 跳过=0" 也是汇总行：里面有「失败」两个字，
+# 但失败数是 0，不该弹框。逐条语音失败没有单独的日志行，汇总行是唯一的信号，所以
+# 只豁免「失败=0」，失败数不为 0 时仍然照报。
+_ZERO_FAILURE_PATTERN = re.compile(r"失败\s*[=:：]?\s*0(?:\D|$)")
+
 # PROCESS_SUSPEND_RESUME access right, used with NtSuspendProcess/NtResumeProcess.
 _PROCESS_SUSPEND_RESUME = 0x0800
 
@@ -293,7 +298,7 @@ def classify_scrape_log_line(line: str) -> str | None:
         return None
     if any(pattern.search(text) for pattern in _FATAL_ERROR_PATTERNS):
         return "fatal"
-    if _MEDIA_SUMMARY_PATTERN.search(text):
+    if _MEDIA_SUMMARY_PATTERN.search(text) or _ZERO_FAILURE_PATTERN.search(text):
         return None
     if any(pattern.search(text) for pattern in _MEDIA_FAILURE_PATTERNS):
         return "media"

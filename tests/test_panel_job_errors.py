@@ -86,6 +86,24 @@ def test_per_file_failures_are_media_kind():
     assert cp.classify_scrape_log_line("  [!] 原生语音识别失败（消息已保存）: boom") == "media"
     # The step summary is not a failure itself, even when it mentions 失败 0.
     assert cp.classify_scrape_log_line("  [media] 图片/表情/视频封面 已下载 12 个 (失败 0)") is None
+    # 统计行同理：带「失败」两个字，但失败数是 0 就不该弹框。
+    assert cp.classify_scrape_log_line(
+        "  [voice] 识别统计: 总数=47 缓存=0 请求=47 成功=47 失败=0 跳过=0"
+    ) is None
+    assert cp.classify_scrape_log_line(
+        "  [voice] 回填会话完成: 总数=10 请求=10 成功=10 失败=0 跳过=0"
+    ) is None
+    assert cp.classify_scrape_log_line(
+        "[voice] 历史回填完成: 总数=10 请求=10 成功=10 失败=0 跳过=0"
+    ) is None
+    # 失败数不为 0 仍然要报：逐条语音失败没有单独的日志行，汇总行是唯一信号。
+    assert cp.classify_scrape_log_line(
+        "  [voice] 识别统计: 总数=47 缓存=0 请求=47 成功=44 失败=3 跳过=0"
+    ) == "media"
+    # 服务器 id 恰好以 0 开头，不能被当成「失败=0」。
+    assert cp.classify_scrape_log_line(
+        "  [voice] 下载失败: 07692593954760574513: boom"
+    ) == "media"
 
 
 # ── dialog + pause + countdown ────────────────────────────────────────────
