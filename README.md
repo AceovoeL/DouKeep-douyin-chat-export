@@ -73,15 +73,16 @@
 |------|------|----------|
 | **Python** | 3.10 或更高 | 跑后端、采集、导出 |
 | **Node.js + npm** | Node.js 20.19+ 或 22.12+ | 只用来构建一次前端界面（Vite 7 的要求）；平时运行不需要它 |
-| **磁盘空间** | 1 GB 以上 | 装依赖和构建产物（几百 MB），以及后面下载的聊天媒体 |
+| **磁盘空间** | 2 GB 以上 | 依赖、前端构建产物、约 700 MB 的浏览器内核，以及后面下载的聊天媒体 |
 
 > 不确定装没装、版本对不对？Windows 双击仓库根目录的 **`start.html`**，它会自动检测并列出每一项
 > （详见下面的[方式 A](#方式-a第一次用windows一键启动)）；手动看的话，在命令行里跑
 > `python --version` 和 `node --version` 就够了。
 >
-> 另外两个**可选但建议**的依赖：**Playwright Chromium**（采集和聊天长图要用的浏览器，下面装依赖时会装）和
-> **ffmpeg**（把抖音的 H.265 视频按需转成 H.264，浏览器才播得动；不装只是这类视频播不了）。
-> 这两样缺了服务照样能起来，面板 **关于 → 环境检测** 里会逐项告诉你缺什么。
+> 采集、导入 Cookie、聊天长图要用的浏览器（**Playwright Chromium**）**不用手动装**：启动脚本
+> 每次启动都核对版本，缺了就自己下载（约 300 MB，下载完在磁盘上约 700 MB），双击启动的窗口里能看到这一步的进度。
+> 真正可选的只有 **ffmpeg**（把抖音的 H.265 视频按需转成 H.264，浏览器才播得动；不装只是这类视频播不了）。
+> 缺什么、装到哪一步，面板 **关于 → 环境检测** 里都能看到。
 
 ## 快速开始
 
@@ -92,7 +93,7 @@
 Windows 上推荐从仓库根目录的 **`start.html`** 开始，全程不用记命令：它先逐项检测环境
 （Python、pip、Node.js、npm、端口 8000 等，每项都标出「需要什么版本、当前是什么版本」），
 **必要条件没过完弹窗关不掉**，按提示装好再回来点「重新检测」；通过后自动跑完剩下的
-（建虚拟环境 → 装 Python 依赖 → 装前端依赖 → 构建前端 → 起服务，首次可能要几分钟），
+（建虚拟环境 → 装 Python 依赖 → 下载浏览器内核 → 装前端依赖 → 构建前端 → 起服务，首次可能要几分钟），
 服务就绪后自动跳到控制面板。
 
 首次打开时页面还不能自己执行本地命令（浏览器的安全限制），会给你一条一次性命令：
@@ -128,7 +129,7 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 ### 方式 C：macOS / Linux，或想自己一步步来
 
-`start.sh` 也会自己装前端依赖、构建前端并启动服务，但**不会建 Python 虚拟环境**，
+`start.sh` 也会自己补浏览器内核、装前端依赖、构建前端并启动服务，但**不会建 Python 虚拟环境**，
 所以先手动把 Python 这边准备好，再让它接手：
 
 ```bash
@@ -138,18 +139,17 @@ cd DouKeep-douyin-chat-export
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium       # 采集和聊天长图要用的浏览器
 
-./start.sh                        # 装前端依赖 → 构建前端 → 启动服务 → 打开浏览器
+./start.sh                        # 装浏览器内核 → 装前端依赖 → 构建前端 → 启动服务 → 打开浏览器
 ```
 
-也可以完全手动，四步和上面脚本做的一模一样（适合排错或想自己控制每一步）：
+也可以完全手动，和上面脚本做的事一样（适合排错或想自己控制每一步）：
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-playwright install chromium
+playwright install chromium       # 浏览器内核：采集 / 导入 Cookie / 聊天长图要用（跑 start.sh 时会自动下）
 
 cd frontend && npm install && npm run build && cd ..
 
@@ -299,14 +299,13 @@ python tools/sync_panel_baseline.py --apply    # 同步快照，然后跑一遍 
 <details open>
 <summary><b>方式 A：本地浏览器扫码</b>（需 clone 仓库）</summary>
 
-在装了 Playwright 的机器上运行，会弹出真实浏览器窗口让你扫码；登录态直接写进
-项目的 `config/browser_profile/`：
+会弹出真实浏览器窗口让你扫码，登录态直接写进项目的 `config/browser_profile/`：
 
 ```bash
-# 需先装 Playwright：pip install playwright && playwright install chromium
 python3 login.py
 ```
 
+浏览器内核由启动脚本负责（第一次启动服务时就下好了），所以先让服务启动过一次就行。
 扫码成功后浏览器自动关闭，重启一下后端服务（或直接在面板里开始采集）即可生效。
 </details>
 
@@ -330,6 +329,23 @@ python3 login.py
 </details>
 
 登录态保存在 `config/browser_profile/`，跟着项目目录走。
+
+<details>
+<summary><b>导入 Cookie 失败？</b></summary>
+
+先看面板报的是哪一句 —— 它只会说一句，原因就在那句话里：
+
+| 提示 | 什么意思 |
+|------|----------|
+| `导入失败: ... Executable doesn't exist at ...chrome-headless-shell.exe` | **不是 Cookie 的问题**：导入时会真的开一次浏览器、把 Cookie 写进 `config/browser_profile/` 再读回来确认，浏览器内核没准备好就到不了这一步。启动脚本启动时已经自动下过；仍报这个错时，在项目目录补一条命令再重试：`venv\Scripts\python.exe -m playwright install chromium`（macOS / Linux 用 `venv/bin/python3`） |
+| `Cookie 中未包含 sessionid` | cookie-editor 里没全选就导出，或在一个没登录的页面上导的 |
+| `sessionid 的 domain 是 ...` | 在 `iesdouyin.com` 这类子站导出的，回到 `www.douyin.com` 重导 |
+| `未能解析出任何 Cookie` | 粘贴时带了 Markdown 代码块围栏、末尾多了逗号，或内容被截断 |
+| `无法在 douyin.com 读取到` | 这个 sessionid 已被抖音注销，重新登录后再导出 |
+
+`sessionid` 是 HttpOnly 的，在浏览器控制台敲 `document.cookie` 看不到它 —— 要么用 cookie-editor
+这类扩展导出，要么按上面[方式 B](#1-登录)走 DevTools 的 **Copy all cookies**。
+</details>
 
 ### 2. 采集
 

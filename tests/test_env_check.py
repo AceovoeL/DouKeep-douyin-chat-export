@@ -47,6 +47,28 @@ def test_item_falls_back_to_chinese_text():
     assert item["current_en"] == "1.0"
 
 
+def test_playwright_item_is_required_but_assumed_ready(monkeypatch):
+    """浏览器内核是必需项，但「缺了自动下载」由启动脚本负责，所以这一项默认算已满足。
+
+    否则第一次用的人会被一项本来不用他管的检查（start.html 上「必要条件未通过」根本关不掉）
+    拦在门外 —— 那正是这个项目最想避免的体验。
+    """
+    import backend.env_check as env_check_module
+
+    item = env_check_module._check_playwright()
+    assert item["id"] == "playwright_chromium"
+    assert item["required"] is True
+    assert item["ok"] is True
+    assert "自动" in item["requirement"]
+    assert "自动" in item["detail"]
+    assert "playwright install chromium" in item["hint"]
+
+    # 就算内核真的一个都没装，也不能翻脸判失败
+    monkeypatch.setattr(env_check_module.pw_browsers, "summarize",
+                        lambda: "启动时自动安装（下载约 300 MB）")
+    assert env_check_module._check_playwright()["ok"] is True
+
+
 def test_collect_summary_counts_required_and_optional(monkeypatch):
     def fake_ok():
         return env_check._item("a", "A", True, True, ">= 1", "1.0")

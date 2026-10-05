@@ -163,6 +163,7 @@ function Get-StepHint([string]$Step) {
     if ($Step -match '虚拟环境') { return '首次要下载 Python 运行环境，通常 1~2 分钟' }
     if ($Step -match 'pip') { return '检查（必要时修复）pip，通常几十秒' }
     if ($Step -match 'Python 依赖') { return '要下载 FastAPI、Playwright 等包，首次通常 1~5 分钟' }
+    if ($Step -match 'Playwright') { return '核对浏览器内核，缺了自动下载，首次通常 1~3 分钟' }
     if ($Step -match 'Node|node') { return '检查 Node.js 版本' }
     if ($Step -match 'npm install|前端依赖') { return '正在下载前端依赖包，首次通常 1~5 分钟（网速慢会更久）' }
     if ($Step -match '构建前端') { return '正在打包前端界面，通常 10~60 秒' }

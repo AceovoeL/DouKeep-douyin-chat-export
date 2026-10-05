@@ -53,6 +53,23 @@ def test_shell_scripts_must_not_have_a_bom():
         assert not (REPO_ROOT / name).read_bytes().startswith(BOM), f"{name} 不该有 BOM"
 
 
+# ── 启动时把 Playwright 浏览器内核备齐 ────────────────────────────────────
+def test_start_scripts_ensure_the_playwright_browser():
+    """两个启动脚本都要自己做这一步：pip 只装包不装浏览器，缺了时采集、导入 Cookie、
+    聊天长图都会报「Executable doesn't exist」。双击 bat 走的是 start.ps1，别只改一边。
+    """
+    for name in ("start.ps1", "start.sh"):
+        body = _read(REPO_ROOT / name)
+        assert "ensure_playwright_browser.py" in body, f"{name} 没有核对浏览器内核这一步"
+
+
+def test_launcher_progress_has_a_hint_for_the_browser_step():
+    """下载内核可能几分钟，进度窗口要能说明「这一步在干嘛、大概多久」。"""
+    progress = _read(REPO_ROOT / "tools" / "launcher_progress.ps1")
+    hint = _body(progress, "Get-StepHint")
+    assert "Playwright" in hint
+
+
 # ── 跨文件契约：状态文件名 / 全局变量名 ──────────────────────────────────
 def test_bridge_and_page_agree_on_the_launcher_state_file():
     bridge = _read(BRIDGE)

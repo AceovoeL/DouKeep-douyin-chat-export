@@ -7,6 +7,12 @@ if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   exit 1
 fi
 
+# Playwright 的浏览器内核（采集 / 导入 Cookie / 聊天长图要用）：缺了自动补，
+# 装不上不拦启动，只提醒 —— 和 Windows 那边 start.ps1 做的是同一件事。
+echo "检查 Playwright 浏览器内核（缺了会自动下载）..."
+"$DIR/venv/bin/python3" "$DIR/tools/ensure_playwright_browser.py" || \
+  echo "警告: 浏览器内核没准备好，采集 / 导入 Cookie / 聊天长图会失败；可手动执行 venv/bin/python -m playwright install chromium"
+
 # 国内直连 npm 官方源经常超时，默认用国内镜像。
 NPM_REGISTRY="https://registry.npmmirror.com"
 

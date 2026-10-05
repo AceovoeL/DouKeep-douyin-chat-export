@@ -3,9 +3,9 @@
 和 ``tools/env_check.ps1`` 是同一套检查项、同一套返回结构：
 
     必需（缺一个都跑不起来）：操作系统、PowerShell、脚本执行策略、项目目录可写、
-                             磁盘空间、Python、pip、Node.js、npm、端口 8000
-    可选（不阻止启动）：      Git、ffmpeg、Playwright 浏览器内核、本机 Edge/Chrome、
-                             虚拟环境、前端构建产物
+                             磁盘空间、Python、pip、Node.js、npm、端口 8000、
+                             Playwright 浏览器内核（启动脚本会自动装，所以默认算已满足）
+    可选（不阻止启动）：      Git、ffmpeg、本机 Edge/Chrome、虚拟环境、前端构建产物
 
 为什么要两份：新电脑上"第一次运行"时 Python / Node 装没装正是被检测的对象，那一步
 只能用系统自带的 PowerShell（见 tools/env_check.ps1，结果写给 start.html 读）；而这
@@ -43,6 +43,7 @@ import urllib.error
 import urllib.request
 
 from common import paths
+from common import playwright_browsers as pw_browsers
 
 #: Node.js 的要求与 frontend/package.json 的 engines 保持一致
 NODE_REQUIREMENT = ">= 20.19 或 >= 22.12（Vite 7 要求）"
@@ -50,7 +51,7 @@ NODE_REQUIREMENT_EN = ">= 20.19 or >= 22.12 (required by Vite 7)"
 MIN_PYTHON = (3, 10)
 MIN_POWERSHELL = (5, 1)
 MIN_NPM = 9
-MIN_FREE_GB = 1
+MIN_FREE_GB = 2
 
 _SEMVER = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 
@@ -269,8 +270,9 @@ def _check_disk() -> dict:
     return _item("disk", "磁盘可用空间", True, free_gb >= MIN_FREE_GB, f">= {MIN_FREE_GB} GB",
                  f"{free_gb} GB 可用", path=paths.REPO_ROOT,
                  current_en=f"{free_gb} GB free",
-                 detail="虚拟环境 + 前端依赖 + 构建产物大约要 1 GB 上下，聊天媒体会另外占用空间",
-                 detail_en="The virtualenv, frontend dependencies and build output take roughly 1 GB; chat media adds more",
+                 detail="虚拟环境 + 前端依赖 + 构建产物 + 浏览器内核大约要 1.5 GB 上下，聊天媒体会另外占用空间",
+                 detail_en="The virtualenv, frontend dependencies, build output and the Playwright "
+                           "browsers take roughly 1.5 GB; chat media adds more",
                  hint="" if free_gb >= MIN_FREE_GB else "清理磁盘，或把项目移到空间更充裕的盘符",
                  hint_en="" if free_gb >= MIN_FREE_GB else "Free some space, or move the project to a drive with more room",
                  name_en="Free disk space", requirement_en=f">= {MIN_FREE_GB} GB")
@@ -428,32 +430,30 @@ def _check_ffmpeg() -> dict:
                  name_en="ffmpeg", requirement_en="any recent build (optional)")
 
 
-def _playwright_root() -> str:
-    custom = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if custom:
-        return custom
-    local = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".cache")
-    return os.path.join(local, "ms-playwright")
-
-
 def _check_playwright() -> dict:
-    root = _playwright_root()
-    found = ""
-    if os.path.isdir(root):
-        for name in sorted(os.listdir(root)):
-            if name.startswith("chromium-") and not name.startswith("chromium_headless_shell"):
-                found = name
-                break
-    return _item("playwright_chromium", "Playwright 浏览器内核", False, bool(found),
-                 "chromium（首次采集前装一次）", found or "未找到", path=root,
-                 current_en=found or "not found",
-                 detail="采集聊天记录、渲染聊天长图都要用它；缺了后台服务照样能起来，"
-                        "但点「开始采集」会失败",
-                 detail_en='Scraping chat history and rendering the long chat image need it; the server still starts, but "Start scraping" fails',
-                 hint="" if found else "在项目目录执行：venv\\Scripts\\python.exe -m playwright install chromium",
-                 hint_en="" if found else "Run venv\\Scripts\\python.exe -m playwright install chromium in the project folder",
+    """Playwright 浏览器内核：启动脚本每次启动都会核对并补装，所以这一项默认算已满足。
+
+    「缺了自动下载」这件事由 start.ps1 / start.sh 调用
+    ``tools/ensure_playwright_browser.py`` 完成；这里只报告当前装的是哪个版本
+    （见 common/playwright_browsers.py），不因此判失败 —— 否则第一次用的人会被
+    一项本来不用他管的检查拦住。
+    """
+    manual = pw_browsers.manual_hint()
+    return _item("playwright_chromium", "Playwright 浏览器内核", True, True,
+                 "chromium（启动时会自动安装）", pw_browsers.summarize(),
+                 path=str(pw_browsers.browsers_root()),
+                 current_en="installed automatically at start-up (~300 MB download)",
+                 detail="采集聊天记录、渲染聊天长图、导入 Cookie 都要用它。启动脚本每次启动都会核对"
+                        "版本、缺了自动下载，所以这一项默认算已满足"
+                        f"（真装不上时可以手动补：{manual.replace('在项目目录执行：', '')}）。",
+                 detail_en="Chat scraping, the long chat image renderer and Cookie import all need it. "
+                           "The start-up script checks the version and downloads it when missing, so this "
+                           "counts as satisfied; if that ever fails, install it by hand with "
+                           "`python -m playwright install chromium`.",
+                 hint=manual,
+                 hint_en="Run `python -m playwright install chromium` inside the project folder",
                  name_en="Playwright browser",
-                 requirement_en="chromium (install once before the first scrape)")
+                 requirement_en="chromium (installed automatically at start-up)")
 
 
 def _check_browser() -> dict:

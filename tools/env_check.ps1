@@ -225,12 +225,12 @@ try {
     $drive = New-Object System.IO.DriveInfo($root)
     $freeGb = [math]::Round($drive.AvailableFreeSpace / 1GB, 1)
     $freeText = "$freeGb GB 可用（$($drive.Name.TrimEnd('\'))）"
-    $diskOk = ($freeGb -ge 1)
+    $diskOk = ($freeGb -ge 2)
 }
 catch { $freeText = '读取失败' }
 Add-Check -Id 'disk' -Name '磁盘可用空间' -Required $true -Ok $diskOk `
-    -Requirement '>= 1 GB' -Current $freeText -Path $ProjectDir `
-    -Detail '虚拟环境 + 前端依赖 + 构建产物大约要 1 GB 上下，聊天媒体会另外占用空间' `
+    -Requirement '>= 2 GB' -Current $freeText -Path $ProjectDir `
+    -Detail '虚拟环境 + 前端依赖 + 构建产物 + 浏览器内核大约要 1.5 GB 上下，聊天媒体会另外占用空间' `
     -Hint '清理一下磁盘，或把项目移到空间更充裕的盘符再运行'
 
 # ── 6. Python ─────────────────────────────────────────────────────────────
@@ -397,21 +397,24 @@ Add-Check -Id 'ffmpeg' -Name 'ffmpeg' -Required $false -Ok ([bool]$ffmpegPath) `
     -Detail '可选：抖音视频大多是 H.265，浏览器放不了时用它按需转成 H.264；没有它只能回落到播放原文件' `
     -Hint '需要的话下载 ffmpeg 后把 bin 目录加进 PATH，或设置环境变量 DOUYIN_FFMPEG 指向 ffmpeg.exe'
 
-# ── 13. Playwright 浏览器内核（可选，采集要用） ────────────────────────────
-Write-Section "检测 Playwright 浏览器内核（可选）"
+# ── 13. Playwright 浏览器内核（必需：启动脚本会在启动时自动下载） ─────────
+# 这里永远算「已满足」：首次运行这一刻还什么都没有，而 start.ps1 一启动就会核对版本、
+# 缺了自动下载（tools/ensure_playwright_browser.py）。所以这一项只报告现状，
+# 不用它拦住启动 —— 否则用户会被一项本来不用他管的检查挡在门外。
+Write-Section "检测 Playwright 浏览器内核"
 $pwRoot = $env:PLAYWRIGHT_BROWSERS_PATH
 if (-not $pwRoot) { $pwRoot = Join-Path $env:LOCALAPPDATA 'ms-playwright' }
-$chromiumDirs = @()
+$pwDirs = @()
 if (Test-Path $pwRoot) {
-    $chromiumDirs = @(Get-ChildItem -Path $pwRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like 'chromium-*' -and $_.Name -notlike 'chromium_headless_shell*' })
+    $pwDirs = @(Get-ChildItem -Path $pwRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'chromium-*' -or $_.Name -like 'chromium_headless_shell-*' })
 }
-$pwOk = ($chromiumDirs.Count -gt 0)
-Add-Check -Id 'playwright_chromium' -Name 'Playwright 浏览器内核' -Required $false -Ok $pwOk `
-    -Requirement 'chromium（首次采集前装一次）' `
-    -Current $(if ($pwOk) { $chromiumDirs[0].Name } else { '未找到' }) -Path $pwRoot `
-    -Detail '采集聊天记录、渲染聊天长图都要用它；缺了后台服务照样能起来，但点「开始采集」会失败' `
-    -Hint '在项目目录执行：venv\Scripts\python.exe -m playwright install chromium'
+$pwCurrent = '启动时自动安装（下载约 300 MB）'
+if ($pwDirs.Count -gt 0) { $pwCurrent = ($pwDirs | ForEach-Object { $_.Name }) -join '、' }
+Add-Check -Id 'playwright_chromium' -Name 'Playwright 浏览器内核' -Required $true -Ok $true `
+    -Requirement 'chromium（启动时自动安装）' -Current $pwCurrent -Path $pwRoot `
+    -Detail '采集聊天记录、渲染聊天长图、导入 Cookie 都要用它。启动脚本每次启动都会核对版本、缺了自动下载，所以这一项默认算已满足' `
+    -Hint '真装不上时可以手动补：venv\Scripts\python.exe -m playwright install chromium'
 
 # ── 14. 本机 Edge / Chrome（可选） ────────────────────────────────────────
 Write-Section "检测本机浏览器（可选）"

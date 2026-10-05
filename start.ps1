@@ -78,6 +78,18 @@ else {
     & $venvPython -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 }
 
+# ============ 准备 Playwright 浏览器内核（缺了自动下载） ============
+# pip 装的只是 playwright 这个包，浏览器本体要另外下载；而且 playwright 升级之后旧内核
+# 就作废了，代码去找新版本的内核会报「Executable doesn't exist」——采集、导入 Cookie、
+# 聊天长图都会失败。所以每次启动都核对一遍版本，缺了就补上。
+# 实在装不上也不拦启动：服务照样能起来看已有记录，只把「哪个功能会失败、怎么手动补」说清楚。
+Write-Step "检查 Playwright 浏览器内核（缺了会自动下载）"
+& $venvPython (Join-Path $projectDir "tools\ensure_playwright_browser.py")
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "浏览器内核还没准备好：要用浏览器的功能（采集 / 导入 Cookie / 聊天长图）会失败。" -ForegroundColor Yellow
+    Write-Host "可以手动重试：$venvPython -m playwright install chromium" -ForegroundColor Yellow
+}
+
 # ============ 进入前端目录 ============
 Write-Step "切换到前端目录: .\frontend"
 Set-Location (Join-Path $projectDir "frontend")
