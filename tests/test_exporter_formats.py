@@ -46,6 +46,27 @@ def test_image_prefers_local_plaintext_over_encrypted_url(tmp_path):
     assert typ==0 and text=='[图片未下载]'
 
 
+def test_live_photo_labels(tmp_path):
+    """实况图（会动的图）的标签写清是实况图，图片本身照旧导出。"""
+    live_cj = {'aweType': 2704, 'resource_url': {'skey': 'secret'},
+               'live_photo_video': {'tkey': 'vid-1', 'skey': '00' * 16, 'vid': 'v'}}
+    plain_cj = {'aweType': 2702, 'resource_url': {'skey': 'secret'}}
+    msg = {'msg_type': 3, 'content': '', 'media_local_path': None, 'media_url': None}
+
+    # 数据源同步那条路不嵌图：标签是 [实况图]（普通图片照旧）
+    assert _resolve_message(msg, live_cj, str(tmp_path), embed_images=False)[:2] == ('[实况图]', 1)
+    assert _resolve_message(msg, plain_cj, str(tmp_path), embed_images=False)[:2] == ('[图片]', 1)
+
+    # 本地有那张静态封面：照旧导出图片本体（data URL），标签用不上
+    (tmp_path / 'live.jpg').write_bytes(b'\xff\xd8\xffexample')
+    text, typ, _ = _resolve_message(dict(msg, media_local_path='live.jpg'), live_cj, str(tmp_path))
+    assert typ == 1 and text.startswith('data:image/jpeg;base64,')
+
+    # 连缩略图都没有：写清没下到的是实况图
+    assert _resolve_message(msg, live_cj, str(tmp_path))[:2] == ('[实况图未下载]', 0)
+    assert _resolve_message(msg, plain_cj, str(tmp_path))[:2] == ('[图片未下载]', 0)
+
+
 def test_legacy_video_and_malformed_reply(tmp_path):
     msg={'msg_type':3,'content':'','media_local_path':'a.mp4','media_url':None}
     assert _resolve_message(msg,{'video':None},str(tmp_path))[0]=='[视频]'

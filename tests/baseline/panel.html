@@ -1479,6 +1479,7 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
       <span class="meta" id="videoPendingCount" style="margin-left:8px"></span>
     </div>
     <div class="meta" id="videoBackfillMsg" style="margin-top:6px"></div>
+    <div class="meta" data-i18n="livePhotoHint">实况图（会动的图）的那段小视频，也在上面这个按钮里一起补。</div>
   </div>
     </div>
 
@@ -2334,12 +2335,13 @@ const T = {
     fullScrapeConfirmOk: '继续采集',
     confirmFullScrape: '全量采集会先删除目标会话的本地消息，再写入抖音当前能提供的记录。抖音通常只保留约一年，超过一年的本地历史可能丢失。建议先导出整库备份。',
     mediaTitle: '媒体下载',
-    mediaDesc: '采集时把图片/表情包下载到本地，避免抖音 CDN 链接过期后无法显示。',
+    mediaDesc: '采集时把图片/表情包/实况图下载到本地，避免抖音 CDN 链接过期后无法显示。',
     autoDownloadNew: '新采集消息自动下载图片到本地',
     backfillBtn: '下载历史图片',
     backfillRunning: (done, total) => '下载中: ' + done + ' / ' + total,
     backfillDone: (ok, fail) => '完成：成功 ' + ok + '，失败 ' + fail,
     videoBackfillBtn: '下载历史视频',
+    livePhotoHint: '实况图（会动的图）的那段小视频，也在上面这个按钮里一起补。',
     videoBackfillRunning: (ok, fail, skip, total) => `下载中: 成功 ${ok}，失败 ${fail}，跳过 ${skip} / ${total}`,
     videoBackfillDone: (ok, fail, skip) => `完成：成功 ${ok}，失败 ${fail}，跳过 ${skip}`,
     videoPendingTxt: (n) => `（待下载 ${n} 条）`,
@@ -2806,12 +2808,13 @@ const T = {
     fullScrapeConfirmOk: 'Continue scrape',
     confirmFullScrape: 'Full scraping first deletes local messages for the target conversations, then writes back what Douyin currently provides. Douyin usually keeps about one year of history, so older local messages may be lost. Export a full database backup first.',
     mediaTitle: 'Media Download',
-    mediaDesc: 'Download images and emoji locally so they stay viewable after Douyin CDN URLs expire.',
+    mediaDesc: 'Download images, emoji and live photos locally so they stay viewable after Douyin CDN URLs expire.',
     autoDownloadNew: 'Auto-download images to local for newly scraped messages',
     backfillBtn: 'Backfill historical images',
     backfillRunning: (done, total) => 'Downloading: ' + done + ' / ' + total,
     backfillDone: (ok, fail) => 'Done: ' + ok + ' succeeded, ' + fail + ' failed',
     videoBackfillBtn: 'Backfill historical videos',
+    livePhotoHint: 'Live photos ("moving" images) keep a short clip — the button above backfills it too.',
     videoBackfillRunning: (ok, fail, skip, total) => `Downloading: ${ok} ok, ${fail} failed, ${skip} skipped / ${total}`,
     videoBackfillDone: (ok, fail, skip) => `Done: ${ok} succeeded, ${fail} failed, ${skip} skipped`,
     videoPendingTxt: (n) => `(${n} pending)`,

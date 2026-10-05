@@ -6,6 +6,7 @@
 * 小火人（aweType=519）：以前落库成 msg_type=0、media_url 为空，图在 cj.url.url_list；
 * 豆包卡（aweType=6001）/ 群邀请卡：图在 cj.icon（群头像还在 aweme_invite_card.group_icon）。
 """
+import asyncio
 import hashlib
 import json
 import os
@@ -150,6 +151,65 @@ def test_spaced_json_is_still_found(temp_db, media_dirs, monkeypatch):
                         lambda url, directory: _write_emoji(directory, url))
     assert media_backfill.backfill_media(conn)["ok"] == 1
     conn.close()
+
+
+def test_scrape_end_pass_downloads_missing_media(temp_db, media_dirs, monkeypatch):
+    """采集收尾那一步真的能补下表情/卡片图。
+
+    回归用例：以前这步挂在「每个会话抓完」的位置上，还把主线程开的 sqlite 连接丢进
+    线程池（sqlite 不允许跨线程用连接），于是每次都 ProgrammingError 被吞掉 —— 等于
+    从来没补过。这里要求它真的把图下下来。
+    """
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_519", "c1", 1, msg_type=0, content="笑死",
+                   raw_data=_monster_emoji_row())
+    conn.commit()
+
+    monkeypatch.setattr(web_scraper, "_save_emoji",
+                        lambda url, directory: _write_emoji(directory, url))
+    scraper = web_scraper.WebChatScraper()
+    scraper._db_conn = conn          # 主线程的连接，和真实采集一样
+    asyncio.run(scraper._backfill_missing_media())
+
+    row = conn.execute("SELECT media_local_path FROM messages WHERE msg_id='srv_519'").fetchone()
+    assert row["media_local_path"].startswith("emoji/")
+    conn.close()
+
+
+def test_extract_all_runs_the_media_pass_once(temp_db, monkeypatch):
+    """整轮采集收尾只补一次（以前是每个会话补一次，白扫全库）。"""
+    from extractor import web_scraper
+
+    calls = []
+
+    async def fake_nav(self):
+        return None
+
+    async def fake_convs(self):
+        return [{"name": "会话A", "nickname": "", "time": "-"},
+                {"name": "会话B", "nickname": "", "time": "-"}]
+
+    async def fake_conversation(self, index, conv, refresh=False):
+        return None
+
+    async def fake_media(self):
+        calls.append("media")
+
+    async def fake_live(self):
+        calls.append("live")
+
+    monkeypatch.setattr(web_scraper.WebChatScraper, "navigate_to_chat", fake_nav)
+    monkeypatch.setattr(web_scraper.WebChatScraper, "_load_all_conversations", fake_convs)
+    monkeypatch.setattr(web_scraper.WebChatScraper, "_extract_conversation", fake_conversation)
+    monkeypatch.setattr(web_scraper.WebChatScraper, "_backfill_missing_media", fake_media)
+    monkeypatch.setattr(web_scraper.WebChatScraper, "_backfill_live_photo_videos", fake_live)
+
+    scraper = web_scraper.WebChatScraper()
+    scraper._db_conn = database.get_db()
+    asyncio.run(scraper.extract_all())
+    assert calls == ["media", "live"]      # 两个会话也只各跑一次
+    scraper._db_conn.close()
 
 
 def _write_emoji(directory, url):

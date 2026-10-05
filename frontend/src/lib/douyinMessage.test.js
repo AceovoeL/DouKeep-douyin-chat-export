@@ -3,6 +3,7 @@ import {
   getContentJson, isJsonShare, getShareInfo, renderSystemMsg, shouldShow,
   isJsonSticker, isJsonSystemMsg, isVoiceMsg, getVoiceDuration, getVoiceUrl,
   isVideoMsg, isJsonVideo, getVideoDuration, getInlinePic, getImageSrc, getEmojiSrc,
+  getLivePhotoVideo,
   getRefMsg, getRefContent, getRefNickname, extractServerMsgIds, isRecalled,
   isViewOnce, getViewOnceText,
   getModifyKinds, getModifyReactions, modifyTimestamp, MODIFY_KIND_LABELS,
@@ -309,6 +310,13 @@ describe('media src helpers', () => {
     expect(getImageSrc(msg({ media_local_path: 'images/a.jpg' }))).toBe('/media/images/a.jpg')
     expect(getEmojiSrc(msg({ media_local_path: 'emoji/e.webp' }))).toBe('/media/emoji/e.webp')
     expect(getEmojiSrc(msg({ media_url: 'http://cdn/e' }))).toBe('http://cdn/e')
+  })
+  it('getLivePhotoVideo 只认采集端补下来的那段小视频', () => {
+    expect(getLivePhotoVideo(msg({ live_video_path: 'videos/1.mp4' }))).toBe('/media/videos/1.mp4')
+    // 封面在 media_local_path、视频没下过 = 普通静态图，不显示「实况」
+    expect(getLivePhotoVideo(msg({ media_local_path: 'images/1.jpg' }))).toBeNull()
+    expect(getLivePhotoVideo(msg({ live_video_path: '' }))).toBeNull()
+    expect(getLivePhotoVideo(msg())).toBeNull()
   })
 })
 

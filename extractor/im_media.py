@@ -197,6 +197,23 @@ def cenc_video(cj):
     return None
 
 
+def live_photo_cenc(cj):
+    """实况图（aweType=2704）里那段小视频的加密密钥。
+
+    实况图 = 一张静态封面 + 一段两三秒的小视频：封面在 ``resource_url``（还是
+    按图片那套 AES-GCM 解密），小视频在 ``live_photo_video`` 里，字段形状和普通
+    聊天视频的 ``video`` 一模一样（tkey/skey/vid）。所以下载与解密直接复用视频那套
+    流程（见 ``extractor/video_downloader.py``），这里只负责把密钥挑出来。
+    """
+    video = cj.get("live_photo_video") if isinstance(cj, dict) else None
+    if not isinstance(video, dict):
+        return None
+    tkey, skey = video.get("tkey"), video.get("skey")
+    if tkey and skey:
+        return {"tkey": tkey, "skey": skey}
+    return None
+
+
 def _is_voice_payload(cj, resource):
     if cj.get("voice_wave") or resource.get("is_voice"):
         return True
@@ -286,6 +303,48 @@ def collect_cenc_jobs(raw=None, bodies=None):
         seen.add(sid)
         jobs.append({"file_id": sid, "tkey": video["tkey"], "skey": video["skey"],
                      "msg_id": f"srv_{sid}"})
+    return jobs
+
+
+def find_live_photo_video(cj, server_id):
+    """实况图那段小视频如果在本地，返回它的相对路径（``videos/<消息id>.mp4``）。
+
+    实况图的小视频和普通视频一样放在 ``data/media/videos/``，文件名就是消息 id ——
+    跟图片、语音同一套约定。合并转发里的内嵌消息没有自己的数据库行（``live_video_path``
+    那列写不上），阅读端只能靠这个约定把「静态封面 + 会动的那段」配起来。
+    """
+    if not live_photo_cenc(cj):
+        return None
+    sid = media_file_id(server_id)
+    if not sid:
+        return None
+    for name in (sid, f"srv_{sid}"):
+        path = os.path.join(VIDEOS_DIR, f"{name}.mp4")
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return f"videos/{name}.mp4"
+    return None
+
+
+def collect_live_photo_jobs(raw=None, bodies=None):
+    """实况图小视频的下载任务，供合并转发（或用整包载荷）批量入队。
+
+    跟 :func:`collect_cenc_jobs` 只有两点不同：密钥取 ``live_photo_video``，
+    以及**已经躺在本地的不再入队** —— 实况图的静态封面也在 ``images/``，所以不能像
+    普通视频那样用 :func:`find_local_media` 判断（它先看图片，永远看不到 mp4）。
+    """
+    jobs = []
+    seen = set()
+    for body in (bodies if bodies is not None else iter_message_bodies(raw)):
+        sid = media_file_id(body.get("server_message_id"))
+        cj = body_content(body)
+        video = live_photo_cenc(cj)
+        if not sid or not video or sid in seen:
+            continue
+        if find_live_photo_video(cj, sid):
+            continue
+        seen.add(sid)
+        jobs.append({"file_id": sid, "kind": "live", "tkey": video["tkey"],
+                     "skey": video["skey"], "msg_id": f"srv_{sid}"})
     return jobs
 
 

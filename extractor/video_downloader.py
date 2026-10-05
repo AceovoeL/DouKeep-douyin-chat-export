@@ -10,6 +10,11 @@ Flow:
   5. Save to data/media/videos/<msg_id>.mp4 and update DB.
 
 No UI scrolling, no clicking, no Web Worker, no wasm. Just HTTPS + Python.
+
+实况图（``aweType=2704``，一张静态封面 + 一段两三秒小视频）走的也是这条流程：它的
+小视频字段形状和普通视频一样，只是密钥藏在 ``cj.live_photo_video`` 而不是 ``cj.video``
+（见 ``im_media.live_photo_cenc``）。区别只有落地位置：普通视频写 ``media_local_path``，
+实况图写 ``live_video_path`` —— 实况图的 ``media_local_path`` 要留给那张静态封面。
 """
 import asyncio
 import json
@@ -21,9 +26,12 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from extractor.im_media import collect_cenc_jobs
+from extractor.im_media import (
+    cenc_video, collect_cenc_jobs, collect_live_photo_jobs, live_photo_cenc,
+    media_file_id,
+)
 from extractor.web_scraper import WebChatScraper
-from extractor.models import get_db
+from extractor.models import get_db, init_db
 from extractor.cenc import decrypt_cenc_mp4
 from common import paths
 
@@ -46,62 +54,163 @@ class JobStopped(Exception):
     """
 
 
-def _msg_video(msg) -> dict | None:
-    """Returns cj.video dict if present (has tkey + skey)."""
+def _content_json(raw_data):
+    """行的 ``raw_data`` → ``content_json``（双层编码，坏了就当空载荷）。"""
     try:
-        ro = json.loads(msg["raw_data"])
+        ro = json.loads(raw_data)
         cj = json.loads(ro.get("content_json", "{}"))
-        v = cj.get("video") or {}
-        if v.get("tkey") and v.get("skey"):
-            return v
     except Exception:
-        pass
+        return {}
+    return cj if isinstance(cj, dict) else {}
+
+
+def _cenc_payload(row) -> tuple[str, dict] | None:
+    """这条消息里能下载的加密视频：``("video"|"live", {"tkey", "skey"})``。
+
+    ``"live"`` 表示实况图里那段小视频（密钥在 ``live_photo_video``）；
+    两者都挑不出来时返回 None（比如只是"引用了一段视频"的文本回复）。
+    """
+    cj = _content_json(row["raw_data"])
+    video = cenc_video(cj)
+    if video:
+        return "video", video
+    live = live_photo_cenc(cj)
+    if live:
+        return "live", live
     return None
 
 
-def pending_videos(conn, conv_id=None, limit=None):
-    """Video messages missing a working local mp4 (with cj.video.tkey present)."""
-    sql = """SELECT msg_id, conv_id, timestamp, raw_data, media_local_path
-             FROM messages
-             WHERE (msg_type = 5 OR (raw_data LIKE '%tkey%' AND raw_data LIKE '%poster%'))
-               AND (media_local_path IS NULL OR media_local_path = ''
-                    OR media_local_path NOT LIKE '%.mp4')"""
+#: 粗筛：普通视频（msg_type=5，或载荷里带 tkey + poster）与实况图（带
+#: live_photo_video）。实况图的静态封面在 media_local_path 里，所以不能用
+#: 「有没有 mp4」判断它下没下过 —— 那是 live_video_path 的事。
+#:
+#: 最后那条：实况图的小视频下好了、但静态封面还缺（比如采集时「自动下载图片」
+#: 是关着的）也要进队列 —— 封面由 ensure_live_photo_covers 补，不然查看器里
+#: 永远只有消息自带的那张模糊缩略图。
+_PENDING_WHERE = (
+    "(msg_type = 5 OR (raw_data LIKE '%tkey%' AND raw_data LIKE '%poster%') "
+    "OR raw_data LIKE '%live_photo_video%') "
+    "AND (media_local_path IS NULL OR media_local_path = '' "
+    "OR media_local_path NOT LIKE '%.mp4') "
+    "AND (live_video_path IS NULL OR live_video_path = '' "
+    "OR (raw_data LIKE '%live_photo_video%' "
+    "AND (media_local_path IS NULL OR media_local_path = '')))"
+)
+
+
+def _forwarded_cenc_jobs(conn, conv_id, only, seen):
+    """合并转发正文里的视频 / 实况图任务（父消息反查出来的虚拟任务）。
+
+    它们没有对应的数据库行（只有 file_id），落地后阅读端靠文件名约定认
+    （见 ``extractor/im_media.find_live_photo_video``）。
+    """
+    sql = "SELECT msg_id, raw_data FROM messages WHERE raw_data LIKE '%tkey%'"
+    args = []
+    if conv_id:
+        sql += " AND conv_id = ?"
+        args.append(conv_id)
+    jobs = []
+    for row in conn.execute(sql, args):
+        found = []
+        if only != "live":
+            found.extend(collect_cenc_jobs(row["raw_data"]))
+        if only != "video":
+            found.extend(collect_live_photo_jobs(row["raw_data"]))
+        for job in found:
+            msg_id = job["msg_id"]
+            if msg_id in seen:
+                continue
+            seen.add(msg_id)
+            jobs.append({
+                "msg_id": msg_id, "file_id": job["file_id"],
+                "kind": job.get("kind") or "video",
+                "tkey": job["tkey"], "skey": job["skey"],
+                "conv_id": "", "timestamp": 0,
+            })
+    return jobs
+
+
+def pending_cenc_jobs(conn, conv_id=None, limit=None, only=None):
+    """还没落地的加密视频任务（普通聊天视频 + 实况图的小视频 + 合并转发里的两类）。
+
+    ``only`` 可以限定只要 ``"video"`` 或 ``"live"`` 一种。
+    """
+    sql = (f"SELECT msg_id, conv_id, timestamp, raw_data, media_local_path, "
+           f"live_video_path FROM messages WHERE {_PENDING_WHERE}")
     args = []
     if conv_id:
         sql += " AND conv_id = ?"
         args.append(conv_id)
     sql += " ORDER BY timestamp DESC"
-    rows = conn.execute(sql, args).fetchall()
-    out = []
-    for r in rows:
-        if _msg_video(r):
-            out.append(r)
-            if limit and len(out) >= limit:
-                return out
-    extra_sql = "SELECT msg_id, raw_data FROM messages WHERE raw_data LIKE '%tkey%'"
-    extra_args = []
-    if conv_id:
-        extra_sql += " AND conv_id = ?"
-        extra_args.append(conv_id)
-    seen = {r["msg_id"] for r in out}
-    for row in conn.execute(extra_sql, extra_args):
-        for job in collect_cenc_jobs(row["raw_data"]):
-            msg_id = job["msg_id"]
-            if msg_id in seen:
-                continue
-            seen.add(msg_id)
-            out.append({
-                "msg_id": msg_id, "conv_id": "", "timestamp": 0,
-                "raw_data": json.dumps({
-                    "content_json": json.dumps({
-                        "video": {"tkey": job["tkey"], "skey": job["skey"]},
-                    })
-                }),
-                "media_local_path": None, "file_id": job["file_id"],
-            })
-            if limit and len(out) >= limit:
-                return out
-    return out
+
+    jobs = []
+    for r in conn.execute(sql, args):
+        payload = _cenc_payload(r)
+        if not payload:
+            continue
+        kind, video = payload
+        if only and kind != only:
+            continue
+        jobs.append({
+            "msg_id": r["msg_id"], "file_id": _file_id_for(r), "kind": kind,
+            "tkey": video["tkey"], "skey": video["skey"],
+            "conv_id": r["conv_id"], "timestamp": r["timestamp"],
+            # 实况图的静态封面还没下：补小视频的同一轮里顺手补上
+            "needs_cover": kind == "live" and not r["media_local_path"],
+        })
+        if limit and len(jobs) >= limit:
+            return jobs
+    jobs.extend(_forwarded_cenc_jobs(conn, conv_id, only, {j["msg_id"] for j in jobs}))
+    if limit:
+        return jobs[:limit]
+    return jobs
+
+
+def pending_videos(conn, conv_id=None, limit=None):
+    """向后兼容的旧名字：面板的「待下载条数」与回填任务都用它。"""
+    return pending_cenc_jobs(conn, conv_id=conv_id, limit=limit)
+
+
+def live_photo_jobs(conn, conv_id=None, limit=None):
+    """只要实况图那段小视频的任务（采集收尾时自动补的就是这些）。"""
+    return pending_cenc_jobs(conn, conv_id=conv_id, limit=limit, only="live")
+
+
+def ensure_live_photo_covers(conn, jobs, limit=None):
+    """把实况图缺的静态封面补下来（纯 HTTPS，不用浏览器）。返回补好的张数。
+
+    「实况图」是封面 + 小视频两段；只把小视频拉下来，查看器里封面还得退化成消息
+    自带的那张模糊缩略图，所以补小视频的同一轮里顺手把封面也补上。任务清单是现成
+    的（``jobs`` 里 ``needs_cover`` 的那些），不用再扫一遍库。
+
+    ``conn`` 必须在调用它的线程里用（sqlite 连接不能跨线程），所以调用方要么直接
+    调、要么整段丢进线程池。
+    """
+    from extractor.im_media import download_direct_media
+
+    pending = [j for j in jobs if j.get("needs_cover")]
+    if limit:
+        pending = pending[:limit]
+    done = 0
+    for job in pending:
+        row = conn.execute("SELECT raw_data FROM messages WHERE msg_id=?",
+                           (job["msg_id"],)).fetchone()
+        cj = _content_json(row["raw_data"]) if row else {}
+        if not cj:
+            continue
+        path = download_direct_media(cj, job.get("file_id") or job["msg_id"])
+        if not path:
+            # 链接过期（403）之类：这条这次补不了，下次采集还会再试
+            continue
+        conn.execute(
+            "UPDATE messages SET media_local_path=? WHERE msg_id=? "
+            "AND (media_local_path IS NULL OR media_local_path = '')",
+            (path, job["msg_id"]),
+        )
+        done += 1
+    if done:
+        conn.commit()
+    return done
 
 
 def reset_local_paths(conn):
@@ -109,6 +218,12 @@ def reset_local_paths(conn):
     cur = conn.execute(
         """UPDATE messages SET media_local_path = NULL
            WHERE media_local_path LIKE 'videos/%.mp4'"""
+    )
+    # 实况图的小视频也躺在 videos/ 里，删文件时同步清掉记录，否则查看器会一直
+    # 拿着一个已经不存在的地址，画出一个点不动的「实况」标。
+    conn.execute(
+        """UPDATE messages SET live_video_path = NULL
+           WHERE live_video_path LIKE 'videos/%.mp4'"""
     )
     conn.commit()
     return cur.rowcount
@@ -190,9 +305,25 @@ def _file_id_for(msg):
     return media_file_id(msg["msg_id"]) or str(msg["msg_id"]).replace("/", "_")
 
 
+def _record_saved(conn, msg_id, kind, rel_path):
+    """把下好的文件记到正确的列上。
+
+    实况图的小视频**不能**写 ``media_local_path`` —— 那一列是它的静态封面的位置，
+    覆盖掉查看器就只剩一段没有封面的视频了。
+    """
+    if conn is None or not msg_id or "/" in str(msg_id):
+        return
+    column = "live_video_path" if kind == "live" else "media_local_path"
+    conn.execute(f"UPDATE messages SET {column}=? WHERE msg_id=?", (rel_path, msg_id))
+    conn.commit()
+
+
 async def save_cenc_jobs(page, jobs, *, conn=None, progress_cb=None,
                          batch_size=BATCH_SIZE, gate=None):
     """Resolve tkeys on a logged-in page, decrypt, and write videos/<file_id>.mp4.
+
+    每个任务带 ``kind``：``"video"``（普通聊天视频，写 ``media_local_path``）或
+    ``"live"``（实况图的小视频，写 ``live_video_path``）；缺省按普通视频处理。
 
     ``gate`` is an optional async callable awaited before each video. The panel
     uses it to pause the job while an error dialog is open, and to raise
@@ -206,10 +337,12 @@ async def save_cenc_jobs(page, jobs, *, conn=None, progress_cb=None,
     if not jobs:
         return {"total": 0, "ok": 0, "fail": 0, "skipped": 0, "log": log}
 
-    by_tkey: dict[str, list[tuple[str, str, str]]] = {}
+    by_tkey: dict[str, list[tuple[str, str, str, str]]] = {}
     for job in jobs:
         file_id = job.get("file_id") or job.get("msg_id")
-        by_tkey.setdefault(job["tkey"], []).append((job.get("msg_id"), job["skey"], file_id))
+        by_tkey.setdefault(job["tkey"], []).append(
+            (job.get("msg_id"), job["skey"], file_id, job.get("kind") or "video")
+        )
 
     tkeys = list(by_tkey.keys())
     total = sum(len(v) for v in by_tkey.values())
@@ -219,7 +352,7 @@ async def save_cenc_jobs(page, jobs, *, conn=None, progress_cb=None,
         log.append(f"  batch {batch_idx // batch_size + 1}: {len(batch)} req → {len(urls)} URL")
         for tkey in batch:
             url = urls.get(tkey)
-            for msg_id, skey, file_id in by_tkey[tkey]:
+            for msg_id, skey, file_id, kind in by_tkey[tkey]:
                 if gate is not None:
                     try:
                         await gate()
@@ -230,10 +363,7 @@ async def save_cenc_jobs(page, jobs, *, conn=None, progress_cb=None,
                 out_rel = f"videos/{file_id}.mp4"
                 out_abs = os.path.join(VIDEOS_DIR, f"{file_id}.mp4")
                 if os.path.exists(out_abs) and os.path.getsize(out_abs) > 0:
-                    if conn is not None and msg_id and "/" not in str(msg_id):
-                        conn.execute("UPDATE messages SET media_local_path=? WHERE msg_id=?",
-                                     (out_rel, msg_id))
-                        conn.commit()
+                    _record_saved(conn, msg_id, kind, out_rel)
                     skipped += 1
                     continue
                 if not url:
@@ -250,12 +380,7 @@ async def save_cenc_jobs(page, jobs, *, conn=None, progress_cb=None,
                 try:
                     enc = await asyncio.to_thread(_download, url, 60)
                     size = await asyncio.to_thread(_process_one, enc, skey, out_abs)
-                    if conn is not None and msg_id and "/" not in str(msg_id):
-                        conn.execute(
-                            "UPDATE messages SET media_local_path=? WHERE msg_id=?",
-                            (out_rel, msg_id),
-                        )
-                        conn.commit()
+                    _record_saved(conn, msg_id, kind, out_rel)
                     ok += 1
                     log.append(f"    [+] {file_id} ({size // 1024} KB)")
                 except Exception as e:
@@ -287,25 +412,22 @@ async def backfill(conv_id: str | None = None, limit: int | None = None,
                    batch_size: int = BATCH_SIZE, progress_cb=None,
                    gate=None) -> dict:
     os.makedirs(VIDEOS_DIR, exist_ok=True)
+    init_db()          # 旧库要先补上 live_video_path 列，后面的查询才认得它
     conn = get_db()
 
-    pending = pending_videos(conn, conv_id=conv_id, limit=limit)
-    log = [f"[*] {len(pending)} pending videos"]
-    if not pending:
+    jobs = pending_videos(conn, conv_id=conv_id, limit=limit)
+    live = sum(1 for j in jobs if j.get("kind") == "live")
+    log = [f"[*] {len(jobs)} pending videos ({live} live photos)"]
+    if not jobs:
         return {"total": 0, "ok": 0, "fail": 0, "skipped": 0, "log": log}
 
-    jobs = []
-    for m in pending:
-        v = _msg_video(m)
-        if not v:
-            continue
-        jobs.append({
-            "msg_id": m["msg_id"],
-            "file_id": m["file_id"] if isinstance(m, dict) and m.get("file_id") else _file_id_for(m),
-            "tkey": v["tkey"],
-            "skey": v["skey"],
-        })
     log.append(f"[*] {len({j['tkey'] for j in jobs})} unique tkeys")
+
+    # 实况图缺的静态封面先补掉：这一步不用登录、不用浏览器，所以放在启动浏览器之前，
+    # 万一没登录也至少把封面补上了。
+    covers = await asyncio.to_thread(ensure_live_photo_covers, conn, jobs)
+    if covers:
+        log.append(f"[*] 顺带补了 {covers} 张实况图封面")
 
     s = WebChatScraper()
     await s.launch()
@@ -344,6 +466,7 @@ async def main():
       reset DB+files:        `python -m extractor.video_downloader --reset`
     """
     if len(sys.argv) > 1 and sys.argv[1] == "--reset":
+        init_db()      # 同上：reset 也要写 live_video_path
         conn = get_db()
         n = reset_local_paths(conn)
         print(f"[*] cleared media_local_path on {n} rows")

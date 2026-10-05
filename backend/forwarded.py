@@ -128,14 +128,15 @@ def _inline_row(body, descriptor, preview, parent_id):
         "sender_uid": str(body.get("sender") or descriptor.get("uid") or ""),
         "sender_name": preview.get("nick_name") or "", "timestamp": timestamp,
         "content": content, "msg_type": msg_type, "media_url": media_url,
-        "media_local_path": None, "server_message_id": sid,
+        "media_local_path": None, "live_video_path": None, "server_message_id": sid,
         "raw_data": json.dumps({"content_json": json.dumps(cj, ensure_ascii=False)}, ensure_ascii=False),
     }
 
 
 def _overlay_local_media(inline_row, local):
     row = dict(inline_row)
-    for key in ("media_local_path", "media_url", "voice_transcription", "voice_transcription_status"):
+    for key in ("media_local_path", "media_url", "live_video_path",
+                "voice_transcription", "voice_transcription_status"):
         if local.get(key):
             row[key] = local[key]
     return row
@@ -197,6 +198,17 @@ def resolve_forward(message, conn, *, ancestors=(), budget=None, fetch_media=Tru
         else:
             result["available"] += 1
             ensure_row_media(row, conn, fetch=fetch_media, budget=media_budget)
+            # 实况图（aweType=2704）：封面就是普通图片，会动的那段小视频在采集时存成
+            # videos/<消息id>.mp4。内嵌消息没有自己的数据库行，只能按文件名约定认它。
+            if not row.get("live_video_path"):
+                from extractor.im_media import find_live_photo_video
+
+                live = find_live_photo_video(
+                    content_json(row),
+                    row.get("server_message_id") or row.get("msg_id"),
+                )
+                if live:
+                    row["live_video_path"] = live
             user = conn.execute("SELECT nickname FROM users WHERE uid = ?", (row.get("sender_uid", ""),)).fetchone()
             if user and user[0]:
                 row["sender_name"] = user[0]

@@ -561,6 +561,20 @@ class WebChatScraper:
                 traceback.print_exc()
             await asyncio.sleep(0.5 + random.random())
 
+        # 收尾：老消息漏掉的表情 / 卡片图（小火人 519、群邀请卡群头像、豆包卡封面）。
+        # 全库扫描一次就够，不用每个会话都扫（这步不需要浏览器）。
+        try:
+            await self._backfill_missing_media()
+        except Exception as e:
+            print(f"[!] 补齐历史表情/卡片图失败（消息已保存）: {type(e).__name__}")
+
+        # 收尾：实况图里那段小视频要在这个已登录的页面里换签名地址，所以放在
+        # 「会话都抓完了、浏览器还开着」的时候统一补一次（含以前漏掉的老消息）。
+        try:
+            await self._backfill_live_photo_videos()
+        except Exception as e:
+            print(f"[!] 实况图小视频补全失败（消息与图片已保存）: {type(e).__name__}")
+
         conn = self._db_conn
         stats = {
             "conversations": conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0],
@@ -1006,6 +1020,67 @@ class WebChatScraper:
                     print(f"  [media] video 封面失败: {e}")
         if ok or fail:
             print(f"  [media] 图片/表情/视频封面 已下载 {ok} 个 (失败 {fail})")
+
+    async def _backfill_missing_media(self):
+        """采集收尾：把库里缺图的小火人表情 / 卡片封面补一次（全库，整轮一次）。
+
+        这步以前挂在「每个会话抓完」的位置上，而且把主线程开的 sqlite 连接丢进了
+        线程池 —— sqlite 不允许跨线程用连接，所以每次都立刻 ProgrammingError、被
+        except 吞成一行提示，等于从来没补过。现在改成整轮只跑一次，并且在工作线程里
+        自己开连接（跟面板「下载历史图片」同一个做法）。
+
+        它是全库扫描、跟刚抓完哪个会话无关，所以放在收尾既不影响结果，也省掉
+        「每个会话都扫一遍全库」的重复开销。链接会过期，能补一条是一条。
+        """
+        from extractor.media_backfill import backfill_media
+
+        def _run():
+            own = get_db()      # 连接必须在用它自己的线程里创建
+            try:
+                return backfill_media(own)
+            finally:
+                own.close()
+
+        try:
+            stats = await asyncio.to_thread(_run)
+        except Exception as e:
+            print(f"  [!] 补齐历史表情/卡片图失败（消息已保存）: {type(e).__name__}")
+            return
+        if stats["total"]:
+            print(
+                f"  [media] 补齐缺图的消息: 需要 {stats['total']} 条，"
+                f"成功 {stats['ok']}，失败 {stats['failed']}"
+            )
+
+    async def _backfill_live_photo_videos(self):
+        """采集收尾：把库里还没下过小视频的实况图补全（含以前一直没下过的）。
+
+        实况图（aweType=2704）= 一张静态封面 + 一段两三秒的小视频。小视频和普通
+        聊天视频同一套流程：先在这个已登录的页面里问抖音要签名地址
+        （batch_play_info），再按 CENC 解密，只是落地列写成 live_video_path，别盖掉
+        那张封面。
+
+        封面（静态图）也一起管：它走的是普通图片通道，会受「新采集消息自动下载图片」
+        开关影响；开关关着时这里顺手补上，免得只剩小视频、封面退回模糊缩略图。
+        """
+        from extractor.video_downloader import (
+            ensure_live_photo_covers, live_photo_jobs, save_cenc_jobs,
+        )
+
+        jobs = live_photo_jobs(self._db_conn)
+        if not jobs:
+            return
+        covers = await asyncio.to_thread(
+            ensure_live_photo_covers, self._db_conn, jobs
+        )
+        if covers:
+            print(f"  [live] 顺带补了 {covers} 张实况图封面")
+        print(f"  [live] {len(jobs)} 条实况图还没有小视频，开始补...")
+        stats = await save_cenc_jobs(self.page, jobs, conn=self._db_conn)
+        print(
+            f"  [live] 实况图补全: 成功 {stats['ok']}，失败 {stats['fail']}，"
+            f"跳过 {stats['skipped']}"
+        )
 
     async def _extract_and_save_user_info(self, conv_id):
         """从 userInfoStore 提取用户信息（昵称、头像、unique_id），下载头像到本地。"""
@@ -2244,22 +2319,8 @@ class WebChatScraper:
             except Exception as e:
                 print(f"  [!] 补全发送者信息失败: {e}")
 
-        # 6.5 老消息漏掉的表情/卡片图（小火人 519、群邀请卡群头像、豆包卡封面）：
-        # 这些消息这次抓不到（或抓到了但旧版本没存图），在这里按库里的旧载荷补一次。
-        # 抖音链接会过期，能补一条是一条，失败只打一行提示。
-        try:
-            from extractor.media_backfill import backfill_media
-
-            media_stats = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: backfill_media(self._db_conn)
-            )
-            if media_stats["total"]:
-                print(
-                    f"  [media] 补齐缺图的消息: 需要 {media_stats['total']} 条，"
-                    f"成功 {media_stats['ok']}，失败 {media_stats['failed']}"
-                )
-        except Exception as e:
-            print(f"  [!] 补齐历史表情/卡片图失败（消息已保存）: {type(e).__name__}")
+        # 6.5 老消息漏掉的表情/卡片图不再在这里补：它是全库扫描，跟"刚抓完哪个会话"
+        # 无关，挂在每个会话后面只是白扫（见 extract_all 收尾的 _backfill_missing_media）。
 
         # 7. 归一化 seq
         print(f"  [*] 归一化消息序号 (按服务端排序)...")

@@ -64,6 +64,9 @@ def init_db():
             msg_type INTEGER DEFAULT 1,
             media_url TEXT,
             media_local_path TEXT,
+            -- 实况图（会动的图）里那段小视频；静态封面照旧存在 media_local_path，
+            -- 两列分开才不会互相覆盖（见 extractor/video_downloader.py）。
+            live_video_path TEXT,
             timestamp INTEGER,
             seq INTEGER DEFAULT 0,
             raw_data TEXT,
@@ -105,6 +108,11 @@ def init_db():
     # 迁移：为旧数据库添加 ref_msg 列
     try:
         conn.execute("ALTER TABLE messages ADD COLUMN ref_msg TEXT")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+    # 迁移：为旧数据库添加 messages.live_video_path 列（实况图的小视频）
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN live_video_path TEXT")
     except sqlite3.OperationalError:
         pass  # 列已存在
     # 迁移：为旧数据库添加 conversations.avatar_url 列

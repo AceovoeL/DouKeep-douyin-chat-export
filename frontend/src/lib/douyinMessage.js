@@ -520,6 +520,14 @@ export function getImageSrc(msg) {
   return getInlinePic(msg)
 }
 
+// 实况图（抖音的「会动的图」）= 静态封面 + 一段两三秒的小视频。封面就是普通图片
+// （media_local_path / inline_pic），小视频是采集端单独补下来的 live_video_path；
+// 只有那份视频真的下到本地了，这一列才有值（见 extractor/video_downloader.py）。
+export function getLivePhotoVideo(msg) {
+  const path = msg?.live_video_path
+  return typeof path === 'string' && path ? '/media/' + path : null
+}
+
 // Emoji src: local > 已存 CDN 链接 > 贴纸载荷 > cj.url（小火人 519 走这条）。
 export function getEmojiSrc(msg) {
   if (msg.media_local_path) return '/media/' + msg.media_local_path

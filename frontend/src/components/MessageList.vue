@@ -234,6 +234,14 @@
                   @play="onVideoPlayAttempt"
                   @playing="onVideoPlayAttempt"
                 />
+                <!-- 实况图：鼠标悬停才动起来，见 LivePhoto.vue -->
+                <LivePhoto
+                  v-else-if="getLivePhotoVideo(msg) && getImageSrc(msg)"
+                  :cover="getImageSrc(msg)"
+                  :video="getLivePhotoVideo(msg)"
+                  :loading="imgLoading"
+                  @click="openLivePhoto(msg)"
+                />
                 <img
                   v-else-if="getImageSrc(msg)"
                   :src="getImageSrc(msg)"
@@ -468,7 +476,7 @@
       </div>
     </template>
 
-    <MessageLightbox v-model="lightboxSrc" />
+    <MessageLightbox v-model="lightboxSrc" :live="lightboxLive" />
   </div>
 </template>
 
@@ -477,13 +485,14 @@ import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from
 import { renderRichText as _renderRichText } from '@/lib/highlight'
 import { resolveAvatarUrl, iconSrc } from '@/lib/media'
 import MessageLightbox from './MessageLightbox.vue'
+import LivePhoto from './LivePhoto.vue'
 import {
   clearCjCache, getContentJson, tryParseJson, tryParseShareContent, extractShareTitle,
   isJsonSystemMsg, isJsonSticker, getStickerUrl, shouldShow, renderSystemMsg, getWatchTogether, getProfileCard, getForwardInfo, isSystemMsg, duplicateSystemMessageIds,
   extractServerMsgIds, isVideoComment, isJsonShare, getShareInfo, shareCardTitle, getInlinePic,
   isLooseEmoji, isLooseImage, isShareCard,
   isVideoMsg, hasLocalVideo, isJsonVideo, getVideoPoster, getVideoDuration,
-  getImageSrc, getEmojiSrc, isViewOnce, getViewOnceText, getModifyKinds, getModifyReactions,
+  getImageSrc, getEmojiSrc, getLivePhotoVideo, isViewOnce, getViewOnceText, getModifyKinds, getModifyReactions,
   MODIFY_KIND_LABELS, MODIFY_KIND_TITLES, isVoiceMsg, getVoiceUrl, getVoiceDuration,
   getRefMsg, getRefContent, getRefNickname,
   systemNoticeSide, peerRelationNotice,
@@ -1062,8 +1071,19 @@ const loadError = ref('')
 const referenceError = ref('')
 let messageRequestId = 0
 const lightboxSrc = ref(null)
+// 放大查看的如果是实况图，这里放着它的小视频地址（普通图片是 null）。
+const lightboxLive = ref(null)
 function openLightbox(src) {
-  if (src) lightboxSrc.value = src
+  if (!src) return
+  lightboxLive.value = null
+  lightboxSrc.value = src
+}
+// 点击实况图：放大后仍然按同一套悬停规则播放（见 LivePhoto.vue）。
+function openLivePhoto(msg) {
+  const cover = getImageSrc(msg)
+  if (!cover) return
+  lightboxLive.value = getLivePhotoVideo(msg)
+  lightboxSrc.value = cover
 }
 
 async function jumpToRefMsg(ref) {

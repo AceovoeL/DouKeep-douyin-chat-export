@@ -54,13 +54,15 @@ def insert_conversation(conn, conv_id, name, participant_uids="[]",
 
 def insert_message(conn, msg_id, conv_id, seq, *, sender_uid="u1",
                    sender_name="", content="", msg_type=1, media_url=None,
-                   media_local_path=None, timestamp=0, raw_data=None, ref_msg=None):
+                   media_local_path=None, live_video_path=None, timestamp=0,
+                   raw_data=None, ref_msg=None):
     """Insert a message row using the *real* writer column set (seq + ref_msg),
     which extractor.models.insert_message omits."""
     conn.execute(
         "INSERT OR IGNORE INTO messages (msg_id, conv_id, sender_uid, sender_name, "
-        "content, msg_type, media_url, media_local_path, timestamp, seq, raw_data, ref_msg) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "content, msg_type, media_url, media_local_path, live_video_path, timestamp, "
+        "seq, raw_data, ref_msg) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (msg_id, conv_id, sender_uid, sender_name, content, msg_type, media_url,
-         media_local_path, timestamp, seq, raw_data, ref_msg),
+         media_local_path, live_video_path, timestamp, seq, raw_data, ref_msg),
     )

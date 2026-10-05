@@ -10,6 +10,7 @@ import urllib.parse
 
 from common import paths
 from common.message_kinds import is_view_once, locale_notice_text
+from extractor.im_media import live_photo_cenc
 from extractor.models import get_db
 from backend.forwarded import as_object, resolve_forward
 
@@ -294,6 +295,8 @@ def _resolve_message(msg, cj: dict | None, media_dir: str, embed_images: bool = 
     embed_images=False keeps images as a plain ``[图片]`` label (type IMAGE)
     instead of inlining base64 data URLs — used by the ChatLab pull API where
     payload size matters and the picture itself adds nothing to analysis.
+    实况图（aweType=2704，一张静态封面 + 一段小视频）的图片本身照旧导出，只是标签
+    写成 ``[实况图]``：导出格式里没有"角标"这回事，标签是唯一能表达它的地方。
     """
     cj = cj if isinstance(cj, dict) else {}
     msg_type = msg["msg_type"]
@@ -381,7 +384,9 @@ def _resolve_message(msg, cj: dict | None, media_dir: str, embed_images: bool = 
         stats["emoji"] = 1
     # Prefer the archived plaintext image; signed origin URLs may be encrypted/expired.
     elif not is_voice and not is_video and chatlab_type == 1 and not embed_images:
-        content = "[图片]"
+        # 实况图（会动的图）：标签写清它不只是张静态图（图片本身照旧导出）
+        is_live = live_photo_cenc(cj) is not None
+        content = "[实况图]" if is_live else "[图片]"
         stats["image"] = 1
     elif not is_voice and not is_video and chatlab_type == 1:
         local = _message_field(msg, "media_local_path")
@@ -399,7 +404,8 @@ def _resolve_message(msg, cj: dict | None, media_dir: str, embed_images: bool = 
         elif msg["media_url"] and not as_object(cj.get("resource_url")).get("skey"):
             content = msg["media_url"]
         else:
-            content, chatlab_type = "[图片未下载]", 0
+            live = live_photo_cenc(cj) is not None
+            content, chatlab_type = ("[实况图未下载]" if live else "[图片未下载]"), 0
         stats["image"] = 1
 
     # 仅看一次文本消息：aweType=10401 + 正文、无卡片字段。旧数据可能把它存成

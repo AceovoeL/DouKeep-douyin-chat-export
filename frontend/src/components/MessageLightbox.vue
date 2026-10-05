@@ -1,7 +1,11 @@
 <template>
   <Transition name="lightbox">
     <div v-if="shown" class="lightbox-overlay" @click.self="close">
-      <img class="lightbox-img" :src="displaySrc" @click.self="close" />
+      <!-- 实况图：放大后鼠标停在图上，直接用同一套悬停播放规则 -->
+      <div v-if="live" class="lightbox-live" @click="close">
+        <LivePhoto variant="zoom" :cover="displaySrc" :video="live" loading="eager" />
+      </div>
+      <img v-else class="lightbox-img" :src="displaySrc" @click.self="close" />
       <button class="lightbox-close" @click="close">×</button>
     </div>
   </Transition>
@@ -9,9 +13,14 @@
 
 <script setup>
 import { onMounted, onUnmounted, ref, watch } from 'vue'
+import LivePhoto from './LivePhoto.vue'
 
 // Fullscreen image overlay. Controlled via v-model: the src to show, or null.
-const props = defineProps({ modelValue: { type: String, default: null } })
+// ``live`` 是实况图那段小视频的地址（普通图片不传），放大后同样跟着鼠标播放。
+const props = defineProps({
+  modelValue: { type: String, default: null },
+  live: { type: String, default: null },
+})
 const emit = defineEmits(['update:modelValue'])
 
 // shown 比 modelValue 晚一步收起：留出淡出时间，关闭时不至于瞬间消失。
@@ -53,14 +62,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .lightbox-enter-active, .lightbox-leave-active {
   transition: opacity 0.18s var(--ease-out);
 }
-.lightbox-enter-active .lightbox-img, .lightbox-leave-active .lightbox-img {
+.lightbox-enter-active .lightbox-img, .lightbox-leave-active .lightbox-img,
+.lightbox-enter-active .lightbox-live, .lightbox-leave-active .lightbox-live {
   transition: transform 0.18s var(--ease-out), opacity 0.18s var(--ease-out);
 }
 .lightbox-enter-from, .lightbox-leave-to { opacity: 0; }
-.lightbox-enter-from .lightbox-img, .lightbox-leave-to .lightbox-img {
+.lightbox-enter-from .lightbox-img, .lightbox-leave-to .lightbox-img,
+.lightbox-enter-from .lightbox-live, .lightbox-leave-to .lightbox-live {
   opacity: 0;
   transform: scale(0.94);
 }
+.lightbox-live { line-height: 0; cursor: zoom-out; }
 .lightbox-img {
   max-width: 92vw; max-height: 92vh;
   object-fit: contain;

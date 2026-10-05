@@ -171,9 +171,13 @@ def _object(value):
 
 
 async def _materialize_forward_media(page, bodies, msg_id):
-    from extractor.im_media import collect_cenc_jobs, materialize_bodies
+    from extractor.im_media import (
+        collect_cenc_jobs, collect_live_photo_jobs, materialize_bodies,
+    )
     materialize_bodies(bodies)
-    jobs = collect_cenc_jobs(bodies=bodies)
+    # 普通视频与实况图那段小视频一起入队：两者解密方式一样，只是密钥字段不同
+    # （见 extractor/video_downloader.save_cenc_jobs 的 kind）。
+    jobs = [*collect_cenc_jobs(bodies=bodies), *collect_live_photo_jobs(bodies=bodies)]
     if not jobs:
         return
     from extractor.video_downloader import save_cenc_jobs
