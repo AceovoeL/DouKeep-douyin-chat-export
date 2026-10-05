@@ -6,6 +6,11 @@
 ``frontend/src/lib/emojiAssets.js`` 的名单一一对应（共 214 个）。第一次运行时按需
 下载到 ``assets/emoji/``，之后就一直用本机这份。
 
+存盘用的扩展名按**实际拿到的格式**定：抖音给的表情绝大多数是 WebP，个别的直接给
+PNG（[加功德] 那张就是，2026-10-04 核实过，加任何参数也变不出 WebP）。前端问图片时
+统一按 ``/emoji/<名字>.webp`` 取，后端按名字把几种图片扩展名都认下来
+（见 backend/emoji_files.py），所以本地存成什么格式都不影响前端。
+
 三条原则：
 * **不用第三方库**：首次运行时最先被用到的代码之一，urllib 够用；
 * **能断点续下**：已经存在的文件跳过，所以中断了再点一次就行；
@@ -41,6 +46,10 @@ _RETRY_WAIT = 0.6
 #: 小于这个大小的文件一律当作没下好（比任何一张表情都小）。
 MIN_BYTES = 64
 
+#: 认得的图片扩展名。抖音给的表情绝大多数是 WebP，个别是 PNG —— 只认 WebP 的话，
+#: 那张 PNG 会**每次都算失败**：点多少次「下载资源包」都补不上（2026-10-04 修）。
+IMAGE_EXTS = (".webp", ".png", ".jpg", ".gif")
+
 
 # ── 清单 ──────────────────────────────────────────────────────────────────
 
@@ -59,6 +68,15 @@ def load_manifest() -> list[dict]:
 
 
 def file_path(name: str) -> str:
+    """这张图在本机的路径：下过就用磁盘上那份（webp / png 都认），没下过按 webp 起名。
+
+    只在 ``_write`` 的默认路径和「本机有没有」这两处用得到，所以「返回一个不存在的
+    路径」是正常情况。
+    """
+    for ext in IMAGE_EXTS:
+        candidate = os.path.join(EMOJI_DIR, f"{name}{ext}")
+        if os.path.exists(candidate):
+            return candidate
     return os.path.join(EMOJI_DIR, f"{name}.webp")
 
 
@@ -118,8 +136,10 @@ def download(items: list[dict] | None = None, *, on_progress=None,
 
         try:
             data = _fetch_with_retries(url)
-            _verify(data)
-            _write(file_path(name), data)
+            # 按真实格式落盘：抖音那几张 PNG 要是硬存成 .webp，本机就留了一张
+            # 「名字说是 webp、内容其实是 png」的图，以后排查的人只会更糊涂。
+            target = os.path.join(EMOJI_DIR, f"{name}{detect_image(data)}")
+            _write(target, data)
             if not _hash_matches(item, data):
                 result["mismatched"] += 1
                 _log(f"[自检] {name}: 图片与清单里的 sha256 不一致（不影响使用）")
@@ -169,12 +189,23 @@ def _fetch(url: str) -> bytes:
         return response.read()
 
 
-def _verify(data: bytes) -> None:
-    """确认拿到的是真的 WebP，而不是「403」这样的错误页。"""
+def detect_image(data: bytes) -> str:
+    """看开头几个字节判断这是什么图，返回扩展名；不是认得的图片就报错。
+
+    要挡住的是「403 错误页」这种照样 200 回来的非图片内容。判据只看魔数：以前这里
+    写死了 WebP，导致抖音给 PNG 的那一张（[加功德]）永远下不下来。
+    """
     if len(data) < MIN_BYTES:
         raise ValueError(f"内容过短（{len(data)} 字节）")
-    if not data.startswith(b"RIFF") or data[8:12] != b"WEBP":
-        raise ValueError("不是 WebP 图片（可能拿到了错误页）")
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    raise ValueError("不是图片（可能拿到了错误页）")
 
 
 def _write(path: str, data: bytes) -> None:

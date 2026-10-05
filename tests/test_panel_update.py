@@ -577,3 +577,34 @@ def test_panel_shows_the_available_version_next_to_the_current_one():
     assert ".filter(v => v && compareVersions(v, current) > 0)" in html
     # 中英文案都要有
     assert html.count("aboutVersionAvailable:") == 2
+
+
+# ── 面板：版本说明很多时，弹窗不许被屏幕切掉 ─────────────────────────────
+
+def test_update_dialog_scrolls_the_versions_list_instead_of_overflowing():
+    """落后很多个版本时，「各版本更新内容」要自己滚，标题和按钮钉着不动。
+
+    以前列表是 flex 列、卡片默认 flex-shrink:1：装不下时 flex 把卡片挤矮，
+    卡里的文字被 .ab-rel 的 overflow:hidden 切掉，连滚动条都不出现 —— 用户看到
+    的就是「说明被遮挡」。另外整个弹窗没有高度上限，窗口矮 / 字号放大时会顶出屏幕。
+    """
+    panel = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "backend", "panel", "static", "panel.html",
+    )
+    html = open(panel, encoding="utf-8").read()
+
+    # 卡片保持自然高度（不被压扁），多出来的由列表滚
+    assert ".ab-rels > * { flex-shrink: 0; }" in html
+    # 弹窗永远不高于屏幕
+    assert "max-height: calc(100vh - 48px); overflow-y: auto;" in html
+    # 更新弹窗竖排：头、列表、说明、勾选、按钮各占一段，只有中间那段可滚动
+    assert (".ab-dialog { width: min(620px, 100%); display: flex; flex-direction: column; }"
+            in html)
+    assert ("flex: 1 1 auto; min-height: 0; }" in html)
+    assert ".ab-dialog .ab-rels { max-height: none; flex: 1 1 auto; min-height: 0; }" in html
+    # 说明与「自动重启」勾选放在滚动区外面，版本再多也一直看得见
+    body = html.split('<div class="ab-dialog-body">', 1)[1].split("\n    </div>", 1)[0]
+    assert 'id="updateModalRels"' in body
+    assert "ab-dialog-note" not in body
+    assert "ab-restart-row" not in body

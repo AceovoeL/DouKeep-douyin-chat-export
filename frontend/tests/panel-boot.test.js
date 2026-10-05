@@ -61,3 +61,51 @@ describe('控制面板页面启动', () => {
     dom.window.close()
   })
 })
+
+/**
+ * 资源包弹窗那两句分工：
+ * * `#packWhat` 是固定的说明（这是什么、不下会怎样），**任何状态下都在**；
+ * * `#packModalMessage` 只说「现在什么状态」（要不要下 / 下载中 / 装好了 / 失败）。
+ * 之前把说明写进了「问要不要下」那一条状态文案里，于是装好的人再从「关于」页点开
+ * 弹窗就只剩一句「已装好 214 项」。这里按状态各渲染一遍，钉住说明不会又丢掉。
+ */
+describe('资源包弹窗', () => {
+  const BASE = {
+    status: 'idle', done: 0, total: 214, failed: 0, skipped: 0, mismatched: 0,
+    current: '', failed_names: [], error: '', installed: 0, missing: 214,
+    installed_all: false, manifest_ok: true, percent: 0, prompt: false,
+  }
+  const STATES = [
+    { 名字: '还没下载（问要不要下）', state: {} },
+    { 名字: '下载中', state: { status: 'running', done: 5, percent: 2 } },
+    { 名字: '已装好', state: { status: 'done', installed: 214, missing: 0, installed_all: true, percent: 100 } },
+    { 名字: '下载失败', state: { status: 'failed', failed: 2, failed_names: ['加功德', '微笑'], error: '' } },
+    { 名字: '读不到清单', state: { status: 'failed', manifest_ok: false, error: '读不到资源包清单' } },
+  ]
+
+  function render(state) {
+    const boot = bootPanel()
+    boot.window.applyEmojiPack({ ...BASE, ...state })
+    return boot
+  }
+
+  it.each(STATES.map((entry) => [entry.名字, entry.state]))(
+    '说明在任何状态下都在：%s',
+    (_名字, state) => {
+      const { dom, window: win } = render(state)
+      const what = win.document.getElementById('packWhat').textContent.trim()
+      expect(what).toContain('憨笑')          // 举例的那个表情
+      expect(what).toContain('文字显示')      // 不下会怎样
+      expect(win.document.getElementById('packModalMessage').textContent.trim()).not.toBe('')
+      dom.window.close()
+    },
+  )
+
+  it('下载失败时写清是哪几张没下来', () => {
+    const { dom, window: win } = render({
+      status: 'failed', failed: 2, failed_names: ['加功德', '微笑'], error: '',
+    })
+    expect(win.document.getElementById('packNote').textContent).toContain('加功德')
+    dom.window.close()
+  })
+})

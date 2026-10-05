@@ -493,6 +493,9 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   width: min(470px, 100%); padding: 22px; background: var(--bg2);
   border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 18px 60px rgba(0,0,0,0.28);
   animation: modalSlideIn 0.18s ease-out;
+  /* 弹窗再高也不许顶出屏幕（窗口矮、字号放大时最容易撞上）：超出部分自己滚，
+     不然上下两头会被屏幕切掉 —— 标题看不见、按钮也点不到。 */
+  max-height: calc(100vh - 48px); overflow-y: auto;
 }
 .confirm-head { display: flex; align-items: flex-start; gap: 13px; }
 .confirm-icon {
@@ -509,6 +512,8 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 /* ── 资源包（首次进面板时的下载提示 + 下载进度） ── */
 .pack-dialog { width: min(520px, 100%); }
 .pack-icon { color: var(--accent); background: var(--accent-bg); }
+/* 弹窗里那句固定的「这是什么 / 不下会怎样」，任何状态下都在 */
+.pack-what { margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--text3); }
 .pack-progress { margin-top: 16px; }
 .pack-progress[hidden] { display: none; }
 .pack-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
@@ -653,6 +658,10 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .ab-restart-row input[type=checkbox] { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
 
 .ab-rels { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; padding-right: 2px; }
+/* 卡片不许被压扁 —— 这就是「版本说明被遮挡」的根子：列表是 flex 列，卡片默认
+   flex-shrink:1，装不下时 flex 会把每张卡挤矮，卡里的文字被 .ab-rel 的
+   overflow:hidden 切掉，连滚动条都不出现。保持自然高度，多出来的交给列表滚。 */
+.ab-rels > * { flex-shrink: 0; }
 .ab-rels::-webkit-scrollbar { width: 7px; }
 .ab-rels::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 .ab-rel {
@@ -687,13 +696,16 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .ab-version-step .ab-step-subject { flex: 1; min-width: 0; word-break: break-word; }
 .ab-loading { padding: 14px; text-align: center; font-size: calc(12px * var(--font-scale)); color: var(--text3); }
 
-/* 更新确认弹窗：比普通确认框大，里面是一段可滚动的逐版本更新内容 */
-.ab-dialog { width: min(620px, 100%); }
+/* 更新确认弹窗：比普通确认框大，里面是逐版本的更新内容。
+   版本多的时候**只有中间那段列表滚动**：标题、「各版本更新内容」、「依次执行…」
+   说明、自动重启勾选和按钮都钉着不动，否则用户滚到下面就看不到标题、也不确定点的是哪个按钮。 */
+.ab-dialog { width: min(620px, 100%); display: flex; flex-direction: column; }
 .ab-icon { color: var(--accent); background: var(--accent-bg); }
 .ab-version-range { margin-top: 5px; font-size: calc(12px * var(--font-scale)); color: var(--text3); font-family: var(--panel-mono); }
-.ab-dialog-body { margin-top: 16px; }
+/* flex + min-height:0 是让里面的列表「能被压扁」的关键：压扁了它才出滚动条 */
+.ab-dialog-body { margin-top: 16px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .ab-dialog-sub { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 7px; }
-.ab-dialog .ab-rels { max-height: min(46vh, 340px); }
+.ab-dialog .ab-rels { max-height: none; flex: 1 1 auto; min-height: 0; }
 .ab-dialog-note {
   margin-top: 13px; font-size: calc(11px * var(--font-scale)); color: var(--text3); line-height: 1.7;
   padding: 9px 11px; border-radius: 9px; background: var(--bg3);
@@ -1288,12 +1300,13 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
       <div class="ab-dialog-sub" data-i18n="aboutUpdateDetailTitle">各版本更新内容</div>
       <div id="updateModalSteps" class="ab-version-steps ab-version-steps-box"></div>
       <div class="ab-rels" id="updateModalRels"></div>
-      <div class="ab-dialog-note" data-i18n="aboutUpdateStepsNote">依次执行：拉取代码 → 装 Python 依赖 → 构建前端，然后自动重启后端服务。工作区有未提交改动时会先中止，不覆盖本地修改。</div>
-      <label class="ab-restart-row">
-        <input type="checkbox" id="updateAutoRestart" checked>
-        <span data-i18n="aboutUpdateAutoRestart">更新完成后自动重启服务（推荐；取消勾选则需自己重启）</span>
-      </label>
     </div>
+    <!-- 说明与勾选放在滚动区外面：版本再多也一直看得见 -->
+    <div class="ab-dialog-note" data-i18n="aboutUpdateStepsNote">依次执行：拉取代码 → 装 Python 依赖 → 构建前端，然后自动重启后端服务。工作区有未提交改动时会先中止，不覆盖本地修改。</div>
+    <label class="ab-restart-row">
+      <input type="checkbox" id="updateAutoRestart" checked>
+      <span data-i18n="aboutUpdateAutoRestart">更新完成后自动重启服务（推荐；取消勾选则需自己重启）</span>
+    </label>
     <div class="confirm-actions">
       <button class="btn btn-outline" type="button" onclick="closeUpdateModal()" data-i18n="aboutUpdateLater">稍后再说</button>
       <button class="btn btn-primary" id="updateModalOk" type="button" onclick="confirmUpdate()" data-i18n="aboutUpdateNow">立即更新</button>
@@ -1330,7 +1343,11 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
       <div class="confirm-icon pack-icon" aria-hidden="true">⤓</div>
       <div style="min-width:0">
         <div class="confirm-title" id="packModalTitle" data-i18n="packTitle">资源包</div>
-        <div class="confirm-message" id="packModalMessage" data-i18n="packAsk">是否现在下载资源包？只下一次，之后也能从「关于」页补下。</div>
+        <!-- 这段说明跟着弹窗一直在（下载中、已装好、下载失败都在），因为它是「这个包是什么」+
+             「不下会怎样」；下面那行 #packModalMessage 只说「现在什么状态」。
+             只把说明挂在「问要不要下」那一种状态上时，装好的人再从「关于」页点开就看不到它。 -->
+        <div class="pack-what" id="packWhat" data-i18n="packWhat">下载后，聊天查看器里的文字表情（例如 [憨笑]）会显示成图片；图片来自抖音官方，不下就一直按文字显示。</div>
+        <div class="confirm-message" id="packModalMessage" data-i18n="packAsk">是否现在下载？只下一次，之后也能从「关于」页补下。</div>
       </div>
     </div>
     <div class="pack-progress" id="packProgress" hidden>
@@ -2544,7 +2561,8 @@ const T = {
     envCheckTime: (t) => `检测时间 ${t}`,
     /* 资源包（文字式表情的图片） */
     packTitle: '资源包',
-    packAsk: '是否现在下载资源包？只下一次，之后也能从「关于」页补下。',
+    packWhat: '下载后，聊天查看器里的文字表情（例如 [憨笑]）会显示成图片；图片来自抖音官方，不下就一直按文字显示。',
+    packAsk: '是否现在下载？只下一次，之后也能从「关于」页补下。',
     packDownload: '下载资源包',
     packLater: '以后再说',
     packClose: '完成',
@@ -2555,6 +2573,7 @@ const T = {
     packDone: (n) => `已装好 ${n} 项。`,
     packStopped: (done, total) => `已停止（${done}/${total}）。再点「下载资源包」会接着下。`,
     packFailed: (n) => `有 ${n} 项没下成功，再点一次只补这些。`,
+    packFailedNames: (names) => `没下下来的是：${names.join('、')}`,
     packError: (why) => `下载失败：${why}`,
     packInstalled: (done, total) => `已安装 ${done}/${total}。`,
     packMissing: (done, total) => `本机没有（${done}/${total}），消息里的表情先按文字显示。`,
@@ -3014,7 +3033,8 @@ const T = {
     envCheckTime: (t) => `Checked at ${t}`,
     /* Asset pack (images for the text-style emoji) */
     packTitle: 'Asset pack',
-    packAsk: 'Download the asset pack now? It only needs downloading once, and can also be fetched later from the About page.',
+    packWhat: 'Once downloaded, text-style emoji in the chat viewer (like [憨笑]) show as images; the images come from Douyin, and without the pack they stay as plain text.',
+    packAsk: 'Download it now? It only needs downloading once, and can also be fetched later from the About page.',
     packDownload: 'Download asset pack',
     packLater: 'Not now',
     packClose: 'Done',
@@ -3025,6 +3045,7 @@ const T = {
     packDone: (n) => `${n} items installed.`,
     packStopped: (done, total) => `Stopped at ${done}/${total}. Click "Download asset pack" to continue.`,
     packFailed: (n) => `${n} items failed; clicking again retries just those.`,
+    packFailedNames: (names) => `Failed: ${names.join(', ')}`,
     packError: (why) => `Download failed: ${why}`,
     packInstalled: (done, total) => `Installed ${done}/${total}.`,
     packMissing: (done, total) => `Missing on this machine (${done}/${total}); emoji show as text until it is installed.`,
@@ -7610,6 +7631,13 @@ function applyEmojiPack(d) {
   if (d.status === 'running') startEmojiPackPoll(); else stopEmojiPackPoll();
 }
 
+/* 「有 N 项没下成功」后面补一句是哪几张（最多列 5 张）。只报个数的话，用户看到
+   「总是少一张」也不知道该管哪张（2026-10-04 修「[加功德] 永远下不下来」时加的）。 */
+function failedNamesSuffix(d) {
+  const names = (d.failed_names || []).slice(0, 5);
+  return names.length ? ' ' + t('packFailedNames', names) : '';
+}
+
 function renderEmojiPackModal() {
   const modal = document.getElementById('emojiPackModal');
   const d = emojiPackState;
@@ -7635,7 +7663,7 @@ function renderEmojiPackModal() {
   if (note) {
     note.textContent = d.status === 'failed' && d.error
       ? t('packError', d.error)
-      : (d.failed ? t('packFailed', d.failed) : '');
+      : (d.failed ? t('packFailed', d.failed) + failedNamesSuffix(d) : '');
   }
 
   // 正文按状态换：留着 data-i18n 属性，切语言时 renderEmojiPackModal() 会再填一遍

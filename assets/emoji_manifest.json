@@ -1,6 +1,6 @@
 {
  "version": 1,
- "note": "文字式表情（[微笑]、[钱] 这些）的官方图片地址。顺序取自抖音网页端表情面板，与 frontend/src/lib/emojiAssets.js 里的名单一一对应。图片不进仓库，由 tools/download_emoji.py（或控制面板首次进入时的提示）下载到 assets/emoji/。sha256 是官方图片的哈希，只用于下载后自检（对不上会在日志里记一笔，不影响使用）。",
+ "note": "文字式表情（[微笑]、[钱] 这些）的官方图片地址。顺序取自抖音网页端表情面板，与 frontend/src/lib/emojiAssets.js 里的名单一一对应。图片不进仓库，由 tools/download_emoji.py（或控制面板首次进入时的提示）下载到 assets/emoji/。sha256 是官方图片的哈希，只用于下载后自检（对不上会在日志里记一笔，不影响使用）。抖音给的表情绝大多数是 WebP，个别的直接给 PNG（[加功德] 那张），下载时按真实格式存盘。",
  "count": 214,
  "items": [
   {
@@ -166,7 +166,7 @@
   {
    "name": "加功德",
    "url": "https://p3-pc-sign.douyinpic.com/obj/tos-cn-i-tsj2vxp0zn/49b00fcf022d4c36ba86bb19c7358ec6?lk3s=343af0a2&x-expires=2106388800&x-signature=GGxyquHgaqzJBeMuTdrAOFmf1OA%3D&from=876277922",
-   "sha256": "17babf17381d4aa8ef06de723b7fde80f669fb2f6e0414079f57b62c27e0d829"
+   "sha256": "a81e365f4bfb000a586cb52ce1ea91209465a882f545782c2fbf3ba34b2babc8"
   },
   {
    "name": "摊手",

@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import database
+from .emoji_files import EmojiStaticFiles
 from .media_files import MediaStaticFiles
 from .access_log import AccessLogMiddleware, configure_logging, log as access_log
 from .panel.access_gate import access_gate_router, gate_middleware as lan_access_middleware
@@ -157,12 +158,13 @@ media_dir = paths.MEDIA_DIR
 os.makedirs(media_dir, exist_ok=True)
 app.mount("/media", MediaStaticFiles(directory=media_dir), name="media")
 
-# 文字式表情的本地图片（assets/emoji/*.webp）：前端把 [钱] 这类文字记号换成
-# <img src="/emoji/钱.webp">。跟 /media 一样是公开的静态目录，里面没有隐私内容。
+# 文字式表情的本地图片：前端把 [钱] 这类文字记号换成 <img src="/emoji/钱.webp">。
+# 跟 /media 一样是公开的静态目录，里面没有隐私内容。本机存的是 webp 还是 png 由下载
+# 时拿到的格式决定，前端统一问 .webp，认扩展名这件事交给 EmojiStaticFiles。
 # 图片不进仓库（版权原因，见 NOTICE），第一次运行时由面板的「资源包」下到这里 ——
 # 所以目录要先建出来再挂载：不然第一次下载完得重启服务才能取到图。
 os.makedirs(paths.EMOJI_ASSET_DIR, exist_ok=True)
-app.mount("/emoji", StaticFiles(directory=paths.EMOJI_ASSET_DIR), name="emoji")
+app.mount("/emoji", EmojiStaticFiles(directory=paths.EMOJI_ASSET_DIR), name="emoji")
 
 
 @app.get("/api/stats")

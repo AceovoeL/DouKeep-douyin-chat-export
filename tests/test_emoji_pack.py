@@ -22,8 +22,10 @@ from common import emoji_pack, paths
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_LIST = os.path.join(REPO_ROOT, "frontend", "src", "lib", "emojiAssets.js")
 
-# 一个最小的「合法 WebP」：够 _verify 认出格式，内容无所谓
+# 一个最小的「合法 WebP」：够 detect_image 认出格式，内容无所谓
 FAKE_WEBP = b"RIFF" + (1000).to_bytes(4, "little") + b"WEBP" + b"x" * 80
+# 抖音有一张表情（[加功德]）官方直接给 PNG：也要认，见下面的格式测试
+FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 80
 
 
 @pytest.fixture
@@ -142,11 +144,48 @@ def test_one_failure_does_not_stop_the_batch(emoji_dir, monkeypatch, tmp_path):
 
 
 def test_non_image_payload_is_a_failure(emoji_dir, monkeypatch):
-    """403 的错误页也是 200 回来的：不是 WebP 就当失败，别把 HTML 存成图片。"""
+    """403 的错误页也是 200 回来的：不是图片就当失败，别把 HTML 存成图片。"""
     monkeypatch.setattr(emoji_pack, "_fetch", lambda url: b"<html>403</html>" + b"x" * 80)
     result = emoji_pack.download(small_manifest())
     assert result["failed"] == 3 and result["done"] == 0
     assert not (emoji_dir / "微笑.webp").exists()
+
+
+# ── 图片格式（那次「总有一张下不下来」的修复） ──────────────────────────────
+
+def test_png_sticker_is_stored_with_its_real_extension(emoji_dir, monkeypatch):
+    """[加功德] 那张官方给的是 PNG：要按 .png 存下来，不能再每次点都算失败。"""
+    monkeypatch.setattr(emoji_pack, "_fetch", lambda url: FAKE_PNG)
+    items = [{"name": "加功德", "url": "https://example.invalid/a", "sha256": ""}]
+
+    result = emoji_pack.download(items)
+
+    assert result["failed"] == 0 and result["done"] == 1
+    assert (emoji_dir / "加功德.png").read_bytes() == FAKE_PNG
+    assert not (emoji_dir / "加功德.webp").exists(), "别留一张名字说是 webp 的 png"
+
+    # 下过的 PNG 算「本机已有」：再点下载不该重下（以前这里会一遍遍失败）
+    assert emoji_pack.is_installed("加功德") is True
+    assert emoji_pack.status(items)["installed"] == 1
+    again = emoji_pack.download(items)
+    assert again["skipped"] == 1 and again["done"] == 1
+
+
+@pytest.mark.parametrize("payload,ext", [
+    (FAKE_WEBP, ".webp"),
+    (FAKE_PNG, ".png"),
+    (b"\xff\xd8\xff" + b"x" * 80, ".jpg"),
+    (b"GIF89a" + b"x" * 80, ".gif"),
+])
+def test_detect_image_recognizes_the_common_formats(payload, ext):
+    assert emoji_pack.detect_image(payload) == ext
+
+
+def test_detect_image_rejects_error_pages_and_short_files():
+    with pytest.raises(ValueError):
+        emoji_pack.detect_image(b"<html>403</html>" + b"x" * 80)
+    with pytest.raises(ValueError):
+        emoji_pack.detect_image(FAKE_PNG[:20])
 
 
 def test_download_can_be_stopped(emoji_dir, monkeypatch):

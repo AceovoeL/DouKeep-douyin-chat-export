@@ -1,5 +1,7 @@
 <div align="center">
 
+项目由Deepseek Harness+Deepseek-V4.1 Flash 辅助完成
+
 # 抖音聊天记录导出工具
 
 **从抖音网页版完整导出私信聊天记录，本地 Web 界面浏览、搜索、导出。**
