@@ -1,7 +1,7 @@
 <template>
   <Transition name="lightbox">
     <div v-if="shown" class="lightbox-overlay" @click.self="close">
-      <!-- 实况图：放大后鼠标停在图上，直接用同一套悬停播放规则 -->
+      <!-- 实况图：放大后点「实况」小标能播，鼠标停在图上也会按悬停规则播 -->
       <div v-if="live" class="lightbox-live" @click="close">
         <LivePhoto variant="zoom" :cover="displaySrc" :video="live" loading="eager" />
       </div>

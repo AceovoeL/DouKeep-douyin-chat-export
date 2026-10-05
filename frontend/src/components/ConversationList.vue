@@ -417,4 +417,13 @@ onMounted(() => {
 .btn-danger:hover:not(:disabled) {
   background: #c62828;
 }
+
+/* ── 手机：抽屉里一行行拉开一点，手指点得准，也不会误碰 ──
+   删除按钮在桌面靠 hover 才出现，手机上根本没有 hover，不常显就等于没有删除功能。 */
+@media (max-width: 768px) {
+  .conv-header { padding: 14px 16px; }
+  .conv-search { padding: 10px 14px; }
+  .conv-item { padding: 13px 14px; gap: 12px; }
+  .conv-delete { opacity: 1; width: 28px; height: 28px; }
+}
 </style>

@@ -234,7 +234,7 @@
                   @play="onVideoPlayAttempt"
                   @playing="onVideoPlayAttempt"
                 />
-                <!-- 实况图：鼠标悬停才动起来，见 LivePhoto.vue -->
+                <!-- 实况图：点左上角「实况」小标播放，电脑上悬停也会动，见 LivePhoto.vue -->
                 <LivePhoto
                   v-else-if="getLivePhotoVideo(msg) && getImageSrc(msg)"
                   :cover="getImageSrc(msg)"
@@ -1464,15 +1464,25 @@ watch(() => props.jumpToSeq, async (seq) => {
   padding: 14px 20px;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-secondary);
-  gap: 12px;
+  gap: 8px 12px;
+  /* 会话名长、屏幕窄的时候让这行自己换行：以前不许换行，名字会把
+     「设置"我"」那颗按钮挤出屏幕右边，手机上就再也点不到了。 */
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .msg-header h3 {
   font-size: 15px;
   font-weight: 600;
+  /* 能被压窄 + 省略号，长名字才不会把整行撑爆 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .msg-total {
   font-size: 12px;
   color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .msg-pick-self {
@@ -1484,6 +1494,7 @@ watch(() => props.jumpToSeq, async (seq) => {
   color: var(--text-primary);
   font-size: 12px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 .msg-pick-self:hover { border-color: var(--accent); }
 .msg-pick-self.picked { border-color: var(--accent); color: var(--accent); }
@@ -2740,5 +2751,19 @@ watch(() => props.jumpToSeq, async (seq) => {
 /* 系统消息：展开的 JSON 居中显示在提示下方 */
 .msg-system-block > .msg-json-body {
   margin-top: 0;
+}
+
+/* ── 手机：一屏又窄又矮，东西挤在一起就分不清谁是谁 ──
+   上下多留空白把消息分开，左右让出一点给正文；头部的间距也比桌面松一档。 */
+@media (max-width: 768px) {
+  .msg-header { padding: 12px 16px; gap: 6px 10px; }
+  .msg-header h3 { font-size: 16px; }
+  .msg-list { padding: 20px 16px 48px; }
+  .msg-item { gap: 12px; }
+  /* 不同发言人之间多留一点：比桌面默认的 --msg-group-gap 更明显 */
+  .msg-item.group-start { margin-top: 20px; }
+  .msg-jump-fab { right: 16px; }
+  .msg-jump-top { bottom: 88px; }
+  .msg-jump-bottom { bottom: 30px; }
 }
 </style>

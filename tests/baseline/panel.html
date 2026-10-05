@@ -113,9 +113,15 @@ body {
 }
 .nav-item:hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
 .nav-item.active { background: var(--accent-bg); color: var(--accent); }
+/* 导航图标一律用内联 SVG（见下面 .nav 里的 <svg>），不用 ⚙ / ☰ / ◉ 这类字符：
+   同一个字符在不同手机上会落到不同字体，甚至被当成 emoji 画成彩色的，字形宽度
+   能差一倍、基线也各有各的，于是看着就"大小不合适、对不齐"。SVG 走到哪都一样。 */
 .nav-item .ico {
-  width: 18px; text-align: center; font-size: calc(15px * var(--font-scale)); flex-shrink: 0; opacity: 0.9;
+  --ico-size: calc(19px * var(--font-scale));
+  width: var(--ico-size); height: var(--ico-size); flex-shrink: 0; opacity: 0.9;
+  display: grid; place-items: center;
 }
+.nav-item .ico svg { display: block; width: 100%; height: 100%; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 12px; padding-top: 16px; }
 /* 侧栏底部的版本徽标：点一下进「关于」，有新版本时右侧亮一个圆点 */
 .side-version {
@@ -986,28 +992,49 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   }
 }
 
-/* ── Responsive: sidebar collapses to a top bar ── */
+/* ── Responsive: sidebar collapses to a top bar ──
+   手机上这条顶栏是横向滑动的，所以有一条铁律：**里面的东西一律不许被压窄**。
+   现在的中文标签是隐藏的，但只要留下一个能换行的文字块（比如"聊天查看器 →"），
+   它就会被 flex 压成几十像素宽、按字换行，最后把整条栏撑到一百多像素高。 */
 @media (max-width: 820px) {
   .panel-shell { flex-direction: column; }
   .sidebar {
     width: 100%; height: auto; position: static; flex-direction: row;
-    align-items: center; gap: 10px; padding: 12px 14px; overflow-x: auto;
+    align-items: center; gap: 8px; padding: 5px 10px;
+    overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
   }
+  .sidebar::-webkit-scrollbar { display: none; }
+  .sidebar > * { flex-shrink: 0; }
   .brand { padding: 0; white-space: nowrap; }
   .brand span:last-child { display: none; }
-  .nav { flex-direction: row; margin-top: 0; gap: 4px; }
-  .nav-item { border-left: none; padding: 8px 12px; }
+  .nav { flex-direction: row; margin-top: 0; gap: 2px; }
+  .nav-item {
+    border-left: none; padding: 0; width: 40px; height: 40px;
+    justify-content: center; flex-shrink: 0;
+  }
   .nav-item span:last-child { display: none; }
-  .nav-item .ico { font-size: 17px; }
-  .side-foot { margin-top: 0; margin-left: auto; flex-direction: row; align-items: center; gap: 10px; padding-top: 0; }
+  .nav-item .ico { --ico-size: 20px; opacity: 1; }
+  .side-foot {
+    margin-top: 0; margin-left: auto; flex-direction: row; align-items: center;
+    gap: 8px; padding-top: 0;
+  }
+  .side-foot > * { flex-shrink: 0; }
+  .side-version { padding: 4px 8px; white-space: nowrap; }
+  .lang-switcher { align-self: center; padding: 2px; }
+  .lang-switcher button { padding: 3px 9px; }
+  .theme-switcher { gap: 6px; padding: 0 2px; }
+  .theme-dot { width: 18px; height: 18px; }
   .side-foot .viewer-btn span { display: none; }
+  .viewer-btn { padding: 8px 12px; font-size: 12px; white-space: nowrap; }
   .panel-main { padding: 20px 16px; }
 }
 @media (max-width: 520px) {
   .cards { gap: 8px; }
   .card { padding: 16px 8px; }
   .card .num { font-size: 24px; }
-  .nav-item span:last-child { display: none; }
 }
 
 /* 「关于」页内容更宽：更新内容按版本分块，宽一点更好读；「日志」页同理（日志行很长） */
@@ -1376,14 +1403,14 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   <aside class="sidebar">
     <div class="brand"><span class="brand-dot"></span><span data-i18n="appTitle">抖音聊天记录导出</span></div>
     <nav class="nav">
-      <div class="nav-item active" data-page="overview" onclick="showPage('overview')"><span class="ico">◫</span><span data-i18n="navOverview">概览</span></div>
-      <div class="nav-item" data-page="scrape" onclick="showPage('scrape')"><span class="ico">⭳</span><span data-i18n="navScrape">采集</span></div>
-      <div class="nav-item" data-page="schedule" onclick="showPage('schedule')"><span class="ico">◷</span><span data-i18n="navSchedule">定时</span></div>
-      <div class="nav-item" data-page="export" onclick="showPage('export')"><span class="ico">⤓</span><span data-i18n="navExport">导出/导入</span></div>
-      <div class="nav-item" data-page="login" onclick="showPage('login')"><span class="ico">◉</span><span data-i18n="navLogin">登录</span></div>
-      <div class="nav-item" data-page="settings" onclick="showPage('settings')"><span class="ico">⚙</span><span data-i18n="navSettings">设置</span></div>
-      <div class="nav-item" data-page="logs" onclick="showPage('logs')"><span class="ico">☰</span><span data-i18n="navLogs">日志</span></div>
-      <div class="nav-item" data-page="about" onclick="showPage('about')"><span class="ico">ⓘ</span><span data-i18n="navAbout">关于</span></div>
+      <div class="nav-item active" data-page="overview" onclick="showPage('overview')"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></svg></span><span data-i18n="navOverview">概览</span></div>
+      <div class="nav-item" data-page="scrape" onclick="showPage('scrape')"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 19.5h16"/></svg></span><span data-i18n="navScrape">采集</span></div>
+      <div class="nav-item" data-page="schedule" onclick="showPage('schedule')"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.2V12l3.2 2.1"/></svg></span><span data-i18n="navSchedule">定时</span></div>
+      <div class="nav-item" data-page="export" onclick="showPage('export')"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3.5v12"/><path d="m4.5 12 3.5 3.5L11.5 12"/><path d="M16 20.5v-12"/><path d="m12.5 12 3.5-3.5L19.5 12"/></svg></span><span data-i18n="navExport">导出/导入</span></div>
+      <div class="nav-item" data-page="login" onclick="showPage('login')"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.7"/><path d="M4.6 20c1.3-3.5 4.1-5.2 7.4-5.2s6.1 1.7 7.4 5.2"/></svg></span><span data-i18n="navLogin">登录</span></div>
+      <div class="nav-item" data-page="settings" onclick="showPage('settings')"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7h9"/><path d="M17.5 7h3"/><circle cx="15" cy="7" r="2.4"/><path d="M3.5 17h3"/><path d="M11.5 17h9"/><circle cx="9" cy="17" r="2.4"/></svg></span><span data-i18n="navSettings">设置</span></div>
+      <div class="nav-item" data-page="logs" onclick="showPage('logs')"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h16"/><path d="M4 12h16"/><path d="M4 17.5h10"/></svg></span><span data-i18n="navLogs">日志</span></div>
+      <div class="nav-item" data-page="about" onclick="showPage('about')"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 11.2v5.4"/><path d="M12 7.6h.01"/></svg></span><span data-i18n="navAbout">关于</span></div>
     </nav>
     <div class="side-foot">
       <div class="side-version" id="sideVersion" onclick="showPage('about')" title=""><span class="side-version-v" id="sideVersionText">v-</span><span class="side-version-dot" id="sideUpdateDot" hidden></span></div>

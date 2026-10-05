@@ -373,6 +373,8 @@ async function openConversation(conv) {
 .app-layout {
   display: flex;
   height: 100vh;
+  /* 同上：手机地址栏一冒出来，100vh 就比看得见的地方高，顶栏会被顶出去 */
+  height: 100dvh;
 }
 
 .app-sidebar {
@@ -395,6 +397,8 @@ async function openConversation(conv) {
   padding: 11px 20px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+  /* 工具栏永远不许被内容压扁：它是唯一能开侧栏的地方，被压没了就出不去了 */
+  flex-shrink: 0;
 }
 
 .app-title {
@@ -406,6 +410,10 @@ async function openConversation(conv) {
   white-space: nowrap;
   color: var(--text-primary);
   letter-spacing: 0.01em;
+  /* 屏幕窄的时候允许标题先让路，不然整个工具栏会被它顶出屏幕 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .app-title::before {
   content: "";
@@ -484,7 +492,15 @@ async function openConversation(conv) {
 
 @media (max-width: 768px) {
   .sidebar-toggle {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* 手指点的目标别太小：以前是 36×34 还贴着屏幕左边缘，很容易点空 ——
+       而它是手机上唯一能打开会话侧栏的入口，点不到就真的进不去。 */
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    margin-left: -6px;
   }
 
   .app-sidebar {
@@ -492,9 +508,11 @@ async function openConversation(conv) {
     left: 0;
     top: 0;
     height: 100vh;
+    height: 100dvh;
     z-index: 1000;
     transform: translateX(-100%);
-    width: 280px;
+    /* 窄屏上别把整屏占满：右边留一条，既能看见聊天内容也够点到遮罩来收起它 */
+    width: min(320px, 86vw);
     transition: transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
   }
 
@@ -519,22 +537,34 @@ async function openConversation(conv) {
     pointer-events: auto;
   }
 
+  /* 手机上地方小，工具栏允许换行：挤在一行反而谁都不好点。
+     内边距和间隙都比桌面略大一点，手指按下去不容易误触到隔壁。 */
   .app-toolbar {
     flex-wrap: wrap;
-    padding: 8px 12px;
-    gap: 8px;
+    padding: 10px 14px;
+    gap: 10px 12px;
   }
 
   .app-title {
-    flex: 1;
-    font-size: 14px;
+    flex: 0 1 auto;
+    font-size: 15px;
+  }
+
+  .search-toggle {
+    padding: 8px 14px;
+    font-size: 13px;
   }
 
   .theme-switcher {
     order: 0;
-    margin-left: 0;
-    gap: 5px;
+    gap: 8px;
+    /* 换到第二行时靠右站，和上面一行错开 */
+    margin-left: auto;
   }
 
+  .theme-btn {
+    width: 20px;
+    height: 20px;
+  }
 }
 </style>

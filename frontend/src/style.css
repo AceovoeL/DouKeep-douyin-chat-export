@@ -39,10 +39,10 @@
   --msg-max-width: 74%;
   --msg-avatar-size: 36px;
   --msg-gap: 3px;
-  --msg-group-gap: 14px;
+  --msg-group-gap: 16px;
   --sidebar-width: 300px;
-  --msg-list-pad-x: 20px;
-  --msg-list-pad-y: 16px;
+  --msg-list-pad-x: 22px;
+  --msg-list-pad-y: 18px;
   --share-card-width: 320px;
   --emoji-max-size: 240px;
   /* 文字式表情（[钱]、[憨笑]）的图片大小：1em = 跟所在气泡的文字一样大，
@@ -150,19 +150,35 @@
   --price-color: #ff6f8e;
 }
 
+/* 页面的高度必须跟着「真正看得见的那块地方」走。
+   手机的地址栏/工具栏会自己收起又展开，可见高度随时在变；`vh` 取的是最大的那个
+   高度（地址栏藏起来时的高度），于是地址栏一露出来，页面就比屏幕高一截，而下面
+   overflow:hidden 又不让滚 —— 顶部工具栏和底部那几条就被顶出屏幕，点也点不到。
+   `dvh` 就是为这种情况准备的：地址栏在不在，它都等于当下看得见的高度。
+   （老浏览器不认 dvh，上面的 100vh 会留着当兜底。） */
 body {
   font-family: var(--font-viewer);
   background: var(--bg-primary);
   color: var(--text-primary);
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
+  /* 整页本来就不能滚，别让手机的下拉刷新把页面拽一下 */
+  overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
+html {
+  /* 横屏时 iOS 会自己把字放大，导致同一段话忽大忽小 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 #app {
   height: 100vh;
+  height: 100dvh;
 }
 
 /* 主题切换：只在这段时间内给整页挂上颜色过渡，避免常驻 transition 拖慢渲染 */
