@@ -70,6 +70,18 @@ def test_launcher_progress_has_a_hint_for_the_browser_step():
     assert "Playwright" in hint
 
 
+def test_first_run_check_lists_required_items_before_optional_ones():
+    """start.html 上的检测页照 Add-Check 的先后顺序画，必需项要整段排在可选项前面。
+
+    （面板那边同样的约定由 tests/test_env_check.py 的 required_checks_come_before_optional
+    钉住；两边一起守，免得又出现「必需的条目夹在可选中间」。）
+    """
+    text = _read(REPO_ROOT / "tools" / "env_check.ps1")
+    flags = [item == "true" for item in re.findall(r"-Required \$(true|false)", text)]
+    assert flags, "没找到任何 Add-Check 的 -Required 参数"
+    assert flags == sorted(flags, reverse=True), flags
+
+
 # ── 跨文件契约：状态文件名 / 全局变量名 ──────────────────────────────────
 def test_bridge_and_page_agree_on_the_launcher_state_file():
     bridge = _read(BRIDGE)

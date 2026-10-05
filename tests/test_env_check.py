@@ -34,6 +34,16 @@ def test_python_item_uses_the_running_interpreter():
     assert "Python" in item["current"]
 
 
+def test_required_checks_come_before_optional_ones():
+    """必需项要整段排在可选项前面：面板和首次运行检测页都是照这个顺序往下画的。
+
+    Playwright 浏览器内核吃过这个亏 —— 它早就是必需项，却排在 Git / ffmpeg 两个可选项后面，
+    用户看到的就成了「一项必需的夹在一堆可选的中间」。新加必需项时放进前面那一段。
+    """
+    flags = [bool(check()["required"]) for check in env_check.CHECKS]
+    assert flags == sorted(flags, reverse=True), [f.__name__ for f in env_check.CHECKS]
+
+
 def test_item_falls_back_to_chinese_text():
     """英文没写的时候用中文兜底，前端就不用判断字段是否存在。"""
     item = env_check._item("demo", "演示", True, True, ">= 1", "1.0", detail="说明")

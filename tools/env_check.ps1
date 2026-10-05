@@ -350,7 +350,26 @@ Add-Check -Id 'port_8000' -Name '端口 8000' -Required $true -Ok $portOk `
     -Detail '后端服务固定监听 127.0.0.1:8000，聊天浏览页和控制面板都在这个端口上' `
     -Hint '关掉占用 8000 的程序（在命令行执行 netstat -ano | findstr :8000 找到 PID，再用任务管理器结束），然后重新检测'
 
-# ── 11. Git（可选） ────────────────────────────────────────────────────────
+# ── 11. Playwright 浏览器内核（必需：启动脚本会在启动时自动下载） ─────────
+# 永远算「已满足」：首次运行这一刻还什么都没有，而 start.ps1 一启动就会核对版本、缺了自动
+# 下载（tools/ensure_playwright_browser.py）。所以这一项只报告现状，不用它拦住启动 ——
+# 否则用户会被一项本来不用他管的检查挡在门外。
+Write-Section "检测 Playwright 浏览器内核"
+$pwRoot = $env:PLAYWRIGHT_BROWSERS_PATH
+if (-not $pwRoot) { $pwRoot = Join-Path $env:LOCALAPPDATA 'ms-playwright' }
+$pwDirs = @()
+if (Test-Path $pwRoot) {
+    $pwDirs = @(Get-ChildItem -Path $pwRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'chromium-*' -or $_.Name -like 'chromium_headless_shell-*' })
+}
+$pwCurrent = '启动时自动安装（下载约 300 MB）'
+if ($pwDirs.Count -gt 0) { $pwCurrent = ($pwDirs | ForEach-Object { $_.Name }) -join '、' }
+Add-Check -Id 'playwright_chromium' -Name 'Playwright 浏览器内核' -Required $true -Ok $true `
+    -Requirement 'chromium（启动时自动安装）' -Current $pwCurrent -Path $pwRoot `
+    -Detail '采集聊天记录、渲染聊天长图、导入 Cookie 都要用它。启动脚本每次启动都会核对版本、缺了自动下载，所以这一项默认算已满足' `
+    -Hint '真装不上时可以手动补：venv\Scripts\python.exe -m playwright install chromium'
+
+# ── 12. Git（可选） ────────────────────────────────────────────────────────
 Write-Section "检测 Git（可选）"
 $gitInfo = Invoke-Tool -Exe 'git' -Arguments @('--version')
 $gitVersion = $null
@@ -367,7 +386,7 @@ Add-Check -Id 'git' -Name 'Git' -Required $false -Ok $gitOk `
     -Detail '可选：有它时控制面板用 git pull 更新（只拉有变化的部分，更新前还能查出本地未提交的改动）；没有它改用下载代码包覆盖，效果一样' `
     -Hint '没有 Git 也能一键更新（面板改为下载代码包覆盖，需要在「关于」页填只读 Token）；装了更省事，到 https://git-scm.com/download/win 安装'
 
-# ── 12. ffmpeg（可选） ────────────────────────────────────────────────────
+# ── 13. ffmpeg（可选） ────────────────────────────────────────────────────
 Write-Section "检测 ffmpeg（可选）"
 $ffmpegPath = ''
 $ffmpegSource = ''
@@ -396,25 +415,6 @@ Add-Check -Id 'ffmpeg' -Name 'ffmpeg' -Required $false -Ok ([bool]$ffmpegPath) `
     -Path $ffmpegPath `
     -Detail '可选：抖音视频大多是 H.265，浏览器放不了时用它按需转成 H.264；没有它只能回落到播放原文件' `
     -Hint '需要的话下载 ffmpeg 后把 bin 目录加进 PATH，或设置环境变量 DOUYIN_FFMPEG 指向 ffmpeg.exe'
-
-# ── 13. Playwright 浏览器内核（必需：启动脚本会在启动时自动下载） ─────────
-# 这里永远算「已满足」：首次运行这一刻还什么都没有，而 start.ps1 一启动就会核对版本、
-# 缺了自动下载（tools/ensure_playwright_browser.py）。所以这一项只报告现状，
-# 不用它拦住启动 —— 否则用户会被一项本来不用他管的检查挡在门外。
-Write-Section "检测 Playwright 浏览器内核"
-$pwRoot = $env:PLAYWRIGHT_BROWSERS_PATH
-if (-not $pwRoot) { $pwRoot = Join-Path $env:LOCALAPPDATA 'ms-playwright' }
-$pwDirs = @()
-if (Test-Path $pwRoot) {
-    $pwDirs = @(Get-ChildItem -Path $pwRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like 'chromium-*' -or $_.Name -like 'chromium_headless_shell-*' })
-}
-$pwCurrent = '启动时自动安装（下载约 300 MB）'
-if ($pwDirs.Count -gt 0) { $pwCurrent = ($pwDirs | ForEach-Object { $_.Name }) -join '、' }
-Add-Check -Id 'playwright_chromium' -Name 'Playwright 浏览器内核' -Required $true -Ok $true `
-    -Requirement 'chromium（启动时自动安装）' -Current $pwCurrent -Path $pwRoot `
-    -Detail '采集聊天记录、渲染聊天长图、导入 Cookie 都要用它。启动脚本每次启动都会核对版本、缺了自动下载，所以这一项默认算已满足' `
-    -Hint '真装不上时可以手动补：venv\Scripts\python.exe -m playwright install chromium'
 
 # ── 14. 本机 Edge / Chrome（可选） ────────────────────────────────────────
 Write-Section "检测本机浏览器（可选）"

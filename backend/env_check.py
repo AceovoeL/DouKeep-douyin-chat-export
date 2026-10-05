@@ -503,7 +503,9 @@ def _check_frontend_dist() -> dict:
                  name_en="Frontend build output", requirement_en="built automatically on first run")
 
 
-#: 检查项顺序（必需在前，可选在后，最后是两条项目现状信息）
+#: 检查项顺序：必需项整段在前，可选项整段在后，最后是两条项目现状信息。
+#: 面板和首次运行检测页都是照这个顺序往下画的，所以新加必需项时要放进前面那一段里，
+#: 别接在可选项后面 —— 否则用户会看到「必需」的条目夹在一堆「可选」中间。
 CHECKS = (
     _check_os,
     _check_powershell,
@@ -515,9 +517,9 @@ CHECKS = (
     _check_node,
     _check_npm,
     _check_port,
+    _check_playwright,
     _check_git,
     _check_ffmpeg,
-    _check_playwright,
     _check_browser,
     _check_venv,
     _check_frontend_dist,
