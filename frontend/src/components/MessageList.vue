@@ -10,12 +10,14 @@
         <span class="msg-total">{{ total }} 条消息</span>
         <!-- 只要这个会话有两个以上的人就可以设置「我」：群聊同样需要
              （以前只在正好两个人的会话里出现，群聊里根本点不到，于是群里
-             所有消息都挤在左边）。这个选择存在浏览器里，所有会话共用。 -->
-        <button v-if="!selfUid && senders.length > 1" class="msg-pick-self" @click="showPicker = true">
-          设置"我"
+             所有消息都挤在左边）。这个选择存在浏览器里，所有会话共用；
+             没手工选过时，用后端从聊天记录里认出来的本机账号当默认值。 -->
+        <button v-if="effectiveSelfUid" class="msg-pick-self picked" @click="showPicker = true"
+                :title="selfUid ? '点一下可以改' : '按聊天记录认出来的，点一下可以改'">
+          我: {{ selfLabel }}<span v-if="!selfUid" class="msg-pick-self-auto">（自动）</span>
         </button>
-        <button v-if="selfUid" class="msg-pick-self picked" @click="showPicker = true">
-          我: {{ selfUid.slice(-4) }}
+        <button v-else-if="pickerOptions.length > 1" class="msg-pick-self" @click="showPicker = true">
+          设置"我"
         </button>
       </div>
 
@@ -27,14 +29,14 @@
           <div class="picker-title">选择哪个是你自己</div>
           <div class="picker-hint">选择后消息会区分左右显示</div>
           <div
-            v-for="s in senders"
+            v-for="s in pickerOptions"
             :key="s.sender_uid"
             class="picker-option"
-            :class="{ active: selfUid === s.sender_uid }"
+            :class="{ active: effectiveSelfUid === s.sender_uid }"
             @click="pickSelf(s.sender_uid)"
           >
-            <span class="picker-uid">{{ userCache[s.sender_uid]?.nickname || ('UID ...' + s.sender_uid.slice(-6)) }}</span>
-            <span class="picker-count">{{ s.msg_count }} 条消息</span>
+            <span class="picker-uid">{{ pickerLabel(s) }}</span>
+            <span class="picker-count">{{ s.discovered ? '本机账号（本会话没有它的消息）' : `${s.msg_count} 条消息` }}</span>
           </div>
           <button v-if="selfUid" class="picker-clear" @click="pickSelf(null)">清除选择</button>
         </div>
@@ -154,7 +156,7 @@
                   v-else
                   class="msg-system-text"
                   @contextmenu="selectSystemContent"
-                  v-html="renderText(renderSystemMsg(msg, selfUid))"
+                  v-html="renderText(renderSystemMsg(msg, effectiveSelfUid))"
                 ></div>
                 <!-- 调试：展开查看 raw_data -->
                 <div
@@ -217,7 +219,7 @@
                   <small>用户名片 · 查看主页</small>
                 </div>
               </a>
-              <ForwardRecords v-else-if="getForwardInfo(msg)" :message="msg" :selfUid="selfUid" />
+              <ForwardRecords v-else-if="getForwardInfo(msg)" :message="msg" :selfUid="effectiveSelfUid" />
               <!-- 表情包（含 type=0 的 515/517/520 漏网） -->
               <div v-else-if="(msg.msg_type === 2 || isLooseEmoji(msg)) && getEmojiSrc(msg)" class="msg-media msg-media-emoji">
                 <img :src="getEmojiSrc(msg)" :alt="msg.content" :loading="imgLoading" @click="openLightbox(getEmojiSrc(msg))" @error="onImgError" />
@@ -503,6 +505,7 @@ import { getFlameGiftCard, isFlameGiftCard, pickFlameAvatar, clearFlameCardCache
 import { getCallShopCard, isCallShopCard, clearCallShopCardCache } from '@/lib/callShopCard'
 import { getInviteCard, isInviteCard, getMusicCard, clearSystemCardCache } from '@/lib/cardKinds'
 import { retryVideoWithTranscode, retryVideoIfUndecodable } from '@/lib/mediaPlayback'
+import { senderDisplayName, selfPickerOptions, pickerOptionLabel } from '@/lib/selfIdentity'
 
 // 卡片要用的图（项目 assets 里的原图）：火花卡背景 + 火花图标 + 联系门店卡外观。
 import flameCardBackground from '@/assets/background.png'
@@ -532,6 +535,21 @@ const listRef = ref(null)
 const senders = ref([])
 const selfUid = ref(props.selfUidOverride || localStorage.getItem('selfUid') || '')
 const showPicker = ref(false)
+// 后端从聊天记录里认出来的本机账号（见 common/owner.py）。用户没手工选过「我」时
+// 就拿它当默认值：单聊里自己发的消息才不会被当成对方、也不用每次手动选一遍。
+// 认不出来时是空的，行为退回「让用户自己选」。
+const detectedSelf = reactive({ uid: '', name: '' })
+// 真正拿来判断「这条是不是我发的」的那个 uid：手工选的优先，其次自动认出来的
+const effectiveSelfUid = computed(() => selfUid.value || detectedSelf.uid || '')
+const pickerOptions = computed(
+  () => selfPickerOptions(senders.value, effectiveSelfUid.value, { name: detectedSelf.name })
+)
+// 顶栏按钮上的名字：users 表里的昵称 → 自动认出来时后端给的名字 → uid 后四位
+const selfLabel = computed(() => {
+  const uid = effectiveSelfUid.value
+  if (!uid) return ''
+  return userCache[uid]?.nickname || detectedSelf.name || uid.slice(-4)
+})
 const isStatic = computed(() => !!props.staticRange || !!props.embeddedMessages)
 const duplicateSystemIds = computed(() => duplicateSystemMessageIds(messages.value))
 const imgLoading = computed(() => (isStatic.value ? 'eager' : 'lazy'))
@@ -717,8 +735,8 @@ function formatRaw(msg) {
 function isSelf(msg) {
   // 互相关注那句提示是对方发出来的，固定显示在对方那一侧（左边）。
   if (peerNotice(msg)) return false
-  if (!selfUid.value) return false
-  return msg.sender_uid === selfUid.value
+  if (!effectiveSelfUid.value) return false
+  return msg.sender_uid === effectiveSelfUid.value
 }
 
 // 表情快捷回复的明细：谁的什么表情。写在「表情快捷回复」标签右边，
@@ -774,9 +792,9 @@ function groupNotice(msg) {
   return getGroupNotice(msg)
 }
 
-// 「查看 JSON」贴在系统提示的哪一侧：随"我是谁"（selfUid）渲染出的人称变化。
+// 「查看 JSON」贴在系统提示的哪一侧：随"我是谁"渲染出的人称变化。
 function jsonToggleSide(msg) {
-  return systemNoticeSide(msg, selfUid.value)
+  return systemNoticeSide(msg, effectiveSelfUid.value)
 }
 
 // A message starts a new visual group unless it continues the previous
@@ -803,9 +821,9 @@ const noticePeerUid = computed(() => {
   const parts = String(props.conversation?.conv_id || '').split(':')
   if (parts.length < 4) return ''
   const [first, second] = parts.slice(-2)
-  // 没选过"我是谁"时分不清哪段是自己，就不猜（名字退回会话名 = 单聊里的对方昵称）。
-  if (!selfUid.value) return ''
-  return first === selfUid.value ? second : first
+  // 认不出"我是谁"时分不清哪段是自己，就不猜（名字退回会话名 = 单聊里的对方昵称）。
+  if (!effectiveSelfUid.value) return ''
+  return first === effectiveSelfUid.value ? second : first
 })
 
 function peerNotice(msg) {
@@ -825,27 +843,17 @@ function noticePeerAvatar() {
   return resolveAvatarUrl(uid ? userCache[uid]?.avatar_url : '')
 }
 
+// 一条消息该显示谁的名字：规则在 lib/selfIdentity.js 里（那里能单测），
+// 这里只把当前会话、当前「我是谁」、用户缓存喂进去。
 function displayName(msg) {
   if (peerNotice(msg)) return noticePeerName()
-  if (selfUid.value && msg.sender_uid === selfUid.value) {
-    const u = userCache[msg.sender_uid]
-    return u?.nickname || '我'
-  }
-  // 「小火人」这类表情消息、群邀请卡等落库时 sender_name 是空的，而单聊的会话名
-  // 就是"我给对方起的名字"（侧边栏显示的那个）。这里优先用它，界面上的昵称才和
-  // 侧边栏一致 —— 抖音昵称随时会改，users 表里的往往不是用户熟悉的那个名字。
-  if (!isGroupConv.value && !props.embeddedMessages && props.conversation?.name) {
-    return props.conversation.name
-  }
-  const u = userCache[msg.sender_uid]
-  if (u?.nickname) return u.nickname
-  if (msg.sender_name && msg.sender_name !== '__self__') return msg.sender_name
-  // 群聊里回退成会话名 = 把每个不认识的成员都显示成群名，不同的人会糊成同一个。
-  // 单聊没这个问题（会话名就是对方昵称）。
-  if (props.embeddedMessages || isGroupConv.value) {
-    return msg.sender_uid ? `用户${msg.sender_uid.slice(-6)}` : '群成员'
-  }
-  return props.conversation?.name || '对方'
+  return senderDisplayName(msg, {
+    conversationName: props.conversation?.name || '',
+    isGroup: isGroupConv.value,
+    embedded: !!props.embeddedMessages,
+    selfUid: effectiveSelfUid.value,
+    users: userCache,
+  })
 }
 
 function getAvatarUrl(msg) {
@@ -856,7 +864,7 @@ function getAvatarUrl(msg) {
 // 火花见面礼卡片（aweType=110408）。头像优先跟聊天查看器用同一份最新头像
 // （users 表里的，按 uid 取），那个人还没资料时才用卡片自带的那张。
 function flameCard(msg) {
-  return getFlameGiftCard(msg, selfUid.value)
+  return getFlameGiftCard(msg, effectiveSelfUid.value)
 }
 
 function flameAvatar(msg, which) {
@@ -970,14 +978,36 @@ async function loadUserInfoForMessages(msgList) {
       uids.add(noticePeerUid.value)
     }
     // 火花卡里的两个人（我 / 对面）也要按 uid 查一次，卡片才拿得到最新头像。
-    const card = getFlameGiftCard(msg)
+    const card = getFlameGiftCard(msg, effectiveSelfUid.value)
     if (card) {
       for (const uid of [card.selfUid, card.peerUid]) {
         if (uid && !userCache[uid]) uids.add(uid)
       }
     }
   }
+  // 「我是谁」那个人的昵称/头像也提前查一次：顶栏按钮和弹窗都用得上。
+  if (effectiveSelfUid.value && !userCache[effectiveSelfUid.value]) {
+    uids.add(effectiveSelfUid.value)
+  }
   await Promise.all(Array.from(uids).map(uid => fetchUserInfo(uid)))
+}
+
+// 「设置我」弹窗里一行显示的名字：本机账号那一条的昵称来自 /api/owner。
+function pickerLabel(option) {
+  return pickerOptionLabel(option, { users: userCache })
+}
+
+// 问后端「这台电脑的抖音账号是谁」（见 common/owner.py）。认不出来就保持空，
+// 界面退回让用户自己选。
+async function fetchDetectedSelf() {
+  if (props.selfUidOverride) return          // 截图等场景已经指定了人，不必再猜
+  try {
+    const res = await fetch('/api/owner')
+    if (!res.ok) return
+    const data = await res.json()
+    detectedSelf.uid = String(data?.uid || '')
+    detectedSelf.name = String(data?.name || '')
+  } catch {}
 }
 
 function pickSelf(uid) {
@@ -1307,6 +1337,8 @@ function onListScroll() {
 }
 
 onMounted(() => {
+  // 静态渲染（截图 / 合并转发）也要先知道「我是谁」，否则单聊两边会显示成同一个人
+  fetchDetectedSelf()
   if (isStatic.value) return
   // 延迟绑定，等 listRef 准备好
   const tryBind = () => {
@@ -1498,6 +1530,8 @@ watch(() => props.jumpToSeq, async (seq) => {
 }
 .msg-pick-self:hover { border-color: var(--accent); }
 .msg-pick-self.picked { border-color: var(--accent); color: var(--accent); }
+/* 名字是自动认出来的（用户还没手工选过）时，标记一下 —— 点开随时能改 */
+.msg-pick-self-auto { color: var(--text-muted); font-size: 11px; }
 
 /* UID 选择弹窗 */
 .picker-overlay {

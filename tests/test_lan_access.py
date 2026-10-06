@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 import common.paths as paths
 from common import access
 
-REMOTE_HOST = "192.168.3.9"               # 假装请求来自局域网里另一台设备
+REMOTE_HOST = "192.168.1.9"               # 假装请求来自局域网里另一台设备
 LOCAL_HOST = "127.0.0.1"
 
 
@@ -56,9 +56,11 @@ def cfg_file(tmp_path, monkeypatch):
     from backend.panel import access_gate
 
     access_gate._FAILURES.clear()
+    access_gate._DEVICE_FAILURES.clear()
     yield path
     access.invalidate_cache()
     access_gate._FAILURES.clear()
+    access_gate._DEVICE_FAILURES.clear()
 
 
 @pytest.fixture
@@ -86,12 +88,26 @@ def write_cfg(cfg_file, data: dict) -> None:
     access.invalidate_cache()
 
 
-def login(client, password="pw", next_path="/panel"):
-    """在「局域网里的另一台设备」上输一次访问密码。"""
+def login(client, password="pw", next_path="/panel", user_agent: str | None = None):
+    """在「局域网里的另一台设备」上输一次访问密码（``user_agent`` 换浏览器身份）。"""
+    headers = {"user-agent": user_agent} if user_agent else None
     return client.post(
         "/api/access/login",
         data={"password": password, "next": next_path},
+        headers=headers,
     )
+
+
+def raw_client(host: str = REMOTE_HOST):
+    """一台「手上还没有 Cookie」的设备：同一个地址、同一个浏览器（UA 和 remote 一样）。
+
+    用来模拟浏览器把刚才那次解锁提交重发了一遍 —— 第二次请求发出的时候，第一次的
+    Set-Cookie 还没落到 Cookie 里（隧道抖了一下、响应丢了，就是这个样子）。
+    """
+    import backend.main as main
+
+    return TestClient(_FromHost(main.app, host), base_url=f"http://{host}:8000",
+                      follow_redirects=False)
 
 
 # ── 地址判定 ──
@@ -110,7 +126,7 @@ def test_unrecognizable_client_host_counts_as_local():
 
 
 def test_lan_addresses_are_remote():
-    for host in ("192.168.3.9", "10.0.0.7", "172.16.5.4", "::ffff:192.168.3.9"):
+    for host in ("192.168.1.9", "10.0.0.7", "172.16.5.4", "::ffff:192.168.1.9"):
         assert access.is_remote(host), host
         assert not access.is_local_address(host), host
 
@@ -146,7 +162,7 @@ def test_password_is_hashed_and_verified(cfg_file):
 def test_clearing_password_also_forgets_devices(cfg_file):
     write_cfg(cfg_file, {"lan_access": True})
     access.set_password("hello")
-    access.remember_device("192.168.3.9", "Mozilla/5.0 Chrome/120")
+    access.remember_device("192.168.1.9", "Mozilla/5.0 Chrome/120")
     assert len(access.list_devices()) == 1
     access.set_password("")
     assert access.password_hash() is None
@@ -164,7 +180,7 @@ def test_password_required_only_when_lan_is_on(cfg_file):
 
 def test_remembered_device_token_roundtrip(cfg_file):
     write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
-    device_id, token = access.remember_device("192.168.3.9", "Mozilla/5.0 Chrome/120")
+    device_id, token = access.remember_device("192.168.1.9", "Mozilla/5.0 Chrome/120")
     cookie = f"{device_id}.{token}"
     assert access.is_trusted(cookie) is True
     # 换个 token（伪造）不行
@@ -175,7 +191,7 @@ def test_remembered_device_token_roundtrip(cfg_file):
 
 def test_forget_device_kills_its_cookie(cfg_file):
     write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
-    device_id, token = access.remember_device("192.168.3.9", "Chrome")
+    device_id, token = access.remember_device("192.168.1.9", "Chrome")
     assert access.is_trusted(f"{device_id}.{token}") is True
     assert access.forget_device(device_id) is True
     assert access.is_trusted(f"{device_id}.{token}") is False
@@ -184,7 +200,7 @@ def test_forget_device_kills_its_cookie(cfg_file):
 
 def test_token_is_not_stored_in_plain_text(cfg_file):
     write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
-    _, token = access.remember_device("192.168.3.9", "Chrome")
+    _, token = access.remember_device("192.168.1.9", "Chrome")
     raw = cfg_file.read_text(encoding="utf-8")
     assert token not in raw
 
@@ -324,6 +340,115 @@ def test_custom_theme_uses_the_saved_colors(remote, cfg_file):
     assert "--accent2: #12ab34;" in page      # 悬停色＝主色
 
 
+def test_panel_orders_public_access_above_the_device_lists():
+    """板块顺序：公网访问在上，然后是信任设备，再下面是需手动确认。"""
+    with open(os.path.join(paths.REPO_ROOT, "backend", "panel", "static", "panel.html"),
+              encoding="utf-8") as handle:
+        html = handle.read()
+    public_at = html.index('id="publicBox"')
+    trusted_at = html.index('id="lanDevicesBox"')
+    pending_at = html.index('id="lanPendingBox"')
+    assert public_at < trusted_at < pending_at
+
+
+def test_panel_renders_pending_devices_one_row_each_with_a_reason():
+    """「需手动确认」：一行一台设备 + 右侧原因；信任设备那边保持原样。"""
+    with open(os.path.join(paths.REPO_ROOT, "backend", "panel", "static", "panel.html"),
+              encoding="utf-8") as handle:
+        html = handle.read()
+    assert "function renderLanPending(" in html
+    assert 'id="lanPendingList"' in html and "lan-pending-list" in html
+    assert "lan-pending-reason" in html
+    assert "lanPendingReason_" in html                  # 原因按代码翻文案
+    assert "function renderLanDevices(" in html         # 信任设备那块没被改动
+    assert "function releasePendingDevice(" in html
+    assert "function releaseAllPendingDevices(" in html
+    # 解除的确认框要说「解除」，不能沿用默认的「不再信任设备」
+    assert "'lanPendingReleaseTitle', 'lanPendingReleaseOk'" in html
+    assert "'lanPendingReleaseAllTitle', 'lanPendingReleaseAllOk'" in html
+
+
+#: 这几个确认框的标题和按钮就用默认那套（默认是「确认全量采集 / 继续采集」或者
+#: 「不再信任设备 / 不再信任」，字面上本来就对）。
+DEFAULT_CONFIRM_CALLS = (
+    "openConfirmModal('confirmFullScrape')",
+    "lanConfirm(t('lanForgetHint'",
+    "lanConfirm(t('lanForgetAllConfirm'",
+)
+
+
+def _confirm_calls(html: str) -> list[str]:
+    """把面板里每个确认框调用整段抠出来（括号配对到它的结尾）。"""
+    calls: list[str] = []
+    for name in ("openConfirmModal(", "lanConfirm("):
+        start = 0
+        while True:
+            at = html.find(name, start)
+            if at == -1:
+                break
+            depth = 0
+            index = at + len(name) - 1
+            while index < len(html):
+                if html[index] == "(":
+                    depth += 1
+                elif html[index] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                index += 1
+            calls.append(html[at:index + 1])
+            start = index + 1
+    return calls
+
+
+def _arg_count(call: str) -> int:
+    """这个调用传了几个顶层参数（``lanConfirm`` 的标题/按钮是位置参数）。"""
+    inner = call[call.index("(") + 1:-1]
+    if not inner.strip():
+        return 0
+    depth = 0
+    count = 1
+    for char in inner:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            count += 1
+    return count
+
+
+def test_every_confirm_dialog_passes_its_own_button_text():
+    """每个确认框都要说自己的话：``openConfirmModal`` 传 ``okKey``，``lanConfirm`` 传第三个参数。
+
+    这条是被两次真实 bug 逼出来的：解除设备暂停的框顶着「不再信任」、恢复默认外观的框
+    顶着「确认全量采集 / 继续采集」—— 标题和按钮都是别人的字，用户一眼就看出不对。
+    """
+    with open(os.path.join(paths.REPO_ROOT, "backend", "panel", "static", "panel.html"),
+              encoding="utf-8") as handle:
+        html = handle.read()
+
+    calls = [call for call in _confirm_calls(html)
+             if not call.startswith("openConfirmModal(messageKey")]      # 跳过函数定义
+    assert len(calls) >= 10, f"只找到 {len(calls)} 个确认框调用，抠取逻辑是不是坏了？"
+
+    bad: list[str] = []
+    for call in calls:
+        if call.startswith(DEFAULT_CONFIRM_CALLS):
+            continue
+        if call.startswith("openConfirmModal("):
+            if "okKey" not in call:
+                bad.append(call)
+        elif _arg_count(call) < 3:                   # lanConfirm 少传了 titleKey / okKey
+            bad.append(call)
+    assert not bad, "这些确认框没说自己的话，按钮会显示别人的字：\n" + "\n".join(
+        call[:110] for call in bad)
+
+    # 用户踩过的两个，明确盯着
+    assert "okKey: 'apConfirmResetOk'" in html
+    assert "'lanPendingReleaseTitle', 'lanPendingReleaseOk'" in html
+
+
 def test_theme_tokens_stay_in_sync_with_the_panel_page():
     """解锁页的配色是面板页面的拷贝：面板里改了主题颜色，这里必须跟着改。"""
     from backend.panel import access_gate
@@ -400,21 +525,98 @@ def test_trailing_slash_login_is_accepted(remote, cfg_file):
     assert r.cookies.get("access_token")
 
 
-def test_repeated_wrong_passwords_are_slowed_down(remote, cfg_file):
-    """局域网里谁都能来猜密码，同一台设备连错多次之后要暂时不受理。"""
-    from backend.panel import access_gate
-
+def test_repeated_wrong_passwords_pause_the_device(remote, client, cfg_file):
+    """同一台设备连错 5 次访问密码之后被暂停：连正确的密码也不受理，要去面板里手动解除。"""
     write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
-    for _ in range(access_gate._MAX_FAILURES):
+    # 前 4 次只是普通的「密码不对」
+    for _ in range(access.MAX_PASSWORD_FAILURES - 1):
         assert login(remote, "wrong").headers["location"].startswith("/access?err=1")
-    # 到量之后，连正确的密码也先不受理（等窗口过了再说）
+    # 第 5 次：把这台设备暂停
+    where = login(remote, "wrong").headers["location"]
+    assert where.startswith("/access?next=")
+    assert "blocked" not in where, "网址里不能留「已暂停」的标记，否则解除之后刷新还是那一版"
+
+    # 暂停之后连正确密码也不受理、也不下发凭据
     r = login(remote, "pw")
-    assert r.headers["location"].startswith("/access?err=1")
+    assert r.headers["location"].startswith("/access?next=")
     assert "access_token" not in r.cookies
 
-    # 换个地址不受影响：这是「别一直猜」的刹车，不是全局封禁
-    access_gate._FAILURES.clear()
+    # 解锁页换成「不带输入框」的那一版，并且说清楚要去哪儿解除
+    page = remote.get("/access").text
+    assert "被暂停" in page
+    assert 'name="password"' not in page
+    assert "需手动确认" in page
+
+    # 设备进了「需手动确认」，原因写明；设备信息跟信任设备一样（名字 + IP）
+    payload = client.get("/panel/api/lan").json()
+    assert len(payload["pending"]) == 1
+    entry = payload["pending"][0]
+    assert entry["reason"] == access.PENDING_TOO_MANY_FAILURES
+    assert entry["ip"] == REMOTE_HOST
+    assert REMOTE_HOST in entry["name"]
+    assert payload["max_password_failures"] == access.MAX_PASSWORD_FAILURES
+    assert "token_hash" not in entry
+
+    # 面板上点「解除」之后：解锁页立刻回到「可以输密码」的那一版（刷新不会还停在暂停页）
+    assert client.post("/panel/api/lan/pending/forget", json={"id": entry["id"]}).json()["removed"] is True
+    assert client.get("/panel/api/lan").json()["pending"] == []
+    refreshed = remote.get("/access").text
+    assert 'name="password"' in refreshed
+    assert "被暂停" not in refreshed
+
+    # 而且能重新输对密码进去（带路径的地址也一样）
+    r = login(remote, "pw")
+    assert r.cookies.get("access_token")
+    assert remote.get("/panel").status_code == 200
+
+
+def test_correct_password_resets_the_failure_counter(remote, cfg_file):
+    """「连续」才算：中间输对过一次，计数就归零。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    for _ in range(access.MAX_PASSWORD_FAILURES - 1):
+        login(remote, "wrong")
     assert login(remote, "pw").cookies.get("access_token")
+    # 计数已经清零：换一台「手上还没 Cookie」的同款设备再连错 4 次，也只是普通报错
+    fresh = raw_client()
+    for _ in range(access.MAX_PASSWORD_FAILURES - 1):
+        assert login(fresh, "wrong").headers["location"].startswith("/access?err=1")
+
+
+def test_failures_are_counted_per_device(remote, client, cfg_file):
+    """按设备算：另一台设备（不同浏览器）不该替它背锅。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    for _ in range(access.MAX_PASSWORD_FAILURES):
+        login(remote, "wrong", user_agent="Mozilla/5.0 (Windows NT 10.0) Chrome/120.0")
+
+    assert client.get("/panel/api/lan").json()["pending"][0]["name"].startswith("Chrome")
+    # 另一台设备（iPad + Safari）：还能正常解锁
+    other = login(remote, "pw", user_agent="Mozilla/5.0 (iPad) Safari/604.1")
+    assert other.cookies.get("access_token")
+
+
+def test_pending_can_be_released_all_at_once(remote, client, cfg_file):
+    """「全部解除」一次清空待确认列表。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    for agent in ("Mozilla/5.0 (Windows NT 10.0) Chrome/120.0",
+                  "Mozilla/5.0 (iPad) Safari/604.1"):
+        for _ in range(access.MAX_PASSWORD_FAILURES):
+            login(remote, "wrong", user_agent=agent)
+    assert len(client.get("/panel/api/lan").json()["pending"]) == 2
+
+    body = client.post("/panel/api/lan/pending/forget-all", json={}).json()
+    assert body["ok"] is True and body["removed"] == 2
+    assert client.get("/panel/api/lan").json()["pending"] == []
+
+
+def test_clearing_the_password_also_clears_the_pending_list(remote, client, cfg_file):
+    """取消访问密码之后，「需手动确认」也一起清掉（否则列表里会留着再也拦不住的设备）。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    for _ in range(access.MAX_PASSWORD_FAILURES):
+        login(remote, "wrong")
+    assert len(client.get("/panel/api/lan").json()["pending"]) == 1
+
+    client.post("/panel/api/lan/password", json={"password": ""})
+    assert client.get("/panel/api/lan").json()["pending"] == []
 
 
 # ── 面板接口 ──
@@ -437,23 +639,93 @@ def test_panel_status_lists_trusted_devices(client, remote, cfg_file):
 def test_panel_can_forget_one_device(client, remote, cfg_file):
     write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
     first = login(remote).cookies.get("access_token")
-    second = login(remote, next_path="/").cookies.get("access_token")
+    other = raw_client("192.168.1.10")                 # 另一台设备（换了个地址）
+    second = login(other).cookies.get("access_token")
     device_id = access.parse_cookie(first)[0]
     r = client.post("/panel/api/lan/devices/forget", json={"id": device_id})
     assert r.json()["removed"] is True
     assert len(r.json()["payload"]["devices"]) == 1
     # 被移除的那台立刻失效，另一台不受影响
     assert remote.get("/panel", headers={"cookie": f"access_token={first}"}).status_code == 303
-    assert remote.get("/panel", headers={"cookie": f"access_token={second}"}).status_code == 200
+    assert access.is_trusted(second) is True
+
+
+def test_same_browser_logging_in_twice_is_one_device(remote, cfg_file):
+    """同一个浏览器把解锁请求提交了两次：面板里该只有一台设备，点一次就都清掉。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    first = login(remote).cookies.get("access_token")
+    second = login(raw_client()).cookies.get("access_token")     # 提交时还没带上 Cookie
+    assert first and second and first != second
+    assert len(access.trusted_devices()) == 2                    # 配置里确实是两条记录
+    devices = access.list_devices()
+    assert len(devices) == 1                                     # 界面上只显示一台
+    assert devices[0]["ip"] == REMOTE_HOST
+    # 「不再信任」把同一台设备的记录一起删掉：两条 Cookie 都失效
+    assert access.forget_device(devices[0]["id"]) is True
+    assert access.trusted_devices() == []
+    for token in (first, second):
+        assert remote.get("/panel",
+                          headers={"cookie": f"access_token={token}"}).status_code == 303
+
+
+def test_already_trusted_device_is_not_registered_again(remote, cfg_file):
+    """已经通过过的设备再提交一次密码，不该在名单里凭空多出一台。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    login(remote)
+    again = login(remote, next_path="/")
+    assert again.status_code == 303
+    assert again.headers["location"] == "/"
+    assert len(access.trusted_devices()) == 1
+    assert len(access.list_devices()) == 1
+
+
+def test_different_devices_stay_separate(cfg_file):
+    """地址不同、或浏览器不同，就是两台设备，不能并成一行。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    access.remember_device("192.168.1.9", "Mozilla/5.0 Chrome/120")
+    access.remember_device("192.168.1.9", "Mozilla/5.0 Firefox/121")        # 换浏览器
+    access.remember_device("192.168.1.10", "Mozilla/5.0 Chrome/120")        # 换设备
+    assert len(access.list_devices()) == 3
+
+
+def test_legacy_records_without_a_fingerprint_still_merge(cfg_file):
+    """升级前写下的记录没有 ua_hash，按显示名也能认出「这是同一台」。"""
+    write_cfg(cfg_file, {
+        "lan_access": True,
+        "lan_password_hash": access.hash_password("pw"),
+        "access_trusted_devices": [
+            {"id": "old1", "token_hash": "a", "name": "Edge · Windows（192.168.1.9）",
+             "ip": "192.168.1.9", "trusted_at": 100},
+            {"id": "old2", "token_hash": "b", "name": "Edge · Windows（192.168.1.9）",
+             "ip": "192.168.1.9", "trusted_at": 200},
+        ],
+    })
+    devices = access.list_devices("old2")
+    assert len(devices) == 1
+    assert devices[0]["id"] == "old2"          # 代表 id 取最近登录的那条
+    assert devices[0]["trusted_at"] == 200
+    assert devices[0]["current"] is True
+    assert access.forget_device("old1") is True
+    assert access.trusted_devices() == []
 
 
 def test_panel_can_forget_every_device(client, remote, cfg_file):
     write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
     login(remote)
-    login(remote, next_path="/")
+    login(raw_client("192.168.1.10"))          # 第二台设备
     r = client.post("/panel/api/lan/devices/forget-all")
     assert r.json()["removed"] == 2
     assert r.json()["payload"]["devices"] == []
+
+
+def test_forget_all_counts_devices_not_records(client, remote, cfg_file):
+    """同一台设备遗留多条记录时，「全部不再信任」报的数字要跟列表里的行数一致。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    login(remote)
+    login(raw_client())                        # 同一台设备的第二条记录
+    assert len(access.trusted_devices()) == 2
+    assert len(client.get("/panel/api/lan").json()["devices"]) == 1
+    assert client.post("/panel/api/lan/devices/forget-all").json()["removed"] == 1
 
 
 def test_panel_sets_and_clears_the_access_password(client, remote, cfg_file):

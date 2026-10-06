@@ -10,6 +10,7 @@ import urllib.parse
 
 from common import paths
 from common.message_kinds import is_view_once, locale_notice_text
+from common.owner import FALLBACK_NAME, detect_owner
 from extractor.im_media import live_photo_cenc
 from extractor.models import get_db
 from backend.forwarded import as_object, resolve_forward
@@ -216,47 +217,6 @@ def _file_to_data_url(filepath: str) -> str | None:
         return f"data:{mime};base64,{b64}"
     except Exception:
         return None
-
-
-def _detect_owner(conn) -> tuple[str, str]:
-    """从数据库推断 owner。
-
-    策略：
-    1. participant_uids 中第一个 uid（提取时 curLoginUserInfo 排第一）
-    2. 回退：出现在最多不同会话中的 sender_uid
-    """
-    # 策略 1: 从 participant_uids 取第一个 uid
-    row = conn.execute(
-        "SELECT participant_uids FROM conversations WHERE participant_uids != '[]' LIMIT 1"
-    ).fetchone()
-    if row:
-        try:
-            uids = json.loads(row[0])
-            if uids:
-                owner_uid = uids[0]
-                user = conn.execute(
-                    "SELECT nickname FROM users WHERE uid = ?", (owner_uid,)
-                ).fetchone()
-                owner_name = user[0] if user and user[0] else "我"
-                return owner_uid, owner_name
-        except (json.JSONDecodeError, IndexError):
-            pass
-
-    # 策略 2: 出现在最多会话中的 sender_uid
-    rows = conn.execute("""
-        SELECT sender_uid, COUNT(DISTINCT conv_id) as conv_count
-        FROM messages WHERE sender_uid != ''
-        GROUP BY sender_uid ORDER BY conv_count DESC LIMIT 1
-    """).fetchall()
-    if rows:
-        owner_uid = rows[0][0]
-        user = conn.execute(
-            "SELECT nickname FROM users WHERE uid = ?", (owner_uid,)
-        ).fetchone()
-        owner_name = user[0] if user and user[0] else "我"
-        return owner_uid, owner_name
-
-    return "", "我"
 
 
 def _get_content_json(msg) -> dict | None:
@@ -596,7 +556,9 @@ class ChatLabExporter:
         conn = get_db()
 
         # Detect owner
-        owner_uid, owner_name = _detect_owner(conn)
+        owner_uid, owner_name = detect_owner(conn)
+        # 认不出来时沿用旧行为：名字留「我」，uid 留空（sender_uid 也为空的系统行就显示「我」）
+        owner_name = owner_name or FALLBACK_NAME
         print(f"[*] 检测到 owner: {owner_name} ({owner_uid})")
 
         # Find conversation

@@ -7,6 +7,7 @@ import sqlite3
 
 from common.db import connect
 from common.display_rules import display_count, sender_display_counts
+from common.owner import detect_owner
 from common.paths import DB_PATH  # re-exported for backward compatibility
 
 
@@ -246,6 +247,20 @@ def get_senders(conv_id):
     conn.close()
     return [{"sender_uid": uid, "msg_count": count}
             for uid, count in sorted(counts.items(), key=lambda kv: -kv[1])]
+
+
+def get_owner():
+    """本机账号是谁：``{"uid": ..., "name": ...}``，认不出来时两项都是空串。
+
+    查看器拿它当「我」的默认值（见 common/owner.py），「设置我」弹窗也靠它把本机
+    账号列进去 —— 群聊里自己可能一条消息都没发过，光看发送者名单是找不到自己的。
+    """
+    conn = get_db()
+    try:
+        uid, name = detect_owner(conn)
+    finally:
+        conn.close()
+    return {"uid": uid, "name": name}
 
 
 def search_messages(query="", page=1, page_size=50, *, conv_id=None,

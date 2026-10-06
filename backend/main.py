@@ -1,4 +1,5 @@
 """FastAPI backend for browsing exported Douyin chat data."""
+import asyncio
 import hashlib
 import hmac
 import os
@@ -348,6 +349,12 @@ def get_referenced_video(msg_id: str):
     return message
 
 
+@app.get("/api/owner")
+def owner_info():
+    """「我是谁」：本机账号的 uid 与昵称，查看器拿它当「我」的默认值。"""
+    return database.get_owner()
+
+
 @app.get("/api/users")
 def list_users():
     return database.get_all_users()
@@ -364,6 +371,7 @@ def get_user(uid: str):
 # Control panel
 from backend.control_panel import (
     control_router,
+    restore_public_access_on_startup,
     restore_schedule_on_startup,
     restore_update_schedule_on_startup,
     restore_update_done_notice_on_startup,
@@ -399,6 +407,8 @@ async def startup():
     await restore_update_schedule_on_startup()
     # 若是刚更新完自动重启起来的，把「更新完成」弹给用户看一次
     await restore_update_done_notice_on_startup()
+    # 公网访问开着就把它拉回来（机器重启 / 面板重启服务之后，公网入口不该消失）
+    await asyncio.to_thread(restore_public_access_on_startup)
 
 # Serve Vue frontend (must be last)
 _frontend_dist = paths.FRONTEND_DIST

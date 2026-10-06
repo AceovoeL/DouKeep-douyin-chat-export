@@ -313,6 +313,33 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   font-size: calc(12px * var(--font-scale)); color: var(--text3);
 }
 .lan-devices-head .spacer { flex: 1; }
+/* 公网访问：挂在「局域网访问」下面那一块 */
+.pub-box { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.pub-box h2 { font-size: calc(15px * var(--font-scale)); }
+.pub-state { display: inline-flex; align-items: center; gap: 7px; font-size: calc(12.5px * var(--font-scale)); color: var(--text2); }
+.pub-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text3); }
+.pub-state.on::before { background: var(--green); }
+.pub-state.off::before { background: var(--red); }
+.pub-state.busy::before { background: var(--yellow); }
+.pub-url-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.pub-url-row .pub-url-label { min-width: 84px; font-size: calc(12px * var(--font-scale)); color: var(--text3); }
+.pub-url-row code { word-break: break-all; }
+.pub-steps { display: flex; flex-direction: column; gap: 7px; margin: 12px 0; }
+.pub-step { display: flex; align-items: flex-start; gap: 8px; font-size: calc(12.5px * var(--font-scale)); color: var(--text3); }
+.pub-step[data-state="done"] { color: var(--text2); }
+.pub-step[data-state="running"] { color: var(--text); }
+.pub-step[data-state="error"] { color: var(--red); }
+.pub-step-mark { width: 14px; flex: 0 0 14px; text-align: center; }
+.pub-step-body { flex: 1; min-width: 0; }
+.pub-bar { height: 6px; border-radius: 999px; background: var(--bg3); overflow: hidden; margin-top: 7px; }
+.pub-bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s ease; }
+.pub-auth-box { margin-top: 10px; padding: 10px 12px; border-radius: 9px; background: var(--bg3); border: 1px solid var(--border); }
+.pub-note-warn { margin-top: 8px; color: var(--yellow); }
+.pub-note-error { margin-top: 8px; color: var(--red); }
+/* 风险提示里最要命的那几个词：红字 + 加粗，别让它淹没在正文里 */
+.risk-strong { color: var(--red); font-weight: 700; }
+/* 挂载弹窗里的实时日志：小一号、固定高度，够滚动着看就行 */
+.pub-log { display: block; max-height: 168px; min-height: 0; margin-top: 6px; padding: 10px; font-size: 11.5px; }
 .lan-device-list { display: flex; flex-direction: column; gap: 8px; }
 .lan-device {
   display: flex; align-items: center; gap: 10px;
@@ -336,6 +363,19 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   padding: 14px 12px; border-radius: 9px; text-align: center;
   background: var(--bg3); border: 1px dashed var(--border);
   color: var(--text3); font-size: calc(12px * var(--font-scale));
+}
+/* 需手动确认：一行就是一台设备，原因跟在右边（不跟信任设备那样并排挤在一起） */
+.lan-pending-list { display: block; }
+.lan-pending-list .lan-device { margin-bottom: 8px; }
+.lan-pending-list .lan-device:last-child { margin-bottom: 0; }
+.lan-pending-reason {
+  flex: 0 0 auto; max-width: 42%; text-align: right;
+  font-size: calc(12px * var(--font-scale)); color: var(--red);
+}
+@media (max-width: 560px) {
+  /* 窄屏一行放不下：原因换到设备名下面，仍然是一台设备一块 */
+  .lan-pending-list .lan-device { flex-wrap: wrap; }
+  .lan-pending-reason { max-width: 100%; text-align: left; }
 }
 .cookie-import-area textarea {
   width: 100%; min-height: 100px; background: var(--bg3);
@@ -495,6 +535,9 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   backdrop-filter: blur(4px); animation: modalFadeIn 0.16s ease-out;
 }
 .confirm-modal[hidden] { display: none; }
+/* 通用确认框永远压在最上面：它可能是从别的弹窗里弹出来的（比如挂载弹窗里的风险确认），
+   跟那些弹窗同一层级的话会被盖住，按钮点都点不到。 */
+#confirmModal { z-index: 10050; }
 .confirm-dialog {
   width: min(470px, 100%); padding: 22px; background: var(--bg2);
   border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 18px 60px rgba(0,0,0,0.28);
@@ -1289,6 +1332,67 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
     </div>
   </div>
 </div>
+<!-- 公网访问：填域名 + 挂载进度（同一个弹窗从表单切成进度，再切成结果） -->
+<div id="publicModal" class="confirm-modal" hidden onclick="if(event.target===this)closePublicModal()">
+  <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="publicModalTitle">
+    <div class="confirm-head">
+      <div class="confirm-icon" aria-hidden="true">☁</div>
+      <div style="flex:1;min-width:0">
+        <div class="confirm-title" id="publicModalTitle"></div>
+        <div class="confirm-message" id="publicModalDesc"></div>
+      </div>
+    </div>
+
+    <div id="publicForm">
+      <div class="meta" id="publicDomainLabel" style="margin:12px 0 5px"></div>
+      <input type="text" id="publicDomainInput" autocomplete="off" spellcheck="false"
+             style="width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <div class="meta" id="publicDomainHint" style="margin-top:6px"></div>
+      <!-- 没有访问密码时：红字警告 + 就地设一个（不设也能挂，但要点一次风险确认） -->
+      <div class="pub-note-error" id="publicNoPasswordWarn" hidden></div>
+      <div class="row" id="publicPasswordRow" hidden style="margin-top:8px">
+        <input type="password" id="publicPasswordInput" autocomplete="new-password"
+               style="flex:1;min-width:150px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--fg)">
+        <button class="btn btn-outline btn-sm" type="button" onclick="savePublicPassword()" data-i18n="pubPasswordSetBtn">设置</button>
+      </div>
+      <div class="meta" id="publicPasswordNote" style="margin-top:6px"></div>
+    </div>
+
+    <div id="publicProgress" hidden>
+      <div class="pub-steps" id="publicSteps"></div>
+      <div class="pub-auth-box" id="publicAuthBox" hidden>
+        <div class="meta" id="publicAuthHint"></div>
+        <button class="btn btn-outline btn-sm" style="margin-top:8px" id="publicAuthBtn" onclick="openPublicAuthUrl()"></button>
+        <!-- 授权链接也铺开成可选中的文字：自动打开浏览器可能被权限/弹窗拦下 -->
+        <div class="pub-url-row" style="margin-top:8px">
+          <code id="publicAuthUrlText" style="user-select:all;word-break:break-all"></code>
+          <button class="btn btn-outline btn-sm" data-i18n="pubCopy" onclick="copyPublicAuthUrl(this)">复制</button>
+        </div>
+        <div class="meta" id="publicAuthNote" style="margin-top:8px"></div>
+      </div>
+      <div id="publicDownloadBox" hidden>
+        <div class="pub-bar"><i id="publicDownloadBar"></i></div>
+        <div class="meta" id="publicDownloadText" style="margin-top:7px"></div>
+      </div>
+      <div class="meta" id="publicProgressNote" style="margin-top:10px"></div>
+    </div>
+
+    <div id="publicResult" hidden>
+      <div class="meta" id="publicResultText" style="margin:12px 0 0"></div>
+      <div id="publicResultActions" style="margin-top:10px"></div>
+    </div>
+
+    <!-- 挂载过程的实时日志：步骤提示、下载、cloudflared 原始输出都在里面。
+         挂载中一直显示；失败时也留着（那会儿最需要它）。 -->
+    <div class="meta" id="publicLogHint" style="margin-top:10px" hidden></div>
+    <pre class="log-box pub-log" id="publicJobLog" hidden></pre>
+
+    <div class="confirm-actions">
+      <button class="btn btn-outline" id="publicCancelBtn" type="button" onclick="closePublicModal()" data-i18n="cancel">取消</button>
+      <button class="btn btn-primary" id="publicStartBtn" type="button" onclick="publicModalPrimary()"></button>
+    </div>
+  </div>
+</div>
 <div id="scrapeErrorModal" class="confirm-modal" hidden onclick="if(event.target===this)ignoreJobError()">
   <div class="confirm-dialog error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="scrapeErrorTitle" aria-describedby="scrapeErrorDetail">
     <div class="error-head">
@@ -1770,6 +1874,32 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
     <!-- 局域网地址（开关打开后才有内容） -->
     <div class="lan-status" id="lanAddresses" hidden></div>
 
+    <!-- 公网访问：借 Cloudflare 隧道把服务接到用户自己的域名。要先把上面打开并设好
+         访问密码（那把锁同时管着公网），域名与隧道交给 backend/cloudflared.py。 -->
+    <div class="pub-box" id="publicBox">
+      <h2 data-i18n="pubTitle">公网访问</h2>
+      <div class="meta" style="margin-bottom:10px" data-i18n="pubDesc">用自己的域名从外网打开面板和聊天记录：不用公网 IP，也不用在路由器上开端口。</div>
+
+      <div id="publicMountRow">
+        <button class="btn btn-primary" id="publicMountBtn" onclick="openPublicModal()" data-i18n="pubMountBtn">挂载到公网</button>
+        <button class="btn btn-outline btn-sm" id="publicRemoveBtn" onclick="confirmRemovePublic()" hidden data-i18n="pubRemoveBtn">彻底移除</button>
+        <span class="meta" id="publicReadyNote" style="margin-left:10px"></span>
+      </div>
+
+      <div id="publicActiveRow" hidden>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span class="pub-state" id="publicState"></span>
+          <span style="flex:1"></span>
+          <button class="btn btn-outline btn-sm" onclick="restartPublicTunnel()" data-i18n="pubRestart">重新启动</button>
+          <button class="btn btn-outline btn-sm" onclick="confirmDisablePublic()" data-i18n="pubDisable">关闭公网访问</button>
+        </div>
+        <div id="publicAddresses" style="margin-top:10px"></div>
+        <div class="meta" id="publicWarning" hidden></div>
+      </div>
+
+      <div class="meta" id="publicStatus" style="margin-top:8px"></div>
+    </div>
+
     <!-- 信任设备：输过一次访问密码的设备会记在这里，可以单独取消信任 -->
     <div class="lan-devices" id="lanDevicesBox" hidden>
       <div class="lan-devices-head">
@@ -1778,6 +1908,17 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
         <button class="btn btn-outline btn-sm" onclick="forgetAllLanDevices()" data-i18n="lanForgetAll">全部取消信任</button>
       </div>
       <div class="lan-device-list" id="lanDeviceList"></div>
+    </div>
+
+    <!-- 需手动确认：连续输错访问密码的设备会被暂停，要在这里点「解除」才放行 -->
+    <div class="lan-devices" id="lanPendingBox" hidden>
+      <div class="lan-devices-head">
+        <span data-i18n="lanPendingTitle">需手动确认</span>
+        <span class="spacer"></span>
+        <button class="btn btn-outline btn-sm" onclick="releaseAllPendingDevices()" data-i18n="lanPendingReleaseAll">全部解除</button>
+      </div>
+      <div class="meta" style="margin-bottom:8px" data-i18n="lanPendingHint">这些设备连续输错访问密码，已经被暂停：确认是本人的设备后点「解除」，它才能重新输入密码。</div>
+      <div class="lan-device-list lan-pending-list" id="lanPendingList"></div>
     </div>
 
     <div class="meta" id="lanStatus" style="margin-top:8px"></div>
@@ -1930,6 +2071,8 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
             <label for="logsKindServer" data-i18n="logsKindServer">后端服务</label>
             <input type="radio" name="logsKind" id="logsKindRestart" value="restart" onchange="setLogsKind('restart')">
             <label for="logsKindRestart" data-i18n="logsKindRestart">重启过程</label>
+            <input type="radio" name="logsKind" id="logsKindPublic" value="public" onchange="setLogsKind('public')">
+            <label for="logsKindPublic" data-i18n="logsKindPublic">公网挂载</label>
           </div>
           <span class="meta" id="logsFilePath" style="margin-top:0"></span>
         </div>
@@ -2334,11 +2477,109 @@ const T = {
     lanForgotten: '已取消信任，这台设备下次访问要重新输入访问密码。',
     lanForgetAllDone: (n) => `已取消信任 ${n} 台设备。`,
     lanNoDevicesYet: '还没有被信任的设备。',
+    lanPendingTitle: '需手动确认',
+    lanPendingHint: '这些设备连续输错访问密码，已经被暂停：确认是本人的设备后点「解除」，它才能重新输入密码。',
+    lanPendingEmpty: '没有设备需要手动确认。',
+    lanPendingCount: (n) => `共 ${n} 台设备待确认`,
+    lanPendingAt: (t) => `暂停于 ${t}`,
+    lanPendingReason_too_many_failures: (n) => `连续输错访问密码 ${n || 5} 次`,
+    lanPendingRelease: '解除',
+    lanPendingReleaseAll: '全部解除',
+    lanPendingReleaseTitle: '解除这台设备的暂停',
+    lanPendingReleaseOk: '解除',
+    lanPendingReleaseAllTitle: '解除全部暂停',
+    lanPendingReleaseAllOk: '全部解除',
+    lanPendingReleaseHint: (name) => `解除「${name}」的暂停？解除后这台设备可以重新输入访问密码。`,
+    lanPendingReleaseAllConfirm: (n) => `解除全部 ${n} 台设备的暂停？它们都可以重新输入访问密码。`,
+    lanPendingReleased: '已解除，这台设备可以重新输入访问密码。',
+    lanPendingReleasedAll: (n) => `已解除 ${n} 台设备。`,
+    lanPendingEmptyStatus: '没有需要手动确认的设备。',
     lanRestartWait: (s) => `正在重启服务以应用设置，页面会自己刷新…（已等 ${s} 秒）`,
     lanRestartTimeout: '服务还没回来。请查看「日志」页的重启过程，或手动重启一次服务（start.ps1 / start.sh）。',
     lanSaved: '设置已保存。',
     lanDevMode: '开发模式（uvicorn --reload）下不会自动重启，请手动重启一次服务让监听地址生效。',
     lanEnableFailed: '没能自动重启服务，请手动重启一次（start.ps1 / start.sh）。',
+    lanOffClosesPublicTitle: '关闭局域网访问',
+    lanOffClosesPublicOk: '关闭',
+    lanOffClosesPublic: '公网访问是搭在局域网访问上的：关掉它，公网入口也会一起关掉（域名留着 —— 重新打开局域网访问后点一次「挂载到公网」就能挂回去）。',
+    lanPublicClosed: '设置已保存；公网访问也一起关掉了（域名留着）。',
+    pubTitle: '公网访问',
+    pubDesc: '用自己的域名从外网打开面板和聊天记录：不用公网 IP，也不用在路由器上开端口。',
+    pubMountBtn: '挂载到公网',
+    pubViewProgress: '查看挂载进度',
+    pubNeedLan: '要先把上面的「向局域网开放」打开。',
+    pubNeedPassword: '要先在「局域网访问」里设一个访问密码 —— 局域网访问密码就是公网访问密码。',
+    pubRestart: '重新启动',
+    pubDisable: '关闭公网访问',
+    pubRemoveBtn: '彻底移除',
+    pubStateOn: '已连接',
+    pubStateBusy: '正在启动隧道…',
+    pubStateOff: '未连接（隧道没在运行）',
+    pubAddrPanel: '控制面板',
+    pubAddrViewer: '聊天查看器',
+    pubAddressesTitle: '访问地址',
+    pubSavedDomain: (d) => `已保存域名 ${d}，点上面的按钮就能重新挂上。`,
+    pubCancelMount: '取消挂载',
+    pubDoneBtn: '完成',
+    pubCopy: '复制',
+    pubCopied: '已复制',
+    pubOpen: '打开',
+    pubModalTitle: '挂载到公网',
+    pubModalDesc: '填一个已经托管在 Cloudflare 的域名（一级域名或子域名都行），挂好之后就用它从外网打开这台电脑上的面板和聊天记录。首次挂载会下载一个小程序（约 50MB），并需要你在浏览器里授权一次。',
+    pubDomainLabel: '域名',
+    pubDomainPlaceholder: '例如 chat.example.com',
+    pubDomainHint: '只填域名就行，不要带 http:// 、斜杠或端口。',
+    pubNoPasswordWarn: '现在<b class="risk-strong">没有访问密码</b>：挂上公网后，<b class="risk-strong">任何知道这个域名的人都能直接打开你的面板和聊天记录</b>（图片、语音、转写内容都在里面）。建议先在下面设一个。',
+    pubPasswordPlaceholder: '访问密码（建议 8 位以上）',
+    pubPasswordSetBtn: '设置',
+    pubPasswordNeedValue: '请先输入访问密码',
+    pubPasswordSaved: '访问密码已设置。',
+    pubRiskConfirmTitle: '不设访问密码就挂载？',
+    pubRiskConfirm: '公网访问开着却<b class="risk-strong">没有访问密码</b>，等于把聊天记录<b class="risk-strong">直接公开在互联网上</b>：任何人只要知道这个域名，就能<b class="risk-strong">打开面板和聊天查看器</b>，图片、语音、转写内容都可以被看到和下载。确定要这样挂载吗？',
+    pubRiskConfirmOk: '确认不设密码',
+    pubClearPasswordTitle: '关闭访问密码？',
+    pubClearPassword: '关掉访问密码之后，公网访客就<b class="risk-strong">不再需要密码</b>了：任何知道这个域名的人都能<b class="risk-strong">直接打开面板和聊天查看器</b>（图片、语音、转写内容都在里面）。确定要关闭吗？',
+    pubWarnNoPassword: '<b class="risk-strong">当前没有访问密码</b>：任何知道这个域名的人都能直接打开面板和聊天记录，建议马上设一个。',
+    pubStartBtn: '开始挂载',
+    pubProgressTitle: '正在挂载到公网…',
+    pubStepBinary: '准备 cloudflared 程序',
+    pubStepAuth: '等你在浏览器里授权 Cloudflare 账号',
+    pubStepCreate: '创建隧道',
+    pubStepDns: '建立域名解析',
+    pubStepStart: '启动隧道',
+    pubStepVerify: '从公网确认一次',
+    pubDownloadText: (pct, done, total) => `正在下载 cloudflared… ${pct}%（${done} / ${total} MB）`,
+    pubAuthHint: '浏览器里选中你的域名，点一下「授权」。没弹出窗口的话用下面这个按钮：',
+    pubAuthBtn: '再打开一次授权页面',
+    pubAuthNote: '授权只需要做这一次，以后不用再点。若浏览器提示「现有实例正在以提升的权限运行」，点「否」，改用上面的链接打开即可。',
+    pubAuthNoteElevated: '授权只需要做这一次。你这台电脑的服务是<b class="risk-strong">以管理员身份</b>在跑的：浏览器多半会提示「现有实例正在以提升的权限运行」，点「否」，改用上面的链接打开；想以后不再提示，用普通身份重启一次服务即可。',
+    pubAuthUrlWaiting: '（正在获取授权链接…）',
+    pubDone: (url) => `全部完成。现在可以用 ${url} 打开了。`,
+    pubTimeout: '等太久没等到授权，已经取消。想继续就再点一次「开始挂载」。',
+    pubErrorPrefix: '没成功：',
+    pubDomainBad: '域名格式不对，只填域名（例如 chat.example.com）。',
+    pubWarnDnsExists: '这个域名上已经有一条解析记录了，没有替你改。如果打开发现不是这台电脑的服务，请到 Cloudflare 的 DNS 页面把旧记录删掉再挂一次。',
+    pubWarnVerify: '域名暂时还没能回到这台电脑：可能是解析还没生效，或者那条记录指的是别处。等几分钟再刷新试试。',
+    pubDisableConfirmTitle: '关闭公网访问',
+    pubDisableConfirmOk: '关闭',
+    pubDisableConfirm: '关闭后域名就打不开了，隧道进程会停掉。域名和 Cloudflare 上的记录都留着，重新点「挂载到公网」不用再填。',
+    pubDisabled: '公网访问已关闭。',
+    pubRemoveConfirmTitle: '彻底移除公网访问',
+    pubRemoveConfirmOk: '彻底移除',
+    pubRemoveConfirm: '会做三件事：停掉隧道、删掉 Cloudflare 上这条隧道、删掉这个域名的解析记录。Cloudflare 账号的授权和下载好的程序都留着（下次不用重新授权、也不用重新下载）。确定吗？',
+    pubRemoved: '已彻底移除。',
+    pubRemoveDnsManual: '隧道已经删掉了，但那条解析记录请到 Cloudflare 的 DNS 页面手动删一下。',
+    pubLogHint: '挂载日志（和「日志 → 公网挂载」里那份是同一批输出）：',
+    pubErrRoot: '域名已经被 Cloudflare 接收，但域名解析没能建起来（可能被别的记录占着）。',
+    pubErrCreate: '创建隧道失败，请稍后重试。',
+    pubErrStart: '隧道没能在 Cloudflare 上连上，请稍后重试（可以看「日志」页里的 cloudflared 日志）。',
+    pubErrAuth: '还没等到浏览器里的授权。想继续就再点一次「开始挂载」。',
+    pubErrAuthFailed: 'cloudflared 在授权过程中自己退出了 —— 多半是它连不上 Cloudflare 的接口。原因见下面这段原文；网络恢复正常后再点一次「开始挂载」。',
+    pubErrAuthDns: '你的网络把 <b class="risk-strong">api.cloudflare.com 解析到了错误的地址</b>（那不是 Cloudflare 的服务器），所以云端授权根本没法完成，点多少次「授权」都一样。把电脑或路由器的 DNS 改成 <b class="risk-strong">1.1.1.1</b> 或 <b class="risk-strong">223.5.5.5</b> 之后重新挂载即可。',
+    pubErrorRaw: 'cloudflared 的原话：',
+    pubErrDownload: 'cloudflared 下载失败（网络中断）。已经下好的部分会留着，重试会接着下。',
+    pubErrUnknown: '出了点意外，请重试；还不行就看看服务端日志。',
+    devModeOffPublicWarn: '公网访问也开着：关掉开发者模式会顺手把公网入口也关掉（域名留着，重新打开开发者模式就能一键挂回去）。',
     notifyTitle: '通知',
     notifyDesc: '采集失败时通过 Server酱 推送到微信。',
     notifyPlaceholder: 'SCT... SendKey',
@@ -2456,6 +2697,8 @@ const T = {
     apImported: '配置已导入并保存。',
     apImportFailed: '导入失败：文件不是有效的配置文件。',
     apConfirmReset: '恢复默认外观会把字体、配色、尺寸全部还原成出厂设置，确定继续吗？',
+    apConfirmResetTitle: '恢复默认外观',
+    apConfirmResetOk: '恢复默认',
     apLoading: '正在加载外观设置…',
     apBuiltinFonts: '内置字体',
     apLocalFontGroup: '本机字体',
@@ -2471,8 +2714,10 @@ const T = {
     logsTitle: '日志文件',
     logsKindServer: '后端服务',
     logsKindRestart: '重启过程',
+    logsKindPublic: '公网挂载',
     logsNoteServer: '后端服务输出（config/logs/server.log），采集与更新的过程都写在这里。',
     logsNoteRestart: '重启过程记录（config/logs/restart.log）：等旧服务退出、端口释放、新服务是否起来。',
+    logsNotePublic: '公网挂载记录（config/logs/cloudflared.log）：首次下载 cloudflared、等你在浏览器里授权、建隧道、连上 Cloudflare 边缘的过程都写在这里；域名打不开时先看这份。',
     logsRefresh: '刷新',
     logsAutoRefresh: '自动刷新（每 3 秒）',
     logsOpenFolder: '打开日志文件夹',
@@ -2480,6 +2725,7 @@ const T = {
     logsOpenFolderFailed: (why) => `打不开文件管理器：${why}`,
     logsEmptyServer: '还没有 config/logs/server.log：服务起来之后才会写这份日志。刚启动的话等几秒再点「刷新」。',
     logsEmptyRestart: '还没有 config/logs/restart.log：面板自动重启服务时才会写这份日志（手动跑 tools/restart_server.py 也算）。',
+    logsEmptyPublic: '还没有 config/logs/cloudflared.log：在「设置 → 公网访问」点一次「挂载到公网」之后才会有这份日志。',
     logsMeta: (size, time) => `${size} · 更新于 ${time}`,
     logsLoadFailed: '读不到这份日志，请稍后点「刷新」重试。',
     logsRestart: '重启服务',
@@ -2807,8 +3053,106 @@ const T = {
     lanForgotten: 'Forgotten. That device will be asked for the access password again.',
     lanForgetAllDone: (n) => `Forgot ${n} device(s).`,
     lanNoDevicesYet: 'No trusted devices yet.',
+    lanPendingTitle: 'Needs manual confirmation',
+    lanPendingHint: 'These devices entered the wrong access password too many times and are paused: check that they are yours, then click Release so they can try again.',
+    lanPendingEmpty: 'No device needs manual confirmation.',
+    lanPendingCount: (n) => `${n} device(s) waiting`,
+    lanPendingAt: (t) => `paused at ${t}`,
+    lanPendingReason_too_many_failures: (n) => `${n || 5} wrong access passwords in a row`,
+    lanPendingRelease: 'Release',
+    lanPendingReleaseAll: 'Release all',
+    lanPendingReleaseTitle: 'Release this device',
+    lanPendingReleaseOk: 'Release',
+    lanPendingReleaseAllTitle: 'Release all paused devices',
+    lanPendingReleaseAllOk: 'Release all',
+    lanPendingReleaseHint: (name) => `Release "${name}"? That device can enter the access password again.`,
+    lanPendingReleaseAllConfirm: (n) => `Release all ${n} device(s)? They can all try the access password again.`,
+    lanPendingReleased: 'Released. That device can enter the access password again.',
+    lanPendingReleasedAll: (n) => `Released ${n} device(s).`,
+    lanPendingEmptyStatus: 'No device needs manual confirmation.',
     lanRestartWait: (s) => `Restarting the service to apply this; the page refreshes itself… (${s}s so far)`,
     lanRestartTimeout: 'The service did not come back. Check the restart log on the Logs page, or restart it by hand (start.ps1 / start.sh).',
+    lanOffClosesPublicTitle: 'Turn off LAN access',
+    lanOffClosesPublicOk: 'Turn off',
+    lanOffClosesPublic: 'Public access rides on LAN access, so turning it off also closes the public entry point. The domain is kept — turn LAN access back on and click “Mount to the internet” to bring it back.',
+    lanPublicClosed: 'Saved. Public access was turned off as well (the domain is kept).',
+    pubTitle: 'Public access',
+    pubDesc: 'Open the panel and your chats from the internet through your own domain — no public IP, no router port forwarding.',
+    pubMountBtn: 'Mount to the internet',
+    pubViewProgress: 'View progress',
+    pubNeedLan: 'Turn on “Allow access from the LAN” above first.',
+    pubNeedPassword: 'Set an access password under LAN access first — the LAN access password is the public access password.',
+    pubRestart: 'Restart tunnel',
+    pubDisable: 'Turn off public access',
+    pubRemoveBtn: 'Remove completely',
+    pubStateOn: 'Connected',
+    pubStateBusy: 'Starting the tunnel…',
+    pubStateOff: 'Not connected (tunnel is not running)',
+    pubAddrPanel: 'Control panel',
+    pubAddrViewer: 'Chat viewer',
+    pubAddressesTitle: 'Access URLs',
+    pubSavedDomain: (d) => `Saved domain ${d} — click the button above to mount it again.`,
+    pubCancelMount: 'Cancel mounting',
+    pubDoneBtn: 'Done',
+    pubCopy: 'Copy',
+    pubCopied: 'Copied',
+    pubOpen: 'Open',
+    pubModalTitle: 'Mount to the internet',
+    pubModalDesc: 'Enter a domain that is already hosted on Cloudflare (apex or subdomain). Once mounted, it opens this machine’s panel and chats from the internet. The first mount downloads a small program (~50 MB) and asks you to authorize once in the browser.',
+    pubDomainLabel: 'Domain',
+    pubDomainPlaceholder: 'e.g. chat.example.com',
+    pubDomainHint: 'Just the domain — no http://, no slashes, no port.',
+    pubNoPasswordWarn: 'There is <b class="risk-strong">no access password</b> right now. Once mounted, <b class="risk-strong">anyone who knows this domain can open your panel and chats</b> (images, voice notes and transcripts included). Set one below first.',
+    pubPasswordPlaceholder: 'Access password (8+ characters)',
+    pubPasswordSetBtn: 'Save',
+    pubPasswordNeedValue: 'Type an access password first.',
+    pubPasswordSaved: 'Access password saved.',
+    pubRiskConfirmTitle: 'Mount without an access password?',
+    pubRiskConfirm: 'Keeping public access on with <b class="risk-strong">no access password</b> puts your chats <b class="risk-strong">on the open internet</b>: anyone who knows this domain can <b class="risk-strong">open the panel and the chat viewer</b> and see or download images, voice notes and transcripts. Mount it anyway?',
+    pubRiskConfirmOk: 'Continue without a password',
+    pubClearPasswordTitle: 'Turn the access password off?',
+    pubClearPassword: 'Once the access password is off, public visitors <b class="risk-strong">no longer need a password</b>: anyone who knows this domain can <b class="risk-strong">open the panel and the chat viewer</b> (images, voice notes and transcripts included). Turn it off anyway?',
+    pubWarnNoPassword: '<b class="risk-strong">No access password right now</b>: anyone who knows this domain can open the panel and your chats. Set one as soon as you can.',
+    pubStartBtn: 'Start',
+    pubProgressTitle: 'Mounting to the internet…',
+    pubStepBinary: 'Prepare the cloudflared program',
+    pubStepAuth: 'Waiting for you to authorize in the browser',
+    pubStepCreate: 'Create the tunnel',
+    pubStepDns: 'Point the domain at this machine',
+    pubStepStart: 'Start the tunnel',
+    pubStepVerify: 'Check it from the internet',
+    pubDownloadText: (pct, done, total) => `Downloading cloudflared… ${pct}% (${done} / ${total} MB)`,
+    pubAuthHint: 'Pick your domain in the browser and click Authorize. No window popped up? Use the button below:',
+    pubAuthBtn: 'Open the authorization page again',
+    pubAuthNote: 'This authorization is needed only once. If the browser complains that an existing instance is running with elevated privileges, choose No and open the link above instead.',
+    pubAuthNoteElevated: 'This authorization is needed only once. This service is running <b class="risk-strong">as administrator</b>, so the browser will most likely complain that an existing instance is running with elevated privileges — choose No and open the link above. Restarting the service without administrator rights stops that prompt.',
+    pubAuthUrlWaiting: '(fetching the authorization link…)',
+    pubDone: (url) => `All done. ${url} now works.`,
+    pubTimeout: 'No authorization after a long wait, so it was cancelled. Click Start again to retry.',
+    pubErrorPrefix: 'Failed: ',
+    pubDomainBad: 'That domain looks wrong — enter just the domain (e.g. chat.example.com).',
+    pubWarnDnsExists: 'This domain already has a DNS record, so nothing was overwritten. If it does not open this machine’s service, delete the old record on Cloudflare’s DNS page and mount again.',
+    pubWarnVerify: 'The domain does not reach this machine yet: DNS may not have propagated, or the record points elsewhere. Try again in a few minutes.',
+    pubDisableConfirmTitle: 'Turn off public access',
+    pubDisableConfirmOk: 'Turn off',
+    pubDisableConfirm: 'The domain stops working and the tunnel process is stopped. The domain and the Cloudflare records are kept, so mounting again needs no retyping.',
+    pubDisabled: 'Public access is off.',
+    pubRemoveConfirmTitle: 'Remove public access completely',
+    pubRemoveConfirmOk: 'Remove completely',
+    pubRemoveConfirm: 'This will: stop the tunnel, delete the tunnel on Cloudflare, and delete this domain’s DNS record. The Cloudflare authorization and the downloaded program are kept (no re-authorizing or re-downloading). Continue?',
+    pubRemoved: 'Removed completely.',
+    pubRemoveDnsManual: 'The tunnel was deleted, but please delete that DNS record by hand on Cloudflare’s DNS page.',
+    pubLogHint: 'Mount log (the same output as under Logs → Public tunnel):',
+    pubErrRoot: 'Cloudflare accepted the domain, but the DNS record could not be created (another record may already use that name).',
+    pubErrCreate: 'Could not create the tunnel. Please try again later.',
+    pubErrStart: 'The tunnel did not connect to Cloudflare. Please try again later (see the cloudflared log on the Logs page).',
+    pubErrAuth: 'The browser authorization never arrived. Click Start again to retry.',
+    pubErrAuthFailed: 'cloudflared exited on its own while authorizing — usually it cannot reach the Cloudflare API. See the raw output below, then click Start again once the network works.',
+    pubErrAuthDns: 'Your network resolves <b class="risk-strong">api.cloudflare.com to a wrong address</b> (not a Cloudflare server), so the cloud authorization can never complete — clicking Authorize again changes nothing. Set your DNS (on the PC or the router) to <b class="risk-strong">1.1.1.1</b> or <b class="risk-strong">223.5.5.5</b>, then mount again.',
+    pubErrorRaw: 'What cloudflared said:',
+    pubErrDownload: 'Downloading cloudflared failed (network dropped). What was downloaded is kept — retrying resumes.',
+    pubErrUnknown: 'Something unexpected happened. Try again; if it keeps failing, check the server log.',
+    devModeOffPublicWarn: 'Public access is on too: turning off developer mode also closes the public entry point (the domain is kept — switch developer mode back on and mount it again in one click).',
     lanSaved: 'Settings saved.',
     lanDevMode: 'In dev mode (uvicorn --reload) the service is not restarted automatically — restart it once by hand to apply the listening address.',
     lanEnableFailed: 'Could not restart the service automatically. Please restart it once by hand (start.ps1 / start.sh).',
@@ -2929,6 +3273,8 @@ const T = {
     apImported: 'Config imported and saved.',
     apImportFailed: 'Import failed: not a valid config file.',
     apConfirmReset: 'Restoring defaults resets fonts, colors and sizes to the factory values. Continue?',
+    apConfirmResetTitle: 'Restore default appearance',
+    apConfirmResetOk: 'Restore defaults',
     apLoading: 'Loading appearance settings…',
     apBuiltinFonts: 'Built-in fonts',
     apLocalFontGroup: 'Local fonts',
@@ -2944,8 +3290,10 @@ const T = {
     logsTitle: 'Log files',
     logsKindServer: 'Service',
     logsKindRestart: 'Restart',
+    logsKindPublic: 'Public tunnel',
     logsNoteServer: 'Backend service output (config/logs/server.log), including scraping and update runs.',
     logsNoteRestart: 'Restart record (config/logs/restart.log): waiting for the old service, the port coming free, and whether the new service started.',
+    logsNotePublic: 'Public tunnel record (config/logs/cloudflared.log): the first cloudflared download, waiting for the browser authorization, creating the tunnel and connecting to the Cloudflare edge. Check this file first when the domain stops working.',
     logsRefresh: 'Refresh',
     logsAutoRefresh: 'Auto refresh (every 3s)',
     logsOpenFolder: 'Open log folder',
@@ -2953,6 +3301,7 @@ const T = {
     logsOpenFolderFailed: (why) => `Could not open the file manager: ${why}`,
     logsEmptyServer: 'No config/logs/server.log yet — the file is written once the service is running. If you just started it, wait a few seconds and press "Refresh".',
     logsEmptyRestart: 'No config/logs/restart.log yet — the panel writes it when it restarts the service (a manual tools/restart_server.py run counts too).',
+    logsEmptyPublic: 'No config/logs/cloudflared.log yet — it appears after you click "Mount to the internet" under Settings → Public access.',
     logsMeta: (size, time) => `${size} · updated ${time}`,
     logsLoadFailed: 'Could not read this log. Press "Refresh" to try again.',
     logsRestart: 'Restart the service',
@@ -3249,6 +3598,8 @@ function showPage(id) {
   if (id === 'settings') {
     // 局域网开关 / 访问密码 / 信任设备：每次进设置页都取一次最新的
     loadLanAccess();
+    // 公网访问（Cloudflare 隧道）的状态与挂载进度
+    loadPublicAccess();
     // 开发者模式开着才有「局域网访问」这一块，所以进设置页也要读一次开关状态
     loadDeveloperMode();
   }
@@ -3354,18 +3705,24 @@ function setStatusEl(el, status) {
 let confirmModalResolver = null;
 let confirmModalPreviousFocus = null;
 let confirmModalMessageKey = '';
+//: 正文要用 **富文本** 时改成给 i18n key（风险提示里的红字加粗就靠它）
+let confirmModalMessageHtmlKey = '';
 let confirmModalTitleKey = 'fullScrapeConfirmTitle';
 let confirmModalOkKey = 'fullScrapeConfirmOk';
 
 /* 弹窗上那三处文字按「这次问的是什么」来填。默认是「确认全量采集」那一套（老用法只传
-   一句正文），别的确认框（比如「停止程序」）可以换标题和确认按钮的字。 */
+   一句正文），别的确认框（比如「停止程序」）可以换标题和确认按钮的字。
+   传了 messageHtmlKey 就把正文当 HTML 渲染 —— 内容都是我们自己写的文案（带
+   <b class="risk-strong"> 这种红字加粗标记），不是用户输入。 */
 function syncConfirmModalTexts() {
   const title = document.getElementById('confirmModalTitle');
   if (title) title.textContent = t(confirmModalTitleKey);
   const ok = document.getElementById('confirmModalOk');
   if (ok) ok.textContent = t(confirmModalOkKey);
   const message = document.getElementById('confirmModalMessage');
-  if (message) message.textContent = t(confirmModalMessageKey);
+  if (!message) return;
+  if (confirmModalMessageHtmlKey) message.innerHTML = t(confirmModalMessageHtmlKey);
+  else message.textContent = t(confirmModalMessageKey);
 }
 
 function openConfirmModal(messageKey, options = {}) {
@@ -3378,6 +3735,7 @@ function openConfirmModal(messageKey, options = {}) {
     }
     confirmModalResolver = resolve;
     confirmModalMessageKey = messageKey;
+    confirmModalMessageHtmlKey = options.messageHtmlKey || '';
     confirmModalTitleKey = options.titleKey || 'fullScrapeConfirmTitle';
     confirmModalOkKey = options.okKey || 'fullScrapeConfirmOk';
     confirmModalPreviousFocus = document.activeElement;
@@ -3394,6 +3752,7 @@ function closeConfirmModal(confirmed) {
   confirmModalResolver = null;
   confirmModalPreviousFocus = null;
   confirmModalMessageKey = '';
+  confirmModalMessageHtmlKey = '';
   // 标题和按钮还回默认那一套：不然下一次「确认全量采集」上会顶着「停止服务」的字
   confirmModalTitleKey = 'fullScrapeConfirmTitle';
   confirmModalOkKey = 'fullScrapeConfirmOk';
@@ -4945,6 +5304,11 @@ function renderLanAccess() {
   const devices = d.devices || [];
   devicesBox.hidden = !(showOn && d.has_password);
   document.getElementById('lanDeviceList').innerHTML = renderLanDevices(devices);
+
+  // 需手动确认（连续输错访问密码被暂停的设备）
+  const pendingBox = document.getElementById('lanPendingBox');
+  pendingBox.hidden = !(showOn && d.has_password);
+  document.getElementById('lanPendingList').innerHTML = renderLanPending(d.pending || []);
 }
 
 function renderLanDevices(devices) {
@@ -4966,8 +5330,46 @@ function renderLanDevices(devices) {
   return head + rows;
 }
 
+/* 需手动确认：设备信息跟信任设备一样，右侧多一句"为什么要手动确认"；一行只放一台设备 */
+function renderLanPending(devices) {
+  if (!devices.length) {
+    return `<div class="lan-device-empty">${lanEscape(t('lanPendingEmpty'))}</div>`;
+  }
+  const head = `<div class="lan-devices-head" style="margin:0 0 2px"><span>${lanEscape(t('lanPendingCount', devices.length))}</span></div>`;
+  const rows = devices.map(dev => {
+    const when = dev.added_at ? new Date(dev.added_at * 1000).toLocaleString() : '';
+    const tag = dev.current ? `<span class="lan-device-tag">${lanEscape(t('lanDeviceCurrent'))}</span>` : '';
+    return `<div class="lan-device">
+      <div class="lan-device-main">
+        <div class="lan-device-name">${lanEscape(dev.name)}${tag}</div>
+        <div class="lan-device-meta">${when ? lanEscape(t('lanPendingAt', when)) : ''}</div>
+      </div>
+      <span class="lan-pending-reason">${lanEscape(lanPendingReason(dev))}</span>
+      <button class="btn btn-outline btn-sm" onclick="releasePendingDevice('${lanEscape(dev.id)}')">${lanEscape(t('lanPendingRelease'))}</button>
+    </div>`;
+  }).join('');
+  return head + rows;
+}
+
+/* 原因代码 → 人话；认不出来的代码就原样显示，方便以后加新原因时不至于空白 */
+function lanPendingReason(dev) {
+  const key = 'lanPendingReason_' + String((dev && dev.reason) || '');
+  const text = t(key);
+  if (text === key) return String((dev && dev.reason) || '');
+  return t(key, (dev && dev.failures) || 0);
+}
+
 async function setLanEnabled(enabled) {
   setLanStatus('');
+  // 公网访问搭在局域网访问上：关掉底下这个开关，公网入口也会一起收起来，先问一句
+  if (!enabled && lanAccess && lanAccess.public_on) {
+    if (!await lanConfirm(t('lanOffClosesPublic'), 'lanOffClosesPublicTitle',
+                          'lanOffClosesPublicOk')) {
+      const box = document.getElementById('lanEnabled');
+      if (box) box.checked = true;
+      return;
+    }
+  }
   const target = enabled ? '0.0.0.0' : '127.0.0.1';
   let d;
   try {
@@ -4986,8 +5388,10 @@ async function setLanEnabled(enabled) {
   }
   lanAccess = d.payload || lanAccess;
   renderLanAccess();
-  if (d.code === 'dev_mode') { setLanStatus('lanDevMode'); return; }
-  if (!d.restart_required) { setLanStatus('lanSaved'); return; }
+  // 顺手关掉的公网：面板上把话说清楚，别让用户以为域名还挂着
+  if (d.public_closed) loadPublicAccess();
+  if (d.code === 'dev_mode') { setLanStatus(d.public_closed ? 'lanPublicClosed' : 'lanDevMode'); return; }
+  if (!d.restart_required) { setLanStatus(d.public_closed ? 'lanPublicClosed' : 'lanSaved'); return; }
   beginLanRestart(target);
 }
 
@@ -5026,7 +5430,9 @@ async function setLanPasswordRequired(wantPassword) {
     }
     await saveLanPassword();
   } else {
-    await clearLanPassword();
+    const cleared = await clearLanPassword();
+    // 用户在风险确认框上点了取消：开关自己拨回去，别让它显示成「已关闭」
+    if (!cleared) document.getElementById('lanPwEnabled').checked = true;
   }
 }
 
@@ -5045,6 +5451,15 @@ async function saveLanPassword() {
 }
 
 async function clearLanPassword() {
+  // 公网是不是开着，要现场问一次：页面上的 lanAccess 可能是进设置页时那份旧数据
+  // （比如刚挂载完、公网已开，回头就来清密码）。
+  await loadLanAccess();
+  if (lanAccess && lanAccess.public_on) {
+    const ok = await publicRiskConfirm({ titleKey: 'pubClearPasswordTitle',
+                                         htmlKey: 'pubClearPassword',
+                                         okKey: 'pubRiskConfirmOk' });
+    if (!ok) return false;
+  }
   const r = await fetch('/panel/api/lan/password', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ password: '' }),
@@ -5052,7 +5467,9 @@ async function clearLanPassword() {
   const d = await r.json();
   lanAccess = d.payload || lanAccess;
   renderLanAccess();
+  loadPublicAccess();                    // 公网那块也要跟着刷新（红字警告会出现）
   setLanStatus('lanSaved');
+  return true;
 }
 
 async function forgetLanDevice(id) {
@@ -5084,13 +5501,562 @@ async function forgetAllLanDevices() {
   setLanStatus('lanForgetAllDone', d.removed || 0);
 }
 
-/* 用面板自带的确认弹窗问一句（正文是现成的句子，不是 i18n key）。 */
-async function lanConfirm(message) {
+/* ── 需手动确认：连续输错访问密码被暂停的设备 ── */
+
+async function releasePendingDevice(id) {
+  const device = (lanAccess && lanAccess.pending || []).find(x => x.id === id);
+  const name = device ? device.name : id;
+  // 标题和确认按钮要按「解除」来说，不能沿用默认的「不再信任设备」
+  const ok = await lanConfirm(t('lanPendingReleaseHint', name),
+                              'lanPendingReleaseTitle', 'lanPendingReleaseOk');
+  if (!ok) return;
+  const r = await fetch('/panel/api/lan/pending/forget', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ id }),
+  });
+  const d = await r.json();
+  lanAccess = d.payload || lanAccess;
+  renderLanAccess();
+  setLanStatus('lanPendingReleased');
+}
+
+async function releaseAllPendingDevices() {
+  const count = (lanAccess && lanAccess.pending || []).length;
+  if (!count) { setLanStatus('lanPendingEmptyStatus'); return; }
+  if (!await lanConfirm(t('lanPendingReleaseAllConfirm', count),
+                        'lanPendingReleaseAllTitle', 'lanPendingReleaseAllOk')) return;
+  const r = await fetch('/panel/api/lan/pending/forget-all', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+  });
+  const d = await r.json();
+  lanAccess = d.payload || lanAccess;
+  renderLanAccess();
+  setLanStatus('lanPendingReleasedAll', d.removed || 0);
+}
+
+/* ── 公网访问（Cloudflare 隧道）──
+   面板在这里只做两件事：把 /panel/api/public 的状态画出来；点「挂载到公网」之后每秒
+   轮询一次进度（下载百分比、等浏览器授权、建隧道…），把弹窗从表单切成进度再切成结果。
+   真正干活的是 backend/cloudflared.py。 */
+
+let publicState = null;
+let publicPollTimer = null;
+let publicAuthUrl = '';
+let publicModalMode = 'form';          // form / progress / result
+//: 弹窗是不是在「跟着后台任务走」：跟着时按任务的真实状态切界面；
+//: 只是打开表单（比如想换个域名）时不要被上一次的结果抢走画面。
+let publicFollowJob = false;
+
+function publicEl(id) { return document.getElementById(id); }
+
+async function loadPublicAccess() {
+  try {
+    const r = await fetch('/panel/api/public', { cache: 'no-store' });
+    if (!r.ok) return null;
+    const d = await r.json();
+    publicState = d.payload || null;
+    renderPublicAccess();
+    return publicState;
+  } catch { return null; }
+}
+
+function setPublicStatus(key, ...args) {
+  const el = publicEl('publicStatus');
+  if (!el) return;
+  const text = key ? t(key, ...args) : '';
+  setDynText(el, text);
+  el.hidden = !text;
+}
+
+function renderPublicAccess() {
+  const d = publicState;
+  if (!d) return;
+  const job = d.job || {};
+  const on = !!d.enabled;
+  const busy = job.state === 'running';
+
+  publicEl('publicMountRow').hidden = on;
+  publicEl('publicActiveRow').hidden = !on;
+
+  // 「挂载到公网」能不能点：要先打开局域网访问。
+  // 正在挂载时**不把它变灰** —— 改成一个能点的「查看挂载进度」，不然用户关掉弹窗
+  // 之后就面对一个点不动的按钮，只能刷新页面。
+  const btn = publicEl('publicMountBtn');
+  btn.disabled = busy ? false : !d.ready;
+  btn.textContent = t(busy ? 'pubViewProgress' : 'pubMountBtn');
+  const note = publicEl('publicReadyNote');
+  if (!d.ready) {
+    setDynText(note, t(d.ready_reason === 'lan_off' ? 'pubNeedLan' : 'pubErrUnknown'));
+  } else if (d.domain) {
+    setDynText(note, t('pubSavedDomain', d.domain));
+  } else {
+    setDynText(note, '');
+  }
+  // 存过域名但当前关着：留一个「彻底移除」的出口
+  const removeBtn = publicEl('publicRemoveBtn');
+  if (removeBtn) removeBtn.hidden = !(!!d.domain && !on);
+
+  // 挂载在后台跑：状态行显示当前进行到哪一步 / 下载百分比。
+  // 这一段必须在下面的 `if (!on) return` **之前** —— 挂载过程中 enabled 还是 false，
+  // 放在后面就永远轮不到它，用户什么进度都看不到。
+  if (busy) {
+    const status = publicEl('publicStatus');
+    const download = job.download;
+    setDynText(status, download
+      ? t('pubDownloadText', download.percent,
+          (download.received / 1048576).toFixed(1), (download.total / 1048576).toFixed(1))
+      : `${t(publicStepKey(job.step || 'binary'))}…`);
+    status.hidden = false;
+  }
+
+  if (!on) return;
+
+  const state = publicEl('publicState');
+  state.className = 'pub-state ' + (busy ? 'busy' : (d.running ? 'on' : 'off'));
+  state.textContent = t(busy ? 'pubStateBusy' : (d.running ? 'pubStateOn' : 'pubStateOff'));
+
+  const urls = d.urls || {};
+  publicEl('publicAddresses').innerHTML = renderPublicUrls(urls);
+
+  const warning = publicEl('publicWarning');
+  const warnKey = job.warning === 'verify_failed' ? 'pubWarnVerify'
+                : (job.warning === 'dns_exists' ? 'pubWarnDnsExists' : '');
+  // 公网开着却没有访问密码：比隧道那点毛病严重得多，用红字常驻在这一块
+  const noPassword = on && !d.has_password;
+  warning.hidden = !(noPassword || warnKey);
+  warning.classList.toggle('pub-note-error', noPassword);
+  if (noPassword) warning.innerHTML = t('pubWarnNoPassword');
+  else if (warnKey) setText(warning, warnKey);
+}
+
+function renderPublicUrls(urls) {
+  if (!urls || !urls.panel) return '';
+  const row = (label, url) => `<div class="pub-url-row">
+      <span class="pub-url-label">${lanEscape(label)}</span>
+      <code>${lanEscape(url)}</code>
+      <button class="btn btn-outline btn-sm" onclick="copyPublicUrl(this,'${lanEscape(url)}')">${lanEscape(t('pubCopy'))}</button>
+      <button class="btn btn-outline btn-sm" onclick="window.open('${lanEscape(url)}','_blank')">${lanEscape(t('pubOpen'))}</button>
+    </div>`;
+  return `<b>${lanEscape(t('pubAddressesTitle'))}</b>`
+    + row(t('pubAddrPanel'), urls.panel) + row(t('pubAddrViewer'), urls.viewer);
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {                                   // http://192.168.x.x 这种不是安全上下文，退回老办法
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(area);
+    return ok;
+  } catch { return false; }
+}
+
+async function copyPublicUrl(button, url) {
+  if (!await copyText(url)) return;
+  const before = button.textContent;
+  button.textContent = t('pubCopied');
+  setTimeout(() => { button.textContent = before; }, 1200);
+}
+
+/* 弹窗：表单 → 进度 → 结果 */
+function openPublicModal() {
+  const d = publicState || {};
+  publicModalMode = 'form';
+  publicFollowJob = false;
+  publicAuthUrl = '';
+  publicEl('publicModal').hidden = false;
+  publicEl('publicModalTitle').textContent = t('pubModalTitle');
+  publicEl('publicModalDesc').textContent = t('pubModalDesc');
+  publicEl('publicDomainLabel').textContent = t('pubDomainLabel');
+  const input = publicEl('publicDomainInput');
+  input.placeholder = t('pubDomainPlaceholder');
+  input.value = d.domain || '';
+  const hint = publicEl('publicDomainHint');
+  hint.classList.remove('pub-note-error');
+  setDynText(hint, t('pubDomainHint'));
+  // 没有访问密码：红字讲清楚「挂上公网就没有守门的了」，并给一个就地设置的入口
+  const needPassword = !d.has_password;
+  const warn = publicEl('publicNoPasswordWarn');
+  warn.hidden = !needPassword;
+  warn.innerHTML = needPassword ? t('pubNoPasswordWarn') : '';
+  publicEl('publicPasswordRow').hidden = !needPassword;
+  if (needPassword) publicEl('publicPasswordInput').placeholder = t('pubPasswordPlaceholder');
+  setDynText(publicEl('publicPasswordNote'), '');
+  // 后台正在挂载：直接打开「进度」那一屏（用户多半就是想看看挂到哪了）
+  if ((d.job || {}).state === 'running') {
+    publicModalMode = 'progress';
+    publicFollowJob = true;
+    renderPublicModal();
+    startPublicPoll();
+    return;
+  }
+  renderPublicModal();
+  input.focus();
+  input.select();
+}
+
+/* 公网开着却不设访问密码的风险确认：正文带红字加粗（.risk-strong），
+   所以走 openConfirmModal 的 messageHtmlKey，而不是当纯文本塞进去。 */
+async function publicRiskConfirm({ titleKey, htmlKey, okKey }) {
+  const modal = document.getElementById('confirmModal');
+  if (!modal) return window.confirm(t(htmlKey).replace(/<[^>]*>/g, ''));
+  return openConfirmModal('', { titleKey, okKey, messageHtmlKey: htmlKey });
+}
+
+/* 在挂载弹窗里就地设一个访问密码（和「局域网访问」那块是同一个密码）。 */
+async function savePublicPassword() {
+  const input = publicEl('publicPasswordInput');
+  const note = publicEl('publicPasswordNote');
+  const password = (input.value || '').trim();
+  if (!password) { setDynText(note, t('pubPasswordNeedValue')); return; }
+  try {
+    const r = await fetch('/panel/api/lan/password', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ password }),
+    });
+    const payload = await r.json();
+    lanAccess = payload.payload || lanAccess;
+    renderLanAccess();
+    await loadPublicAccess();
+  } catch { setDynText(note, t('pubErrUnknown')); return; }
+  input.value = '';
+  publicEl('publicNoPasswordWarn').hidden = true;
+  publicEl('publicPasswordRow').hidden = true;
+  setDynText(note, t('pubPasswordSaved'));
+}
+
+function closePublicModal() {
+  publicEl('publicModal').hidden = true;
+  const running = ((publicState || {}).job || {}).state === 'running';
+  if (running) {
+    // 后台这一趟还在挂：**别停轮询** —— 停了的话页面里那份状态会一直停在「进行中」，
+    // 按钮跟着一直是灰的，用户只能刷新页面才恢复。弹窗关着也继续刷新设置页那一行。
+    publicFollowJob = false;      // 弹窗关着，别让它自己跳到结果页
+    startPublicPoll();
+    return;
+  }
+  stopPublicPoll();
+  if (publicModalMode !== 'progress') loadPublicAccess();
+}
+
+async function renderPublicModal() {
+  const d = publicState || {};
+  const job = d.job || {};
+  const state = job.state || 'idle';
+  if (publicFollowJob) {
+    if (state === 'running') publicModalMode = 'progress';
+    else if (state === 'done' || state === 'error') publicModalMode = 'result';
+  }
+
+  publicEl('publicForm').hidden = publicModalMode !== 'form';
+  publicEl('publicProgress').hidden = publicModalMode !== 'progress';
+  publicEl('publicResult').hidden = publicModalMode !== 'result';
+  // 实时日志：挂载中一直显示；失败时也留着（那会儿最需要看它）；成功/表单态收起来
+  const showLog = publicModalMode === 'progress'
+    || (publicModalMode === 'result' && state === 'error');
+  renderPublicJobLog(job, showLog);
+
+  const cancelBtn = publicEl('publicCancelBtn');
+  const primary = publicEl('publicStartBtn');
+  cancelBtn.hidden = false;
+  primary.hidden = false;
+  cancelBtn.textContent = t('cancel');
+  // 进度那一屏写着「取消挂载」，就必须真的取消这一趟；其它屏（表单 / 结果）只是关掉弹窗。
+  // 想「让它在后台接着挂、我自己先关掉」就点弹窗外面的地方（backdrop）。
+  cancelBtn.onclick = () => (publicModalMode === 'progress' ? cancelPublicMount() : closePublicModal());
+
+  if (publicModalMode === 'form') {
+    primary.textContent = t('pubStartBtn');
+    primary.disabled = false;
+    return;
+  }
+
+  if (publicModalMode === 'progress') {
+    publicEl('publicModalTitle').textContent = t('pubProgressTitle');
+    publicEl('publicModalDesc').textContent = d.domain ? `https://${d.domain}` : '';
+    publicEl('publicSteps').innerHTML = renderPublicSteps(job.steps || {});
+    cancelBtn.textContent = t('pubCancelMount');
+    primary.hidden = true;
+
+    // 等授权那一步：把授权链接亮出来（cloudflared 要一两秒才打印它）
+    const authBox = publicEl('publicAuthBox');
+    const needAuth = job.step === 'auth' && (job.steps || {}).auth !== 'done';
+    authBox.hidden = !needAuth;
+    if (needAuth) {
+      publicAuthUrl = job.auth_url || publicAuthUrl;
+      setDynText(publicEl('publicAuthHint'), t('pubAuthHint'));
+      const authBtn = publicEl('publicAuthBtn');
+      authBtn.textContent = t('pubAuthBtn');
+      authBtn.disabled = !publicAuthUrl;
+      // 链接铺成能选中的文字：自动打开浏览器有时会被拦（比如服务是以管理员身份跑的，
+      // Edge 会提示「现有实例正在以提升的权限运行」），这时手动复制最省事。
+      setDynText(publicEl('publicAuthUrlText'),
+                 publicAuthUrl || t('pubAuthUrlWaiting'));
+      // 服务以管理员身份在跑时，自动开浏览器会被 Windows 拦下来（Edge 弹「现有实例正在
+      // 以提升的权限运行」）—— 那就直接把这句话和手动链接一起给出来。
+      // 这句文案里带红字加粗标记，所以用 innerHTML（内容是我们自己写的）。
+      publicEl('publicAuthNote').innerHTML = t(d.elevated ? 'pubAuthNoteElevated' : 'pubAuthNote');
+    }
+
+    // 首次开启要下载 cloudflared：进度条按真实字节数走
+    const download = job.download;
+    publicEl('publicDownloadBox').hidden = !download;
+    if (download) {
+      publicEl('publicDownloadBar').style.width = `${download.percent}%`;
+      setDynText(publicEl('publicDownloadText'), t(
+        'pubDownloadText', download.percent,
+        (download.received / 1048576).toFixed(1), (download.total / 1048576).toFixed(1)));
+    }
+  // 实时日志：贴在最底下跟着滚（内容都是我们自己写的提示 + cloudflared 的原始输出）
+  renderPublicJobLog(job, true);
+  setDynText(publicEl('publicLogHint'), t('pubLogHint'));
+  setDynText(publicEl('publicProgressNote'), '');
+  return;
+  }
+
+  // 结果
+  publicEl('publicModalTitle').textContent = t('pubModalTitle');
+  const actions = publicEl('publicResultActions');
+  if (state === 'done') {
+    publicEl('publicModalDesc').textContent = '';
+    const url = (d.urls && d.urls.viewer) || (d.domain ? `https://${d.domain}` : '');
+    setDynText(publicEl('publicResultText'), t('pubDone', url));
+    actions.innerHTML = url
+      ? `<button class="btn btn-outline btn-sm" onclick="copyText('${lanEscape(url)}')">${lanEscape(t('pubCopy'))}</button>
+         <button class="btn btn-outline btn-sm" onclick="window.open('${lanEscape(url)}','_blank')">${lanEscape(t('pubOpen'))}</button>`
+      : '';
+    primary.hidden = true;
+    cancelBtn.textContent = t('pubDoneBtn');
+  } else {
+    publicEl('publicModalDesc').textContent = '';
+    // 失败原因分两层：一句人话 + cloudflared 自己的原话（后者才是能拿去搜的东西）。
+    // 人话文案里有红字加粗标记，所以走 innerHTML；原话来自 cloudflared，必须转义。
+    const key = publicErrorKey(job.error);
+    const detail = (job.error_detail || '').trim();
+    publicEl('publicResultText').innerHTML = lanEscape(t('pubErrorPrefix')) + t(key)
+      + (detail ? `<div class="meta" style="margin-top:8px">${lanEscape(t('pubErrorRaw'))}</div>`
+                  + `<pre class="log-box pub-log" style="display:block">${lanEscape(detail)}</pre>` : '');
+    actions.innerHTML = '';
+    primary.hidden = false;
+    primary.disabled = false;
+    primary.textContent = t('pubStartBtn');
+    cancelBtn.textContent = t('cancel');
+  }
+}
+
+/* 弹窗里那块实时日志：把这次挂载的输出铺进去，并跟着滚到最新一行。
+   用户自己往上翻的时候不打扰他（只有本来就在底部才自动跟）。 */
+function renderPublicJobLog(job, visible) {
+  const box = publicEl('publicJobLog');
+  const hint = publicEl('publicLogHint');
+  box.hidden = !visible;
+  hint.hidden = !visible;
+  if (!visible) return;
+  const lines = (job && job.log) || [];
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+  box.textContent = lines.join('\n');
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function renderPublicSteps(steps) {
+  const marks = { done: '✓', running: '◌', error: '✗', pending: '·' };
+  return publicStepKeys().map(key => {
+    const state = steps[key] || 'pending';
+    return `<div class="pub-step" data-state="${state}">
+        <span class="pub-step-mark">${marks[state] || '·'}</span>
+        <span class="pub-step-body">${lanEscape(t(publicStepKey(key)))}</span>
+      </div>`;
+  }).join('');
+}
+
+function publicStepKeys() { return ['binary', 'auth', 'create', 'dns', 'start', 'verify']; }
+
+function publicStepKey(key) {
+  return {
+    binary: 'pubStepBinary', auth: 'pubStepAuth', create: 'pubStepCreate',
+    dns: 'pubStepDns', start: 'pubStepStart', verify: 'pubStepVerify',
+  }[key] || 'pubStepStart';
+}
+
+function publicErrorKey(code) {
+  return {
+    bad_domain: 'pubDomainBad',
+    lan_off: 'pubNeedLan',
+    no_password: 'pubNeedPassword',
+    auth_timeout: 'pubErrAuth',
+    auth_failed: 'pubErrAuthFailed',
+    auth_dns: 'pubErrAuthDns',
+    download_failed: 'pubErrDownload',
+    binary_missing: 'pubErrDownload',
+    create_failed: 'pubErrCreate',
+    dns_failed: 'pubErrRoot',
+    start_failed: 'pubErrStart',
+  }[code] || 'pubErrUnknown';
+}
+
+function publicModalPrimary() {
+  if (publicModalMode === 'progress') { cancelPublicMount(); return; }
+  if (publicModalMode === 'result') {
+    const state = (publicState && publicState.job || {}).state;
+    if (state === 'done') { closePublicModal(); return; }
+    openPublicModal();                    // 失败之后：回到表单重试（域名留着）
+    return;
+  }
+  startPublicMount();
+}
+
+async function startPublicMount() {
+  const input = publicEl('publicDomainInput');
+  const domain = (input.value || '').trim();
+  const hint = publicEl('publicDomainHint');
+  if (!domain) {
+    hint.classList.add('pub-note-error');
+    setDynText(hint, t('pubDomainBad'));
+    return;
+  }
+  hint.classList.remove('pub-note-error');
+  const primary = publicEl('publicStartBtn');
+  // 没有访问密码还要挂：先把风险红字摆出来，用户确认了才继续
+  if (!(publicState && publicState.has_password)) {
+    const ok = await publicRiskConfirm({ titleKey: 'pubRiskConfirmTitle',
+                                         htmlKey: 'pubRiskConfirm',
+                                         okKey: 'pubRiskConfirmOk' });
+    if (!ok) return;
+  }
+  primary.disabled = true;
+  try {
+    const r = await fetch('/panel/api/public/mount', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ domain }),
+    });
+    const d = await r.json().catch(() => ({}));
+    publicState = d.payload || publicState;
+    renderPublicAccess();
+    if (!d.ok) {
+      if (r.status === 400) {
+        hint.classList.add('pub-note-error');
+        setDynText(hint, t('pubDomainBad'));
+        primary.disabled = false;
+        return;
+      }
+      publicModalMode = 'result';
+      await renderPublicModal();
+      return;
+    }
+    publicModalMode = 'progress';
+    publicFollowJob = true;
+    await renderPublicModal();
+    startPublicPoll();
+  } catch {
+    hint.classList.add('pub-note-error');
+    setDynText(hint, t('pubErrUnknown'));
+    primary.disabled = false;
+  }
+}
+
+function startPublicPoll() {
+  stopPublicPoll();
+  publicPollTimer = setInterval(async () => {
+    const d = await loadPublicAccess();
+    if (!d) return;
+    await renderPublicModal();
+    const job = d.job || {};
+    if (job.state === 'done' || job.state === 'error' || job.state === 'idle') {
+      stopPublicPoll();
+      // 挂载结束了：把「正在 xxx…」那行收掉；失败且弹窗已经关掉时，在这一行留下原因
+      if (job.state === 'error') {
+        const status = publicEl('publicStatus');
+        setDynText(status, t('pubErrorPrefix') + t(publicErrorKey(job.error)));
+        status.hidden = false;
+      } else {
+        setPublicStatus('');
+      }
+    }
+  }, 1000);
+}
+
+function stopPublicPoll() {
+  if (publicPollTimer) { clearInterval(publicPollTimer); publicPollTimer = null; }
+}
+
+async function cancelPublicMount() {
+  stopPublicPoll();
+  publicFollowJob = false;
+  try { await fetch('/panel/api/public/cancel', { method: 'POST' }); } catch {}
+  await loadPublicAccess();
+  setPublicStatus('');                     // 收掉「正在 xxx…」那行
+  publicModalMode = 'form';                // 回到表单，想重试可以直接再点「开始挂载」
+  await renderPublicModal();
+}
+
+function openPublicAuthUrl() {
+  if (publicAuthUrl) window.open(publicAuthUrl, '_blank');
+}
+
+async function copyPublicAuthUrl(button) {
+  if (!publicAuthUrl) return;
+  if (!await copyText(publicAuthUrl)) return;
+  const before = button.textContent;
+  button.textContent = t('pubCopied');
+  setTimeout(() => { button.textContent = before; }, 1200);
+}
+
+async function restartPublicTunnel() {
+  setPublicStatus('');
+  try {
+    const r = await fetch('/panel/api/public/restart', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    publicState = d.payload || publicState;
+    renderPublicAccess();
+    setPublicStatus(d.ok ? 'pubStateOn' : 'pubErrStart');
+  } catch { setPublicStatus('pubErrStart'); }
+}
+
+async function confirmDisablePublic() {
+  if (!await lanConfirm(t('pubDisableConfirm'), 'pubDisableConfirmTitle',
+                        'pubDisableConfirmOk')) return;
+  try {
+    const r = await fetch('/panel/api/public/disable', { method: 'POST' });
+    const d = await r.json();
+    publicState = d.payload || publicState;
+    renderPublicAccess();
+    setPublicStatus('pubDisabled');
+  } catch { setPublicStatus('pubErrUnknown'); }
+}
+
+async function confirmRemovePublic() {
+  // 二级确认：这一步会真的删掉 Cloudflare 上的隧道和解析记录
+  if (!await lanConfirm(t('pubRemoveConfirm'), 'pubRemoveConfirmTitle',
+                        'pubRemoveConfirmOk')) return;
+  try {
+    const r = await fetch('/panel/api/public/remove', { method: 'POST' });
+    const d = await r.json();
+    publicState = d.payload || publicState;
+    renderPublicAccess();
+    if (d.removed_tunnel && !d.removed_dns) setPublicStatus('pubRemoveDnsManual');
+    else setPublicStatus('pubRemoved');
+  } catch { setPublicStatus('pubErrUnknown'); }
+}
+
+/* 用面板自带的确认弹窗问一句（正文是现成的句子，不是 i18n key）。
+   标题和确认按钮默认按「不再信任设备」，公网访问那几个确认框会传自己的 key。 */
+async function lanConfirm(message, titleKey = 'lanForgetConfirmTitle',
+                          okKey = 'lanForgetConfirmOk') {
   const modal = document.getElementById('confirmModal');
   if (!modal) return window.confirm(message);
   const messageEl = document.getElementById('confirmModalMessage');
   const previous = messageEl ? messageEl.textContent : '';
-  const promise = openConfirmModal('', { titleKey: 'lanForgetConfirmTitle', okKey: 'lanForgetConfirmOk' });
+  const promise = openConfirmModal('', { titleKey, okKey });
   setDynText(messageEl, message);
   const ok = await promise;
   setDynText(messageEl, previous);
@@ -5111,15 +6077,16 @@ function lanEscape(text) {
    地址切回本机，页面等它回来再刷新。
    存不上就把开关拨回原来的位置并说明原因：界面显示的和真正存下来的必须一致。 */
 let devModeBusy = false;
-//: 开关当前知道的「它管着什么」：局域网开着吗、存过 Token 吗（关开关时据此弹确认框）
-let devModeState = { enabled: false, lan_on: false, token_set: false };
+//: 开关当前知道的「它管着什么」：局域网开着吗、公网开着吗、存过 Token 吗（关开关时据此弹确认框）
+let devModeState = { enabled: false, lan_on: false, public_on: false, token_set: false };
 
 async function loadDeveloperMode() {
   try {
     const r = await fetch('/panel/api/config/developer-mode');
     if (!r.ok) return;
     const d = await r.json();
-    devModeState = { enabled: !!d.enabled, lan_on: !!d.lan_on, token_set: !!d.token_set };
+    devModeState = { enabled: !!d.enabled, lan_on: !!d.lan_on,
+                     public_on: !!d.public_on, token_set: !!d.token_set };
     applyDeveloperMode(devModeState.enabled);
   } catch {}
 }
@@ -5148,6 +6115,7 @@ function setDevModeStatus(text, kind) {
 async function confirmDevModeOff(state) {
   const lines = [];
   if (state.lan_on) lines.push(t('devModeOffLanWarn'));
+  if (state.public_on) lines.push(t('devModeOffPublicWarn'));
   if (state.token_set) lines.push(t('devModeOffTokenWarn'));
   const modal = document.getElementById('confirmModal');
   if (!modal) return window.confirm(lines.join('\n'));
@@ -5165,7 +6133,7 @@ async function setDeveloperMode(enabled) {
   const box = document.getElementById('devModeEnabled');
   if (!box || devModeBusy) return;          // 上一次请求还没回来时别叠着再发一次
   const wanted = !!enabled;
-  if (!wanted && (devModeState.lan_on || devModeState.token_set)) {
+  if (!wanted && (devModeState.lan_on || devModeState.public_on || devModeState.token_set)) {
     if (!await confirmDevModeOff(devModeState)) { box.checked = true; return; }
   }
   devModeBusy = true;
@@ -5177,7 +6145,8 @@ async function setDeveloperMode(enabled) {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || '');
-    devModeState = { enabled: !!d.enabled, lan_on: !!d.lan_on, token_set: !!d.token_set };
+    devModeState = { enabled: !!d.enabled, lan_on: !!d.lan_on,
+                     public_on: !!d.public_on, token_set: !!d.token_set };
     applyDeveloperMode(devModeState.enabled);
     if (d.restarting) { beginDevModeRestart(); return; }   // 等服务回来再刷新页面
     if (d.restart_code === 'dev_mode') {
@@ -6034,7 +7003,10 @@ async function saveAppearance(silent) {
 
 async function resetAppearanceAll() {
   if (!apDefaults) return;
-  if (!(await openConfirmModal('apConfirmReset'))) return;
+  // 标题和按钮要说「恢复默认」，不能沿用默认那套（否则顶着「确认全量采集 / 继续采集」）
+  if (!(await openConfirmModal('apConfirmReset', {
+    titleKey: 'apConfirmResetTitle', okKey: 'apConfirmResetOk',
+  }))) return;
   apData = JSON.parse(JSON.stringify(apDefaults));
   await saveAppearance(true);
 }
@@ -6857,7 +7829,10 @@ setInterval(() => {
 const LOG_KINDS = {
   server: { path: 'config/logs/server.log', note: 'logsNoteServer', empty: 'logsEmptyServer' },
   restart: { path: 'config/logs/restart.log', note: 'logsNoteRestart', empty: 'logsEmptyRestart' },
+  public: { path: 'config/logs/cloudflared.log', note: 'logsNotePublic', empty: 'logsEmptyPublic' },
 };
+//: 每一份日志对应哪个单选按钮（切语言、回到这一页时要把界面拨回当前那份）
+const LOGS_KIND_RADIOS = { server: 'logsKindServer', restart: 'logsKindRestart', public: 'logsKindPublic' };
 //: 「重启服务」这件事要跨过一次页面刷新（刷新之后才知道是它把页面刷回来的）
 const LOGS_RESTART_KEY = 'panel-logs-restart';
 //: 最多等多久（秒）：这次中断包含前端构建，比「更新后自动重启」久，得留够时间
@@ -6887,9 +7862,9 @@ function logsKindMeta() {
   return LOG_KINDS[logsKind] || LOG_KINDS.server;
 }
 
-/* 把「另一个」单选框勾上（切语言、从别处回到这一页时都要对齐界面） */
+/* 把当前那份日志对应的单选框勾上（切语言、从别处回到这一页时都要对齐界面） */
 function syncLogsKindRadio() {
-  const radio = document.getElementById(logsKind === 'restart' ? 'logsKindRestart' : 'logsKindServer');
+  const radio = document.getElementById(LOGS_KIND_RADIOS[logsKind] || LOGS_KIND_RADIOS.server);
   if (radio) radio.checked = true;
 }
 
@@ -7806,6 +8781,7 @@ async function panelAuthCheck() {
       loadPasswordStatus();
       loadNotifyStatus();
       loadLanAccess();
+      loadPublicAccess();
       loadDownloadImages();
       loadDeveloperMode();
       loadAppearance();

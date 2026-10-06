@@ -119,14 +119,14 @@ def test_old_config_without_the_field_stays_off(tmp_path, monkeypatch):
 
 
 def test_status_tells_the_panel_what_is_still_in_use(config_path, token_file):
-    """确认框要知道「局域网开着吗、存过 Token 吗」，一次请求全给出来。"""
+    """确认框要知道「局域网开着吗、公网开着吗、存过 Token 吗」，一次请求全给出来。"""
     _write_config(config_path, developer_mode=True, lan_access=True)
     github_auth.save(TOKEN)
 
     payload = asyncio.run(cp.get_developer_mode())
 
-    assert payload == {"enabled": True, "lan_on": True, "token_set": True,
-                       "token_from_private_repo": True}
+    assert payload == {"enabled": True, "lan_on": True, "public_on": False,
+                       "token_set": True, "token_from_private_repo": True}
 
 
 # ── 关开关时：局域网一起关掉，但设置留着 ──────────────────────────────────
@@ -278,12 +278,13 @@ def test_panel_html_wires_the_developer_mode_switch():
 
 
 def test_the_switch_asks_before_turning_off_what_is_still_in_use():
-    """关之前弹确认框：局域网开着 / 存过 Token 都要讲清楚会发生什么。"""
+    """关之前弹确认框：局域网 / 公网访问开着、存过 Token 都要讲清楚会发生什么。"""
     html = open(PANEL_HTML, encoding="utf-8").read()
 
-    assert "devModeState.lan_on || devModeState.token_set" in html
+    assert "devModeState.lan_on || devModeState.public_on || devModeState.token_set" in html
     assert "async function confirmDevModeOff(state)" in html
     assert "devModeOffLanWarn" in html and "devModeOffTokenWarn" in html
+    assert "devModeOffPublicWarn" in html
     assert "box.checked = true; return;" in html, "用户取消就把开关拨回去"
 
 

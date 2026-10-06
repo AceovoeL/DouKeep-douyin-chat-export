@@ -46,12 +46,45 @@ def restart_log_path(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture
+def public_log_path(tmp_path, monkeypatch):
+    """把「公网挂载」（cloudflared）那份日志也指到临时文件。"""
+    path = tmp_path / "cloudflared.log"
+    monkeypatch.setattr(cp, "PUBLIC_LOG_PATH", str(path))
+    return path
+
+
 # ── 读日志 ──────────────────────────────────────────────────────────────────
 
 def test_real_log_paths_are_shown_as_config_paths():
-    """真机上这两份日志就在项目的 config/logs/ 里，面板上要显示成 config/logs/xxx.log 这种好认的样子。"""
+    """真机上这三份日志就在项目的 config/logs/ 里，面板上要显示成 config/logs/xxx.log 这种好认的样子。"""
     assert cp._display_path(cp.SERVER_LOG_PATH) == "config/logs/server.log"
     assert cp._display_path(cp.RESTART_LOG_PATH) == "config/logs/restart.log"
+    assert cp._display_path(cp.PUBLIC_LOG_PATH) == "config/logs/cloudflared.log"
+
+
+def test_public_tunnel_log_has_its_own_entry(client, public_log_path):
+    """「公网挂载」是日志页上的第三份：能读、读不到时是空状态而不是错误。"""
+    assert client.get("/panel/api/logs/public").json() == {
+        "name": "public", "log": "", "exists": False,
+        "path": cp._display_path(str(public_log_path)), "size": 0, "modified_at": None,
+    }
+    public_log_path.write_bytes("Registered tunnel connection connIndex=0\n".encode("utf-8"))
+    body = client.get("/panel/api/logs/public").json()
+    assert body["exists"] is True
+    assert "Registered tunnel connection" in body["log"]
+
+
+def test_unknown_log_name_is_still_rejected(client):
+    assert client.get("/panel/api/logs/nope").status_code == 404
+
+
+def test_panel_logs_page_has_the_public_tunnel_tab():
+    """面板接线：日志页要有这一项，切过去时按名字取第三份。"""
+    html = _panel_html()
+    assert 'id="logsKindPublic"' in html and "setLogsKind('public')" in html
+    assert "logsKindPublic:" in html and "logsNotePublic:" in html and "logsEmptyPublic:" in html
+    assert "public: { path: 'config/logs/cloudflared.log'" in html
 
 
 def test_missing_log_is_an_empty_state_not_an_error(client, log_path):

@@ -30,8 +30,8 @@ from fastapi.responses import JSONResponse
 
 from backend import database
 from common import paths
+from common.owner import FALLBACK_NAME, detect_owner
 from extractor.exporter import (
-    _detect_owner,
     build_chatlab_header,
     build_chatlab_message,
     conv_display_name,
@@ -190,7 +190,9 @@ def session_messages(
         else:
             rows = rows[:limit]
 
-        owner_uid, owner_name = _detect_owner(conn)
+        owner_uid, owner_name = detect_owner(conn)
+        # 认不出来时名字留「我」，solo sender_uid 为空的系统行照样有名字可显示
+        owner_name = owner_name or FALLBACK_NAME
         body = build_chatlab_header(conv_id, conv_name, conv_type, owner_uid)
         if rows:
             users_map = _load_users_map(conn)

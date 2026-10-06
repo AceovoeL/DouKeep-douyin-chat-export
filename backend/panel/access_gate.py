@@ -88,6 +88,37 @@ _MAX_FAILURES = 10
 _FAILURES_LOCK = threading.Lock()
 _FAILURES: dict[str, list[float]] = {}
 
+#: 「同一台设备连续错了几次」—— 到 ``access.MAX_PASSWORD_FAILURES`` 次就把这台设备
+#: 记进「需手动确认」并暂停它。**按设备（来源 IP + 浏览器指纹）计数**，跟信任设备
+#: 用同一把尺子；输对一次就清零。计数只在内存里，已经暂停的设备存在配置里。
+_DEVICE_FAILURES_LOCK = threading.Lock()
+_DEVICE_FAILURES: dict[tuple[str, str], int] = {}
+
+
+def _device_key(host: str, user_agent: str | None) -> tuple[str, str]:
+    return str(host or ""), access._ua_fingerprint(user_agent)
+
+
+def _device_failures(key: tuple[str, str]) -> int:
+    with _DEVICE_FAILURES_LOCK:
+        return int(_DEVICE_FAILURES.get(key, 0))
+
+
+def _record_device_failure(key: tuple[str, str]) -> int:
+    """这台设备又错了一次，返回「连续错了几次」。"""
+    with _DEVICE_FAILURES_LOCK:
+        count = int(_DEVICE_FAILURES.get(key, 0)) + 1
+        _DEVICE_FAILURES[key] = count
+        if len(_DEVICE_FAILURES) > 200:           # 桶太多时清掉已经归零的
+            for stale in [k for k, v in _DEVICE_FAILURES.items() if not v]:
+                _DEVICE_FAILURES.pop(stale, None)
+        return count
+
+
+def _clear_device_failures(key: tuple[str, str]) -> None:
+    with _DEVICE_FAILURES_LOCK:
+        _DEVICE_FAILURES.pop(key, None)
+
 
 def _failed_attempts(host: str) -> int:
     """这个地址在窗口时间内错了几次（顺便清掉过期的记录）。"""
@@ -138,6 +169,10 @@ _TEXTS = {
         "button": "进入",
         "error": "访问密码不对，请再试一次。",
         "tip": "访问密码在运行这台电脑的面板里设置：先在「关于」页打开开发者模式，再到「设置 → 局域网访问」。",
+        "blockedTitle": "这台设备已被暂停",
+        "blockedPageTitle": "这台设备已被暂停 · 抖音聊天记录",
+        "blockedDesc": "这台设备连续输错访问密码 {n} 次，已经被暂停输入密码。",
+        "blockedTip": "想继续用这台设备：在运行服务的那台电脑上打开控制面板 →「设置 → 局域网访问 → 需手动确认」，找到这台设备点「解除」，然后刷新这一页重新输入访问密码。",
     },
     "en": {
         "lang": "en",
@@ -150,6 +185,13 @@ _TEXTS = {
         "error": "Wrong access password. Try again.",
         "tip": "The access password is set on the host machine: turn on developer mode "
                "(About page) first, then Settings → LAN access.",
+        "blockedTitle": "This device is paused",
+        "blockedPageTitle": "This device is paused - Douyin chat export",
+        "blockedDesc": "This device entered the wrong access password {n} times in a row and "
+                       "is no longer allowed to try.",
+        "blockedTip": "To use this device again: on the host machine open the control panel → "
+                      "Settings → LAN access → Needs manual confirmation, find this device and "
+                      "click Release, then reload this page and enter the password.",
     },
 }
 
@@ -219,24 +261,46 @@ def _theme_vars(theme: str, colors: dict | None) -> str:
 
 
 def render_access_page(*, next_path: str = "/", error: bool = False,
-                       accept_language: str | None = None) -> str:
-    """解锁页的 HTML（主题、字体跟随面板的外观设置）。"""
+                       blocked: bool = False, accept_language: str | None = None) -> str:
+    """解锁页的 HTML（主题、字体跟随面板的外观设置）。
+
+    ``blocked=True`` 时是「被暂停」那一版：不显示密码输入框 —— 这台设备连续输错太多次，
+    已经不让它再猜了，要主机那边在面板里手动解除。
+    """
     lang = pick_language(accept_language)
     text = _TEXTS[lang]
     theme, colors, font = _panel_style()
-    error_html = ""
-    if error:
-        error_html = f'<div class="err">{html.escape(text["error"])}</div>'
+    if blocked:
+        title = text["blockedTitle"]
+        page_title = text["blockedPageTitle"]
+        desc = text["blockedDesc"].format(n=access.MAX_PASSWORD_FAILURES)
+        tip = text["blockedTip"]
+        pw_row = ""
+        error_html = f'<div class="err">{html.escape(desc)}</div>'
+    else:
+        title = text["title"]
+        page_title = text["pageTitle"]
+        desc = text["desc"]
+        tip = text["tip"]
+        pw_row = (
+            '<div class="pw-row">'
+            f'<input type="password" name="password" id="pw" placeholder="{html.escape(text["placeholder"])}"'
+            ' autocomplete="current-password" autofocus>'
+            f'<button type="submit">{html.escape(text["button"])}</button>'
+            '</div>'
+        )
+        error_html = f'<div class="err">{html.escape(text["error"])}</div>' if error else ""
     replacements = {
         "__LANG_TAG__": text["lang"],
-        "__PAGE_TITLE__": html.escape(text["pageTitle"]),
-        "__TITLE__": html.escape(text["title"]),
+        "__PAGE_TITLE__": html.escape(page_title),
+        "__TITLE__": html.escape(title),
         "__BRAND__": html.escape(text["brand"]),
-        "__DESC__": html.escape(text["desc"]),
+        "__DESC__": html.escape(desc),
         "__PLACEHOLDER__": html.escape(text["placeholder"]),
         "__BTN__": html.escape(text["button"]),
-        "__TIP__": html.escape(text["tip"]),
+        "__TIP__": html.escape(tip),
         "__ERROR__": error_html,
+        "__PW_ROW__": pw_row,
         "__NEXT__": html.escape(_safe_next(next_path), quote=True),
         "__THEME_VARS__": _theme_vars(theme, colors),
         "__FONT_STACK__": font,
@@ -357,13 +421,20 @@ async def _read_login_payload(request: Request) -> dict:
 
 @access_gate_router.get("/access")
 async def access_page(request: Request, next: str = "/", err: str = ""):
-    """解锁页：输入访问密码，密码对了这台设备就被记住。"""
+    """解锁页：输入访问密码，密码对了这台设备就被记住。
+
+    「被暂停」这一版**只看当前状态**（这台设备是不是还在「需手动确认」列表里），
+    不在网址里留任何标记 —— 之前用的是 ``?blocked=1``，结果解除之后浏览器一刷新
+    还是那个网址，页面就一直说「已被暂停」，得手动去掉后缀才进得来。
+    """
     if not access.password_required():
         # 不需要密码（或干脆没开局域网）时，这一页没有意义，直接送去该去的地方
         return RedirectResponse(_safe_next(next), status_code=303)
+    client_host = request.client.host if request.client else ""
+    paused = access.is_pending(client_host, request.headers.get("user-agent"))
     return HTMLResponse(
         content=render_access_page(
-            next_path=next, error=bool(err),
+            next_path=next, error=bool(err), blocked=paused,
             accept_language=request.headers.get("accept-language"),
         ),
         headers={"Cache-Control": "no-store"},
@@ -373,12 +444,27 @@ async def access_page(request: Request, next: str = "/", err: str = ""):
 @access_gate_router.post("/api/access/login")
 @access_gate_router.post("/api/access/login/")
 async def access_login(request: Request):
-    """校验访问密码：对了就下发凭据，这台设备进信任列表。"""
+    """校验访问密码：对了就下发凭据，这台设备进信任列表。
+
+    连续错 ``access.MAX_PASSWORD_FAILURES`` 次之后这台设备被暂停（记进「需手动确认」），
+    之后**连密码都不再校验** —— 猜密码这件事到此为止，要主机那边手动解除。
+    """
     payload = await _read_login_payload(request)
     next_path = _safe_next(payload.get("next"))
     if not access.password_required():
         return RedirectResponse(next_path, status_code=303)
+    if access.is_trusted(request.cookies.get(access.COOKIE_NAME)):
+        # 这台设备早就过了访问密码（多半是旧标签页又提交了一次，或者浏览器把刚才那个
+        # 请求重发了一遍）。直接放行、**不再登记新设备** —— 否则同一个浏览器会在
+        # 「信任设备」里凭空多出一台，看着像家里多了台设备。
+        return RedirectResponse(next_path, status_code=303)
     client_host = request.client.host if request.client else ""
+    user_agent = request.headers.get("user-agent")
+    if access.is_pending(client_host, user_agent):
+        log.info("设备已被暂停（%s），不再受理它的密码尝试", client_host)
+        return RedirectResponse(
+            f"/access?next={quote(next_path, safe='')}", status_code=303,
+        )
     if _failed_attempts(client_host) >= _MAX_FAILURES:
         log.info("访问密码错误次数过多，暂时不受理来自 %s 的尝试", client_host)
         return RedirectResponse(
@@ -386,12 +472,24 @@ async def access_login(request: Request):
         )
     if not access.verify_password(str(payload.get("password") or "")):
         _record_failure(client_host)
-        log.info("访问密码错误（来自 %s）", client_host or "?")
+        key = _device_key(client_host, user_agent)
+        count = _record_device_failure(key)
+        log.info("访问密码错误（来自 %s，这台设备连续第 %d 次）", client_host or "?", count)
+        if count >= access.MAX_PASSWORD_FAILURES:
+            # 连错太多次：把这台设备记进「需手动确认」并暂停它，等主机上的人来解除
+            access.remember_pending_device(
+                client_host, user_agent, reason=access.PENDING_TOO_MANY_FAILURES, failures=count)
+            _clear_device_failures(key)
+            log.info("设备连错 %d 次访问密码，已暂停（%s）", count, client_host)
+            return RedirectResponse(
+                f"/access?next={quote(next_path, safe='')}", status_code=303,
+            )
         return RedirectResponse(
             f"/access?err=1&next={quote(next_path, safe='')}", status_code=303,
         )
     _clear_failures(client_host)
-    remembered = access.remember_device(client_host, request.headers.get("user-agent"))
+    _clear_device_failures(_device_key(client_host, user_agent))
+    remembered = access.remember_device(client_host, user_agent)
     if not remembered:
         return RedirectResponse(
             f"/access?err=1&next={quote(next_path, safe='')}", status_code=303,

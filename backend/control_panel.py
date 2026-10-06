@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 
 from backend import database
+from backend import cloudflared as _cloudflared
 from common import access as _access
 from common import config as _cfg, paths
 from common import appearance as _appearance
@@ -1028,6 +1029,12 @@ def _lan_status_payload(request: Request, expect_host: str = "") -> dict:
         "restarting": bool(_lan_restart_state["running"]),
         "addresses": _access.access_addresses(port, client_host),
         "devices": _access.list_devices(cookie_id),
+        # 连续输错太多次访问密码的设备：要在界面上「手动确认」才放行（理由由面板翻文案）
+        "pending": _access.list_pending_devices(
+            client_host, request.headers.get("user-agent")),
+        "max_password_failures": _access.MAX_PASSWORD_FAILURES,
+        # 公网访问搭在局域网访问上：面板关开关前要据此先问一句（域名会留着）
+        "public_on": _access.public_enabled(),
     }
 
 
@@ -1038,19 +1045,30 @@ async def lan_status(request: Request, expect_host: str = ""):
 
 @control_router.post("/api/lan")
 async def set_lan_access(req: LanAccessRequest, request: Request):
-    """打开 / 关闭「向局域网开放」，然后自动重启服务让新的监听地址生效。"""
+    """打开 / 关闭「向局域网开放」，然后自动重启服务让新的监听地址生效。
+
+    关闭时如果公网访问正开着，顺手把它一起关掉 —— 公网访问本来就是搭在「局域网访问
+    + 访问密码」上的，底下的开关一关，公网那边就没人守门了（域名留着，重新打开局域网
+    再点一次「挂载到公网」即可）。
+    """
     _access.set_lan_access(req.enabled)
+    public_closed = False
+    if not req.enabled and _access.public_enabled():
+        _cloudflared.disable_public()
+        public_closed = True
     target_host = _access.LAN_HOST if req.enabled else _access.LOCAL_HOST
     address = _server_cli_address()
     if address is None:                       # 开发模式（uvicorn --reload）自己会重载
         return {"ok": True, "restart_required": False, "code": "dev_mode",
+                "public_closed": public_closed,
                 "payload": _lan_status_payload(request, target_host)}
     if _access.normalize_host(address[0]) == target_host:
         # 已经在按新的地址监听了（比如切换前刚好重启过）：不用再重启一次
-        return {"ok": True, "restart_required": False,
+        return {"ok": True, "restart_required": False, "public_closed": public_closed,
                 "payload": _lan_status_payload(request, target_host)}
     if _lan_restart_state["running"]:
         return {"ok": True, "restart_required": True, "already": True,
+                "public_closed": public_closed,
                 "payload": _lan_status_payload(request, target_host)}
     ok, detail = await asyncio.to_thread(_new_code_imports_ok)
     if not ok:
@@ -1068,7 +1086,8 @@ async def set_lan_access(req: LanAccessRequest, request: Request):
     print(f"[i] 面板切换了「向局域网开放」（{'开' if req.enabled else '关'}），"
           f"服务将重启为 {target_host}:{port}", flush=True)
     asyncio.create_task(_exit_for_restart())   # 响应发完再退出，面板拿得到正常 200
-    return {"ok": True, "restart_required": True, "restart": True}
+    return {"ok": True, "restart_required": True, "restart": True,
+            "public_closed": public_closed}
 
 
 @control_router.post("/api/lan/password")
@@ -1098,6 +1117,101 @@ async def forget_all_lan_devices(request: Request):
     count = _access.forget_all_devices()
     return {"ok": True, "removed": count,
             "payload": _lan_status_payload(request)}
+
+
+@control_router.post("/api/lan/pending/forget")
+async def release_pending_device(req: LanDeviceRequest, request: Request):
+    """解除某台设备的暂停：它又可以重新输访问密码了。"""
+    removed = _access.forget_pending_device(req.id)
+    return {"ok": removed, "removed": removed,
+            "payload": _lan_status_payload(request)}
+
+
+@control_router.post("/api/lan/pending/forget-all")
+async def release_all_pending_devices(request: Request):
+    """把「需手动确认」里的设备全部解除。"""
+    count = _access.forget_all_pending_devices()
+    return {"ok": True, "removed": count,
+            "payload": _lan_status_payload(request)}
+
+
+# ── 公网访问（用 Cloudflare 隧道接到自己的域名）──
+
+class PublicDomainRequest(BaseModel):
+    domain: str = ""
+
+
+def _public_status_payload() -> dict:
+    """面板「公网访问」这一块要的全部数据。"""
+    return {"ok": True, "payload": _cloudflared.mount_status()}
+
+
+@control_router.get("/api/public")
+async def public_status():
+    return _public_status_payload()
+
+
+@control_router.post("/api/public/mount")
+async def mount_public(req: PublicDomainRequest):
+    """开始挂载：校验域名 → 后台跑（下载/授权/建隧道/建解析/起隧道）。"""
+    try:
+        domain = _cloudflared.normalize_domain(req.domain)
+    except _cloudflared.TunnelError:
+        return JSONResponse({"ok": False, "error": "bad_domain"}, status_code=400)
+    ok, payload = _cloudflared.start_mount(domain)
+    return {"ok": ok, "error": "" if ok else payload["job"]["error"], "payload": payload}
+
+
+@control_router.get("/api/public/mount")
+async def mount_progress():
+    """挂载进度（面板每秒轮询一次，画步骤清单和下载进度条）。"""
+    return _public_status_payload()
+
+
+@control_router.post("/api/public/cancel")
+async def cancel_mount():
+    """取消正在进行的挂载。"""
+    _cloudflared.JOB.cancel()
+    return _public_status_payload()
+
+
+@control_router.post("/api/public/disable")
+async def disable_public():
+    """关闭公网访问：只停隧道进程，域名与云端记录都留着。"""
+    return {"ok": True, "payload": _cloudflared.disable_public()}
+
+
+@control_router.post("/api/public/remove")
+async def remove_public():
+    """彻底移除（面板上要点两次）：停进程 + 删云端隧道 + 删域名解析 + 清本机域名。
+
+    刻意保留：Cloudflare 账号的授权凭据（下次不用重新授权）和下载好的 cloudflared。
+    """
+    name = _access.public_tunnel_name()
+    domain = _access.public_domain()
+    _cloudflared.stop_tunnel()
+    removed_tunnel = await asyncio.to_thread(_cloudflared.delete_tunnel, name)
+    removed_dns = False
+    if domain:
+        removed_dns = await asyncio.to_thread(_cloudflared.delete_dns, name, domain)
+    _access.set_public_access(enabled=False, domain="")
+    return {"ok": True, "removed_tunnel": bool(removed_tunnel), "removed_dns": bool(removed_dns),
+            "payload": _cloudflared.mount_status()}
+
+
+@control_router.post("/api/public/restart")
+async def restart_public():
+    """把隧道再拉起来一次（域名没换时不用重走挂载流程）。"""
+    ok = await asyncio.to_thread(_cloudflared.restart_tunnel)
+    return {"ok": bool(ok), "payload": _cloudflared.mount_status()}
+
+
+def restore_public_access_on_startup() -> None:
+    """服务启动时：配置里开着公网访问就把隧道拉回来（机器重启、面板重启服务后）。"""
+    try:
+        _cloudflared.restore_on_startup()
+    except Exception as exc:                       # 起隧道失败不该拦住服务启动
+        print(f"[!] 公网隧道没能自动恢复（{exc}）")
 
 
 # ── Notifications (Server酱 / sct.ftqq.com) ──
@@ -1222,6 +1336,7 @@ def _developer_mode_flags() -> dict:
     return {
         "enabled": enabled,
         "lan_on": _access.lan_enabled(),
+        "public_on": _access.public_enabled(),
         "token_set": token_set,
         "token_from_private_repo": bool(enabled and token_set),
     }
@@ -1237,8 +1352,9 @@ async def get_developer_mode():
 async def set_developer_mode(req: DeveloperModeToggle, request: Request):
     """打开 / 关闭开发者模式。
 
-    关闭时：局域网若正开着，先关掉它（访问密码与信任设备保留），并交棒给重启助手把
-    监听地址切回 127.0.0.1；随后再关开发者模式。Token 只是「不再使用」，文件不动。
+    关闭时：公网访问若正开着，先把隧道停掉（域名留着）；局域网若正开着，再关掉它
+    （访问密码与信任设备保留），并交棒给重启助手把监听地址切回 127.0.0.1；随后再关
+    开发者模式。Token 只是「不再使用」，文件不动。
     """
     if req.enabled:
         cfg = _load_config()
@@ -1247,6 +1363,11 @@ async def set_developer_mode(req: DeveloperModeToggle, request: Request):
         return {**_developer_mode_flags(), "status": "ok", "restarting": False}
 
     lan_was_on = _access.lan_enabled()
+    public_was_on = _access.public_enabled()
+    if public_was_on:
+        # 公网访问是开发者模式里的东西：关掉开发者模式就先收起公网入口（域名留着，
+        # 下次打开开发者模式重新点「挂载到公网」不用再填）
+        _cloudflared.disable_public()
     result: dict = {}
     if lan_was_on:
         # 复用设置页那个开关的整套逻辑（自检、起助手、退出），只是不改访问密码与设备
@@ -1260,7 +1381,8 @@ async def set_developer_mode(req: DeveloperModeToggle, request: Request):
     _save_config(cfg)
 
     payload = {**_developer_mode_flags(), "status": "ok",
-               "restarting": bool(result.get("restart_required"))}
+               "restarting": bool(result.get("restart_required")),
+               "public_was_on": public_was_on}
     if lan_was_on and not result.get("ok", True):
         # 局域网已经关掉（配置里），但没能自动重启：界面要提示手动重启一次
         payload["restart_error"] = result.get("error", "")
@@ -2849,6 +2971,8 @@ _RESTART_SCRIPT = os.path.join(_version.REPO_ROOT, "tools", "restart_server.py")
 RESTART_LOG_PATH = paths.RESTART_LOG
 #: 后端服务自己的输出（启动脚本把它重定向到这里，自动重启起来的新服务也写这里）
 SERVER_LOG_PATH = paths.SERVER_LOG
+#: 「公网访问」那条隧道自己的输出（`cloudflared tunnel run` 追加写这里，见 backend/cloudflared.py）
+PUBLIC_LOG_PATH = paths.CLOUDFLARED_LOG
 
 
 def _display_path(path: str) -> str:
@@ -3523,24 +3647,27 @@ LOG_VIEW_MAX_LINES = 2000
 def _log_file(name: str) -> str | None:
     """「日志」页上的名字 → 日志文件路径；不认识的名字返回 None。
 
-    刻意在**调用时**读这两个常量（而不是启动时算好一个字典）：测试要把路径指到临时
+    刻意在**调用时**读这几个常量（而不是启动时算好一个字典）：测试要把路径指到临时
     文件，写死的字典改不动。名字走白名单、不让面板把路径传上来 —— 面板可能被远程
     打开，绝不能让它读这台机器上的任意文件。
     """
-    return {"server": SERVER_LOG_PATH, "restart": RESTART_LOG_PATH}.get(str(name))
+    return {"server": SERVER_LOG_PATH, "restart": RESTART_LOG_PATH,
+            "public": PUBLIC_LOG_PATH}.get(str(name))
 
 
 @control_router.get("/api/logs/{name}")
 async def logs_read(name: str, lines: int = 300):
     """「日志」页：一份日志文件的最后若干行。
 
-    目前有两份，用名字选：
+    目前有三份，用名字选：
 
     * ``server``  —— 后端服务自己的输出（``config/logs/server.log``）。不管服务是怎么起来的
       （双击「启动服务（双击）.bat」在后台起、``start.ps1`` 起，还是自动更新后由
       tools/restart_server.py 重新拉起），输出都写在这一份里；
     * ``restart`` —— 重启过程本身的记录（``config/logs/restart.log``）：什么时候等旧服务
-      退出、端口多久空出来、新服务起没起来，都写在这份里。
+      退出、端口多久空出来、新服务起没起来，都写在这份里；
+    * ``public``  —— 「公网访问」那条隧道的输出（``config/logs/cloudflared.log``）：首次
+      挂载时的下载、等你授权、建隧道、连上边缘都记在这里，域名打不开时先看它。
 
     文件不存在是**正常情况**（还没触发过自动重启、或者日志被清理掉了），所以照样
     返回 200，只把 ``exists`` 标成 false：面板据此显示「还没有这份日志」，不必把

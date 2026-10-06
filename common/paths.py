@@ -62,6 +62,10 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "panel_config.json")
 TOKEN_PATH = os.path.join(CONFIG_DIR, "github_token")
 #: 持久浏览器 profile —— 它**就是**登录态（扫码登录一次，之后一直用它采集）
 BROWSER_PROFILE = os.path.join(CONFIG_DIR, "browser_profile")
+#: 「公网访问」（把自己的域名接到本机服务）的工作目录：cloudflared 程序是首次开启
+#: 时才下载的（不进仓库、不进发布包），生成好的隧道配置与 PID 也放这里。
+#: 这一整个目录跟着「不进仓库」的 config/ 走，更新代码不会把它冲掉。
+CLOUDFLARED_DIR = os.path.join(CONFIG_DIR, "cloudflared")
 
 # ── 日志 ──────────────────────────────────────────────────────────────────
 #: 所有日志集中在这里，面板「日志」页与「打开日志文件夹」都指着它
@@ -84,6 +88,8 @@ LAUNCHER_LOG = os.path.join(LOG_DIR, "launcher.log")
 ENV_CHECK_LOG = os.path.join(LOG_DIR, "env-check.log")
 #: 表情资源包的自检记录（下载对不上的那几张）
 EMOJI_PACK_LOG = os.path.join(LOG_DIR, "emoji_pack.log")
+#: 公网访问的隧道进程输出（排查「域名打不开」时看它）
+CLOUDFLARED_LOG = os.path.join(LOG_DIR, "cloudflared.log")
 
 # ── 跨进程运行状态（小文件，给面板或 start.html 读） ────────────────────────
 #: 环境检测报告。写成 JavaScript（JSONP）是因为 start.html 是 file:// 页面，

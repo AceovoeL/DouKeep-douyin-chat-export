@@ -173,6 +173,44 @@ def test_the_bat_opens_the_panel_when_the_service_is_already_running():
     assert ":open_panel" in text
 
 
+def test_the_bat_sends_first_time_users_to_start_html():
+    """第一次双击（还没走过 start.html）先送去看它，然后结束本窗口，不启动服务。
+
+    有些人 README 也不看就双击这个文件，然后卡在「缺 Python / 缺 Node」这种本来能提前
+    发现的问题上。痕迹认三个，有任何一个就不再拦：``start.html`` 那次环境检测写的
+    ``config/env-report.js``、服务跑过留下的 ``config/panel_config.json``、以及这次打开
+    ``start.html`` 时写下的 ``config/.first-run-done``。
+    """
+    text = _bat_text()
+
+    assert 'if exist "%~dp0config\\.first-run-done" goto :ready_to_start' in text
+    assert 'if exist "%~dp0config\\env-report.js" goto :ready_to_start' in text
+    assert 'if exist "%~dp0config\\panel_config.json" goto :ready_to_start' in text
+    assert 'start "" "%~dp0start.html"' in text
+    assert ":ready_to_start" in text
+    # 拦下来之后是**结束**这个窗口，不是继续往下把服务拉起来
+    guide_at = text.index('start "" "%~dp0start.html"')
+    assert "exit /b 0" in text[guide_at:guide_at + 600]
+
+
+def test_the_bat_marks_the_guide_before_opening_the_page():
+    """先落标记、再打开页面：浏览器没弹出来或者用户立刻关掉，再双击也不会被反复拦。"""
+    text = _bat_text()
+
+    write_at = text.index('> "%~dp0config\\.first-run-done" echo')
+    open_at = text.index('start "" "%~dp0start.html"')
+    assert write_at < open_at
+
+
+def test_the_bat_guides_only_the_double_click_path():
+    """隐藏那次（``--serve``）不能被拦 —— 它才是真正启动服务的那个，拦了就永远起不来。"""
+    text = _bat_text()
+
+    serve_at = text.index('if /I "%~1"=="--serve" goto :serve')
+    guide_at = text.index('if exist "%~dp0config\\.first-run-done"')
+    assert serve_at < guide_at
+
+
 # ── 可见窗口里的进度显示（tools/launcher_progress.ps1） ────────────────────
 
 def test_the_progress_script_reports_steps_and_waits_for_the_port():
