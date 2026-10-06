@@ -61,6 +61,12 @@ CONFIG_FILE = os.path.join(paths.CLOUDFLARED_DIR, "config.yml")
 #: 隧道进程的进程号
 PID_FILE = os.path.join(paths.CLOUDFLARED_DIR, "tunnel.pid")
 
+#: 隧道连 Cloudflare 的方式：``http2`` 走 TCP 443，cloudflared 默认的 QUIC 走 UDP 7844。
+#: 有些宽带/单位网络会拦 UDP，或 IPv6 只有地址却出不去，症状就是日志里反复
+#: ``handshake did not complete in time`` / ``no recent network activity``，
+#: 四条连接掉到只剩一条。固定成 http2 后这类握手超时基本不再出现（速度略慢一点）。
+PROTOCOL = "http2"
+
 #: 等用户在浏览器里点完授权的最长时间
 AUTH_TIMEOUT = 600
 #: 等隧道连上 Cloudflare 的最长时间
@@ -471,6 +477,7 @@ def write_config(tunnel_uuid: str, domain: str) -> str:
         f"credentials-file: {credentials}",
         "no-autoupdate: true",
         "loglevel: info",
+        f"protocol: {PROTOCOL}",
         "ingress:",
         f"  - hostname: {domain}",
         "    service: http://127.0.0.1:8000",

@@ -658,6 +658,20 @@ def test_tunnel_config_points_credentials_next_to_the_certificate(cfg_file, tmp_
     assert f"credentials-file: {expected}" in text
 
 
+def test_tunnel_config_uses_http2(cfg_file, tmp_path, monkeypatch):
+    """固定走 http2（TCP 443）。
+
+    默认的 QUIC 走 UDP 7844，有的网络拦 UDP 或 IPv6 出不去，日志里就是一片
+    ``handshake did not complete in time``，四条连接掉到只剩一条。
+    """
+    monkeypatch.setattr(cf, "CRED_DIR", str(tmp_path / "legacy"))
+    config_path = cf.write_config("00000000-0000-0000-0000-000000000001", "example.com")
+
+    text = open(config_path, encoding="utf-8").read()
+    assert f"protocol: {cf.PROTOCOL}" in text
+    assert cf.PROTOCOL == "http2"
+
+
 def test_login_falls_back_to_a_temp_copy_when_writing_is_blocked(cfg_file, tmp_path, monkeypatch):
     """有的机器按程序路径挡住写入：确认原地写不了时，登录要改用一份临时副本（用完删掉）。"""
     monkeypatch.setattr(cf, "binary_path", lambda: sys.executable)
