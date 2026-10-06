@@ -497,12 +497,20 @@ def write_config(tunnel_uuid: str, domain: str) -> str:
 def route_dns(name: str, domain: str, *, overwrite: bool = False) -> tuple[bool, str]:
     """把域名指到这条隧道；返回 ``(成功, 说明)``。
 
+    ``overwrite=True`` 时带上 ``--overwrite-dns``（覆盖已存在的记录）—— 开关必须排在
+    位置参数**前面**，cloudflared 只认这个顺序。
+
     失败时把 cloudflared 的原始输出当说明带回去（面板只在「详细信息」里显示，
     正常的提示语由错误代码翻译）。
     """
-    args = ["tunnel", "route", "dns", name, domain]
+    args = ["tunnel", "route", "dns"]
+    # 开关必须排在位置参数**前面**：放后面会被 cloudflared 当成多出来的参数，
+    # 直接报「This command expects the format "cloudflared tunnel route dns
+    # <tunnel name/id> <hostname>"」然后失败（2026-10-06「把解析改到这台电脑」
+    # 的按钮就是这么挂的）。
     if overwrite:
         args.append("--overwrite-dns")
+    args += [name, domain]
     code, out = _run(args, timeout=120)
     if code == 0:
         return True, out

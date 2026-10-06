@@ -955,3 +955,20 @@ def test_panel_offers_the_point_dns_here_button():
     assert "/panel/api/public/dns/overwrite" in html
     assert html.count('data-i18n="pubFixDnsBtn"') == 2
 
+
+def test_route_dns_puts_the_overwrite_flag_before_the_positional_arguments(cfg_file, monkeypatch):
+    """``--overwrite-dns`` 必须排在隧道名/域名**前面**。
+
+    cloudflared 只认位置参数前面的开关；放到后面它会报
+    「This command expects the format "cloudflared tunnel route dns <tunnel name/id> <hostname>"」
+    并且失败 —— 2026-10-06 那次「把解析改到这台电脑」就是栽在参数顺序上。
+    """
+    seen = []
+    monkeypatch.setattr(cf, "_run", lambda args, timeout=120: seen.append(args) or (0, "ok"))
+
+    assert cf.route_dns("doukeep", "chat.example.com")[0] is True
+    assert cf.route_dns("doukeep", "chat.example.com", overwrite=True)[0] is True
+
+    assert seen[0] == ["tunnel", "route", "dns", "doukeep", "chat.example.com"]
+    assert seen[1] == ["tunnel", "route", "dns", "--overwrite-dns", "doukeep", "chat.example.com"]
+
