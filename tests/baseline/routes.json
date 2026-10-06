@@ -99,6 +99,7 @@
  "POST /panel/api/password",
  "POST /panel/api/public/cancel",
  "POST /panel/api/public/disable",
+ "POST /panel/api/public/dns/overwrite",
  "POST /panel/api/public/mount",
  "POST /panel/api/public/remove",
  "POST /panel/api/public/restart",

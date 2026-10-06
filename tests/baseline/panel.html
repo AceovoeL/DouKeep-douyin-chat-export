@@ -1379,6 +1379,10 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 
     <div id="publicResult" hidden>
       <div class="meta" id="publicResultText" style="margin:12px 0 0"></div>
+      <!-- 挂好了但域名没指过来（记录被别处占着）：当场给一个「改到这台电脑」的出口 -->
+      <div class="meta" id="publicResultWarn" style="margin-top:10px" hidden></div>
+      <button class="btn btn-primary btn-sm" id="publicResultFixBtn" type="button"
+              onclick="fixPublicDns()" hidden data-i18n="pubFixDnsBtn">把解析改到这台电脑</button>
       <div id="publicResultActions" style="margin-top:10px"></div>
     </div>
 
@@ -1895,6 +1899,10 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
         </div>
         <div id="publicAddresses" style="margin-top:10px"></div>
         <div class="meta" id="publicWarning" hidden></div>
+        <!-- 域名上那条记录指着别的隧道（多半已经删了）：用户点一下就改指到本机。
+             平时挂载绝不替人覆盖记录，所以这个出口要明明白白摆出来。 -->
+        <button class="btn btn-outline btn-sm" id="publicFixDnsBtn" type="button"
+                onclick="fixPublicDns()" hidden data-i18n="pubFixDnsBtn">把解析改到这台电脑</button>
       </div>
 
       <div class="meta" id="publicStatus" style="margin-top:8px"></div>
@@ -2558,8 +2566,12 @@ const T = {
     pubTimeout: '等太久没等到授权，已经取消。想继续就再点一次「开始挂载」。',
     pubErrorPrefix: '没成功：',
     pubDomainBad: '域名格式不对，只填域名（例如 chat.example.com）。',
-    pubWarnDnsExists: '这个域名上已经有一条解析记录了，没有替你改。如果打开发现不是这台电脑的服务，请到 Cloudflare 的 DNS 页面把旧记录删掉再挂一次。',
-    pubWarnVerify: '域名暂时还没能回到这台电脑：可能是解析还没生效，或者那条记录指的是别处。等几分钟再刷新试试。',
+    pubWarnDnsExists: '这个域名上已经有一条解析记录了，没有替你改。如果打开发现不是这台电脑的服务，点下面的「把解析改到这台电脑」。',
+    pubWarnVerify: '域名暂时还没能回到这台电脑：可能是解析还没生效，或者那条记录指的是别处。等几分钟再刷新；一直不行就点下面的「把解析改到这台电脑」。',
+    pubFixDnsBtn: '把解析改到这台电脑',
+    pubDnsFixed: '已把解析改到这台电脑，等一两分钟再打开域名试试。',
+    pubDnsNoDomain: '还没挂过域名，先点「挂载到公网」。',
+    pubDnsFixFailed: '改解析没成功，稍后可以再点一次；原因看「日志 → 公网挂载」最后几行。',
     pubDisableConfirmTitle: '关闭公网访问',
     pubDisableConfirmOk: '关闭',
     pubDisableConfirm: '关闭后域名就打不开了，隧道进程会停掉。域名和 Cloudflare 上的记录都留着，重新点「挂载到公网」不用再填。',
@@ -3131,8 +3143,12 @@ const T = {
     pubTimeout: 'No authorization after a long wait, so it was cancelled. Click Start again to retry.',
     pubErrorPrefix: 'Failed: ',
     pubDomainBad: 'That domain looks wrong — enter just the domain (e.g. chat.example.com).',
-    pubWarnDnsExists: 'This domain already has a DNS record, so nothing was overwritten. If it does not open this machine’s service, delete the old record on Cloudflare’s DNS page and mount again.',
-    pubWarnVerify: 'The domain does not reach this machine yet: DNS may not have propagated, or the record points elsewhere. Try again in a few minutes.',
+    pubWarnDnsExists: 'This domain already has a DNS record, so nothing was overwritten. If it does not open this machine’s service, click “Point the DNS record here”.',
+    pubWarnVerify: 'The domain does not reach this machine yet: DNS may not have propagated, or the record points elsewhere. Give it a few minutes and refresh; if it still fails, click “Point the DNS record here”.',
+    pubFixDnsBtn: 'Point the DNS record here',
+    pubDnsFixed: 'The DNS record now points to this machine — wait a minute or two, then open the domain.',
+    pubDnsNoDomain: 'No domain mounted yet — click “Mount to the internet” first.',
+    pubDnsFixFailed: 'The DNS record could not be changed. You can try again; the last lines under Logs → Public tunnel say why.',
     pubDisableConfirmTitle: 'Turn off public access',
     pubDisableConfirmOk: 'Turn off',
     pubDisableConfirm: 'The domain stops working and the tunnel process is stopped. The domain and the Cloudflare records are kept, so mounting again needs no retyping.',
@@ -5619,14 +5635,24 @@ function renderPublicAccess() {
   publicEl('publicAddresses').innerHTML = renderPublicUrls(urls);
 
   const warning = publicEl('publicWarning');
-  const warnKey = job.warning === 'verify_failed' ? 'pubWarnVerify'
-                : (job.warning === 'dns_exists' ? 'pubWarnDnsExists' : '');
+  const warnKey = publicWarnKey(job);
   // 公网开着却没有访问密码：比隧道那点毛病严重得多，用红字常驻在这一块
   const noPassword = on && !d.has_password;
   warning.hidden = !(noPassword || warnKey);
   warning.classList.toggle('pub-note-error', noPassword);
   if (noPassword) warning.innerHTML = t('pubWarnNoPassword');
   else if (warnKey) setText(warning, warnKey);
+  // 记录被别处占着 / 域名没回到本机：给一个「把解析改到这台电脑」的出口。
+  // 没设访问密码时不给这个按钮 —— 那会儿该先解决的是密码。
+  const fixBtn = publicEl('publicFixDnsBtn');
+  if (fixBtn) fixBtn.hidden = !(warnKey && !noPassword);
+}
+
+/* 挂载留下的提示 → i18n key（没有提示时是空串）。设置页和挂载结果页共用。 */
+function publicWarnKey(job) {
+  if (job.warning === 'verify_failed') return 'pubWarnVerify';
+  if (job.warning === 'dns_exists') return 'pubWarnDnsExists';
+  return '';
 }
 
 function renderPublicUrls(urls) {
@@ -5827,6 +5853,12 @@ async function renderPublicModal() {
   // 结果
   publicEl('publicModalTitle').textContent = t('pubModalTitle');
   const actions = publicEl('publicResultActions');
+  // 挂好了、但域名没指过来：就地把「改到这台电脑」的出口摆出来（失败那屏不给）
+  const resultWarn = publicWarnKey(job);
+  const showFix = state === 'done' && !!resultWarn;
+  publicEl('publicResultWarn').hidden = !showFix;
+  publicEl('publicResultFixBtn').hidden = !showFix;
+  if (showFix) setText(publicEl('publicResultWarn'), resultWarn);
   if (state === 'done') {
     publicEl('publicModalDesc').textContent = '';
     const url = (d.urls && d.urls.viewer) || (d.domain ? `https://${d.domain}` : '');
@@ -6046,6 +6078,23 @@ async function confirmRemovePublic() {
     if (d.removed_tunnel && !d.removed_dns) setPublicStatus('pubRemoveDnsManual');
     else setPublicStatus('pubRemoved');
   } catch { setPublicStatus('pubErrUnknown'); }
+}
+
+/* 「把解析改到这台电脑」：域名上那条记录指着别的隧道（多半已经删了，域名会打不开）。
+   平时挂载遇到「记录已存在」绝不覆盖别人的记录，这里由用户明确点一下才改。 */
+async function fixPublicDns() {
+  const button = publicEl('publicFixDnsBtn');
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch('/panel/api/public/dns/overwrite', { method: 'POST' });
+    const d = await r.json();
+    publicState = d.payload || publicState;
+    renderPublicAccess();
+    if (d.ok) setPublicStatus('pubDnsFixed');
+    else if (d.error === 'no_domain') setPublicStatus('pubDnsNoDomain');
+    else setPublicStatus('pubDnsFixFailed');
+  } catch { setPublicStatus('pubErrUnknown'); }
+  finally { if (button) button.disabled = false; }
 }
 
 /* 用面板自带的确认弹窗问一句（正文是现成的句子，不是 i18n key）。

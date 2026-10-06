@@ -2,6 +2,7 @@
 
 真实域名、真实隧道 ID、真实账号信息都不进仓库 —— 这里用的是 example.com 这类占位域名。
 """
+import base64
 import json
 import os
 import pathlib
@@ -818,3 +819,139 @@ def test_panel_asks_before_lan_off_closes_public_access():
     assert "lanOffClosesPublic" in html and "lanOffClosesPublicTitle" in html
     assert "lanPublicClosed" in html
     assert "public_closed" in html
+
+
+# ── 删解析记录：走 Cloudflare 接口，并且不许被「假成功」骗过 ──
+
+def _cert_pem_text(zone: str = "zone-1", token: str = "tok-1", body: str | None = None) -> str:
+    """造一份 cert.pem（ARGO TUNNEL TOKEN 里是 base64 的 JSON）。"""
+    payload = body if body is not None else json.dumps(
+        {"zoneID": zone, "accountID": "acct-1", "apiToken": token})
+    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    return ("-----BEGIN ARGO TUNNEL TOKEN-----\n"
+            + encoded + "\n-----END ARGO TUNNEL TOKEN-----\n")
+
+
+def test_argo_credentials_reads_the_token_from_cert_pem(tmp_path, monkeypatch):
+    cert = tmp_path / "cert.pem"
+    cert.write_text(_cert_pem_text(), encoding="utf-8")
+    monkeypatch.setattr(cf, "cert_path", lambda: str(cert))
+
+    creds = cf.argo_credentials()
+
+    assert creds["zoneID"] == "zone-1" and creds["apiToken"] == "tok-1"
+
+
+def test_argo_credentials_gives_up_on_a_broken_file(tmp_path, monkeypatch):
+    cert = tmp_path / "cert.pem"
+    cert.write_text(_cert_pem_text(body="hello"), encoding="utf-8")   # 解出来不是 JSON
+    monkeypatch.setattr(cf, "cert_path", lambda: str(cert))
+
+    assert cf.argo_credentials() == {}
+
+
+def _fake_api(records, calls, *, delete_ok=True):
+    """假的 Cloudflare 接口：查询返回固定记录，删除按 ``delete_ok``。"""
+    def fake(path, *, method="GET", timeout=30):
+        calls.append((method, path))
+        if method == "DELETE":
+            return delete_ok, {"success": delete_ok, "result": {}}
+        return True, {"success": True, "result": records}
+    return fake
+
+
+def test_delete_dns_removes_the_tunnel_record_through_the_api(cfg_file, monkeypatch):
+    """「彻底移除」要真的删掉那条解析 —— 走接口，不指望 cloudflared 的命令行。"""
+    monkeypatch.setattr(cf, "argo_credentials",
+                        lambda: {"zoneID": "zone-1", "apiToken": "tok-1"})
+    calls = []
+    monkeypatch.setattr(cf, "api_call", _fake_api(
+        [{"id": "rec-1", "name": "chat.example.com", "type": "CNAME",
+          "content": "00000000-0000-0000-0000-000000000001.cfargotunnel.com"}], calls))
+    monkeypatch.setattr(cf, "_run", lambda *a, **k: pytest.fail("不该退回命令行"))
+
+    assert cf.delete_dns("doukeep", "chat.example.com") is True
+    assert ("DELETE", "/zones/zone-1/dns_records/rec-1") in calls
+
+
+def test_delete_dns_keeps_its_hands_off_a_record_that_is_not_a_tunnel(cfg_file, monkeypatch):
+    """域名上那条记录不是隧道（用户自己指的别处）时：绝不删，但也不用喊「没删掉」。"""
+    monkeypatch.setattr(cf, "argo_credentials",
+                        lambda: {"zoneID": "zone-1", "apiToken": "tok-1"})
+    calls = []
+    monkeypatch.setattr(cf, "api_call", _fake_api(
+        [{"id": "rec-9", "name": "chat.example.com", "type": "A",
+          "content": "203.0.113.10"}], calls))
+    monkeypatch.setattr(cf, "_run", lambda *a, **k: pytest.fail("不该退回命令行"))
+
+    assert cf.delete_dns("doukeep", "chat.example.com") is True
+    assert all(method != "DELETE" for method, _ in calls)
+
+
+def test_delete_dns_is_not_fooled_by_a_fake_success(cfg_file, monkeypatch):
+    """cloudflared 对不认识的开关打完 Incorrect Usage **还是退出 0**。
+
+    这正是老代码的病根：以为删掉了、其实没删，面板也就不提醒用户。这里必须判成失败。
+    """
+    monkeypatch.setattr(cf, "argo_credentials", lambda: {})
+    monkeypatch.setattr(cf, "_run", lambda *a, **k: (
+        0, "Incorrect Usage: flag provided but not defined: -delete"))
+
+    assert cf.delete_dns("doukeep", "chat.example.com") is False
+
+
+def test_delete_dns_still_trusts_an_honest_cli_success(cfg_file, monkeypatch):
+    monkeypatch.setattr(cf, "argo_credentials", lambda: {})
+    monkeypatch.setattr(cf, "_run", lambda *a, **k: (0, "Deleted record chat.example.com"))
+
+    assert cf.delete_dns("doukeep", "chat.example.com") is True
+
+
+# ── 「把解析改到这台电脑」：这一路才允许覆盖已有记录 ──
+
+def test_overwrite_endpoint_clears_the_dns_exists_warning(client, cfg_file, fake_tunnel, monkeypatch):
+    """挂载时撞上「记录已存在」→ 点一下按钮，覆盖过去并把那条提示收掉。"""
+    lan_on_with_password(cfg_file)
+
+    def fake_route(name, domain, *, overwrite=False):
+        return (True, "ok") if overwrite else (False, "record with that name already exists")
+
+    monkeypatch.setattr(cf, "route_dns", fake_route)
+    assert _run_flow()["warning"] == "dns_exists"
+
+    body = client.post("/panel/api/public/dns/overwrite").json()
+
+    assert body["ok"] is True
+    assert body["payload"]["job"]["warning"] == ""
+
+
+def test_overwrite_endpoint_reports_a_failure(client, cfg_file, fake_tunnel, monkeypatch):
+    lan_on_with_password(cfg_file)
+    access.set_public_access(enabled=True, domain="example.com")
+    monkeypatch.setattr(cf, "route_dns",
+                        lambda name, domain, *, overwrite=False:
+                        (False, "Failed to update record example.com"))
+
+    body = client.post("/panel/api/public/dns/overwrite").json()
+
+    assert body["ok"] is False and body["error"] == "overwrite_failed"
+    assert "Failed to update" in body["detail"]
+
+
+def test_overwrite_endpoint_needs_a_mounted_domain(client, cfg_file, fake_tunnel):
+    lan_on_with_password(cfg_file)
+
+    body = client.post("/panel/api/public/dns/overwrite").json()
+
+    assert body["ok"] is False and body["error"] == "no_domain"
+
+
+def test_panel_offers_the_point_dns_here_button():
+    """面板要有这个出口：设置页一个按钮、挂载结果页一个，都接到新接口上。"""
+    html = open(PANEL_HTML, encoding="utf-8").read()
+
+    assert "publicFixDnsBtn" in html and "publicResultFixBtn" in html
+    assert "fixPublicDns" in html
+    assert "/panel/api/public/dns/overwrite" in html
+    assert html.count('data-i18n="pubFixDnsBtn"') == 2
+

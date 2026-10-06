@@ -1199,6 +1199,23 @@ async def remove_public():
             "payload": _cloudflared.mount_status()}
 
 
+@control_router.post("/api/public/dns/overwrite")
+async def overwrite_public_dns():
+    """把域名那条解析记录改指向**本机**这条隧道（面板「把解析改到这台电脑」）。
+
+    平时挂载碰到「记录已存在」绝不覆盖（那是别人的记录），这是用户明确点了按钮
+    才走的窄路。
+    """
+    ok, detail = await asyncio.to_thread(_cloudflared.overwrite_dns)
+    if ok:
+        return {"ok": True, "error": "", "detail": "",
+                "payload": _cloudflared.mount_status()}
+    no_domain = detail == "no_domain"
+    return {"ok": False, "error": "no_domain" if no_domain else "overwrite_failed",
+            "detail": "" if no_domain else detail,
+            "payload": _cloudflared.mount_status()}
+
+
 @control_router.post("/api/public/restart")
 async def restart_public():
     """把隧道再拉起来一次（域名没换时不用重走挂载流程）。"""

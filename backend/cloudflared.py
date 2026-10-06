@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+import base64
 import ipaddress
 import json
 import os
@@ -37,6 +38,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from common import access as _access
@@ -66,6 +68,9 @@ PID_FILE = os.path.join(paths.CLOUDFLARED_DIR, "tunnel.pid")
 #: ``handshake did not complete in time`` / ``no recent network activity``，
 #: 四条连接掉到只剩一条。固定成 http2 后这类握手超时基本不再出现（速度略慢一点）。
 PROTOCOL = "http2"
+
+#: Cloudflare 的接口地址。删解析记录走这里（见 delete_dns）：cloudflared 自己不会删。
+_API_BASE = "https://api.cloudflare.com/client/v4"
 
 #: 等用户在浏览器里点完授权的最长时间
 AUTH_TIMEOUT = 600
@@ -509,10 +514,140 @@ def delete_tunnel(name: str) -> bool:
     return code == 0
 
 
+#: cloudflared 遇到不认识的开关时打的这句话 —— 打完它**退出码还是 0**，光看退出码会被骗
+_BAD_USAGE_MARKERS = ("incorrect usage", "flag provided but not defined")
+
+
+def looks_like_bad_usage(output: str) -> bool:
+    """这段输出是不是「开关不存在」（cloudflared 对不认识的开关照样退出 0）。"""
+    text = str(output or "").lower()
+    return any(marker in text for marker in _BAD_USAGE_MARKERS)
+
+
+def argo_credentials() -> dict:
+    """读出 ``cert.pem`` 里的 Cloudflare 接口凭据。
+
+    这份文件是 ``cloudflared tunnel login`` 的产物（``ARGO TUNNEL TOKEN`` 里那段 base64），
+    解开是一小段 JSON：``zoneID`` / ``accountID`` / ``apiToken``。cloudflared 自己只会
+    「建解析」和「覆盖解析」，**没有删解析的功能** —— 所以删记录得拿这份凭据直接调接口。
+    没登录过、文件坏了就返回空字典。
+    """
+    try:
+        with open(cert_path(), encoding="utf-8") as handle:
+            body = "".join(line.strip() for line in handle if "-----" not in line)
+    except OSError:
+        return {}
+    if not body:
+        return {}
+    try:
+        data = json.loads(base64.b64decode(body).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(data, dict) or not data.get("apiToken") or not data.get("zoneID"):
+        return {}
+    return data
+
+
+def api_error(payload: dict) -> str:
+    """把接口返回的报错压成一句话（给人看，不含凭据）。"""
+    errors = payload.get("errors") or []
+    first = errors[0] if errors and isinstance(errors[0], dict) else {}
+    message = str(first.get("message") or "接口没有返回原因")
+    code = first.get("code")
+    return f"{message}（code {code}）" if code else message
+
+
+def api_call(path: str, *, method: str = "GET", timeout: float = 30) -> tuple[bool, dict]:
+    """调一次 Cloudflare 接口；返回 ``(成功, 响应 JSON)``，失败的响应里带原因。"""
+    creds = argo_credentials()
+    if not creds:
+        return False, {"errors": [{"message": "没有 Cloudflare 凭据"}]}
+    request = urllib.request.Request(
+        _API_BASE + path, method=method,
+        headers={"Authorization": "Bearer " + str(creds["apiToken"]),
+                 "User-Agent": _UA})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8", "replace"))
+        except (ValueError, OSError):
+            payload = {}
+    except (OSError, ValueError):
+        payload = {}
+    return bool(payload.get("success")), payload
+
+
+def tunnel_dns_record(domain: str) -> tuple[str, str, str]:
+    """在 Cloudflare 上找 ``domain`` 那条**指向隧道**的解析记录。
+
+    返回 ``(zoneID, 记录 ID, 说明)``：``zoneID`` 为空表示接口这条路根本不通；
+    记录 ID 为空表示查过了、没有可删的隧道记录（说明里写原因）。
+
+    只认 ``CNAME → *.cfargotunnel.com``：域名上万一挂着用户自己别的记录，
+    绝不能替他删掉。
+    """
+    zone = str(argo_credentials().get("zoneID") or "")
+    if not zone:
+        return "", "", "没有 Cloudflare 凭据"
+    query = urllib.parse.urlencode({"type": "CNAME", "name": domain})
+    ok, payload = api_call(f"/zones/{zone}/dns_records?{query}")
+    if not ok:
+        return "", "", api_error(payload)
+    for record in payload.get("result") or []:
+        name = str(record.get("name", ""))
+        content = str(record.get("content", ""))
+        if name.lower() == domain.lower() and content.endswith(".cfargotunnel.com"):
+            return zone, str(record.get("id") or ""), ""
+    return zone, "", "这个域名上没有指向隧道的解析记录"
+
+
 def delete_dns(name: str, domain: str) -> bool:
-    """删掉域名那条解析记录（老版本没有这个开关时返回 False，让用户自己去 Cloudflare 删）。"""
-    code, _ = _run(["tunnel", "route", "dns", "--delete", name, domain], timeout=120)
-    return code == 0
+    """删掉域名那条解析记录（「彻底移除」用）。
+
+    cloudflared 自己**没有**「删解析」这个功能：``route dns`` 只有建和覆盖，老代码发的
+    ``--delete`` 根本不是它的开关 —— 而且它遇到不认识的开关时，打完 Incorrect Usage
+    **照样退出 0**。于是「以为删掉了、其实没删」，还把面板该给的那句「请到 Cloudflare
+    的 DNS 页面手动删一下」一起吞掉了（2026-10-06 修的就是这个）。
+
+    现在优先走 Cloudflare 接口把记录真正删掉；接口这条路不通时才退回命令行，
+    并且认得出上面那种假成功。
+    """
+    zone, record_id, reason = tunnel_dns_record(domain)
+    if not zone:
+        # 接口这条路不通（没凭据 / 请求失败）：退回命令行，但不当它是假成功
+        _append_tunnel_log("INF [panel]", f"删解析记录 {domain} → 改走命令行：{reason}")
+        code, out = _run(["tunnel", "route", "dns", "--delete", name, domain], timeout=120)
+        return code == 0 and not looks_like_bad_usage(out)
+    if not record_id:
+        _append_tunnel_log("INF [panel]", f"删解析记录 {domain} → 没有需要删的隧道记录（{reason}）")
+        return True
+    ok, payload = api_call(f"/zones/{zone}/dns_records/{record_id}", method="DELETE")
+    if ok:
+        _append_tunnel_log("INF [panel]", f"删解析记录 {domain} → 成功")
+        return True
+    _append_tunnel_log("INF [panel]", f"删解析记录 {domain} → 失败：{api_error(payload)}")
+    return False
+
+
+def overwrite_dns() -> tuple[bool, str]:
+    """把域名解析改成指向**本机这条**隧道（面板「把解析改到这台电脑」按钮用）。
+
+    平时挂载绝不覆盖别人的记录；只有用户明确点了这个按钮，才带 ``--overwrite-dns``。
+    改成功就把「记录已存在」那句提示收掉 —— 它已经不成立了。
+    """
+    name = _access.public_tunnel_name()
+    domain = _access.public_domain()
+    if not domain:
+        return False, "no_domain"
+    ok, out = route_dns(name, domain, overwrite=True)
+    if ok:
+        _append_tunnel_log("INF [panel]",
+                           f"按用户要求把 {domain} 的解析改指向本机这条隧道（覆盖了原有记录）")
+        JOB.clear_warning()
+        return True, ""
+    return False, out.strip()[-300:]
 
 
 # ── 授权 ──
@@ -943,6 +1078,11 @@ class MountJob:
     def fail_step(self, key: str) -> None:
         with self._lock:
             self.steps[key] = "error"
+
+    def clear_warning(self) -> None:
+        """收掉挂载留下的提示（用户按过「把解析改到这台电脑」之后，提示就不成立了）。"""
+        with self._lock:
+            self.warning = ""
 
     def set_download(self, received: int, total: int) -> None:
         """下载进度；每跨过 10% 往实时日志里记一句（免得日志被进度刷屏）。"""
