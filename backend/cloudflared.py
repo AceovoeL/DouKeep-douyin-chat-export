@@ -268,12 +268,23 @@ def _run(args: list[str], timeout: float = 120) -> tuple[int, str]:
     return proc.returncode, output
 
 
+#: 日志文件开头写一句时间说明：cloudflared 用的是世界时，用户拿它对自己的钟会以为坏了。
+#: 面板「日志」页读这份文件时会按本机时间显示，所以这句只针对直接打开文件的人。
+_TUNNEL_LOG_HEADER = (
+    "# cloudflared 与面板共同写这份日志：行首时间是世界时（UTC，结尾带 Z），"
+    "不是本机时间；面板「日志 → 公网挂载」里已按本机时间显示\n"
+)
+
+
 def _append_tunnel_log(prefix: str, line: str) -> None:
     """往 ``config/logs/cloudflared.log`` 追加一行（面板「日志 → 公网挂载」看的就是它）。"""
     try:
         os.makedirs(paths.LOG_DIR, exist_ok=True)
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        fresh = not os.path.exists(paths.CLOUDFLARED_LOG) or os.path.getsize(paths.CLOUDFLARED_LOG) == 0
         with open(paths.CLOUDFLARED_LOG, "a", encoding="utf-8") as handle:
+            if fresh:
+                handle.write(_TUNNEL_LOG_HEADER)
             handle.write(f"{stamp} {prefix} {line}\n")
     except OSError:
         pass                                   # 写日志失败绝不能影响正经流程

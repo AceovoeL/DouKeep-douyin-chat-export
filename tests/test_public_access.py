@@ -459,6 +459,26 @@ def test_cloudflared_never_gets_a_visible_window():
         assert detached == {"start_new_session": True}
 
 
+def test_tunnel_log_gets_a_timezone_header(cfg_file, tmp_path, monkeypatch):
+    """那份日志的行首是**世界时**（cloudflared 的规矩）：文件开头写一句说明。
+
+    不写的话用户拿它跟自己的钟一对，会以为时间差了 8 小时、日志坏了。说明只在文件还空着
+    的时候写一次，之后一直往后追加。
+    """
+    logs = tmp_path / "logs"
+    monkeypatch.setattr(paths, "LOG_DIR", str(logs))
+    log = logs / "cloudflared.log"
+    monkeypatch.setattr(paths, "CLOUDFLARED_LOG", str(log))
+
+    cf._append_tunnel_log("[panel]", "第一行")
+    text = log.read_text(encoding="utf-8")
+    assert "世界时" in text.splitlines()[0]
+    assert "第一行" in text
+
+    cf._append_tunnel_log("[panel]", "第二行")
+    assert log.read_text(encoding="utf-8").count("世界时") == 1     # 不重复写
+
+
 def test_one_shot_commands_are_recorded_in_the_tunnel_log(cfg_file, monkeypatch, tmp_path):
     """面板跑的那些命令（建隧道 / 建解析 / 列隧道）也要留痕：事后就看它了。"""
     logs = tmp_path / "logs"

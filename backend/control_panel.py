@@ -3644,6 +3644,36 @@ async def discover_log(lines: int = 80):
 LOG_VIEW_MAX_LINES = 2000
 
 
+#: cloudflared 写进日志的时间戳：``2026-10-06T10:19:13Z``（世界时，结尾那个 Z 就是标记）
+_UTC_STAMP_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z")
+
+
+def localize_utc_stamps(text: str) -> str:
+    """把每行开头的世界时（``...Z``）换成本机时间 —— 面板「公网挂载」日志专用。
+
+    那个文件是 cloudflared 写的，它一律用世界时（UTC），比北京时间早 8 小时；面板自己
+    追加的行也照着它写，免得同一份文件里两种时间混着。但**面板上给人看**的时候要换算成
+    本机时间，不然用户拿它跟自己的钟一对，会以为差了 8 小时是坏掉了。
+
+    只动行首那一处、只认带 ``Z`` 的：换算不了的行（格式变了、根本不是时间戳）原样留着，
+    别让一行怪数据把整页日志搞乱。
+    """
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        match = _UTC_STAMP_RE.match(line)
+        if not match:
+            out.append(line)
+            continue
+        try:
+            when = datetime(*[int(part) for part in match.groups()], tzinfo=timezone.utc)
+            stamp = when.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, OverflowError, OSError):
+            out.append(line)
+            continue
+        out.append(stamp + line[match.end():])
+    return "".join(out)
+
+
 def _log_file(name: str) -> str | None:
     """「日志」页上的名字 → 日志文件路径；不认识的名字返回 None。
 
@@ -3699,7 +3729,10 @@ async def logs_read(name: str, lines: int = 300):
         print(f"[!] 读日志 {path} 失败：{exc}", flush=True)
         return payload
     tail = all_lines[-wanted:] if len(all_lines) > wanted else all_lines
-    payload["log"] = "".join(tail)
+    text = "".join(tail)
+    if name == "public":
+        text = localize_utc_stamps(text)
+    payload["log"] = text
     return payload
 
 

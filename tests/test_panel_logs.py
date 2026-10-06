@@ -7,6 +7,7 @@
 命令记下来（不会真的弹出文件管理器）。
 """
 import os
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -73,6 +74,40 @@ def test_public_tunnel_log_has_its_own_entry(client, public_log_path):
     body = client.get("/panel/api/logs/public").json()
     assert body["exists"] is True
     assert "Registered tunnel connection" in body["log"]
+
+
+def test_public_log_is_shown_in_local_time(client, public_log_path):
+    """那份日志是 cloudflared 写的、时间是世界时（结尾 Z），面板上要换成本机时间。
+
+    不换算的话用户拿它对自己的钟会以为差了 8 小时（实际就是这个原因被问过）。
+    """
+    public_log_path.write_bytes(
+        b"2026-10-06T10:19:13Z INF Registered tunnel connection connIndex=0\n")
+    body = client.get("/panel/api/logs/public").json()
+
+    local = datetime(2026, 10, 6, 10, 19, 13, tzinfo=timezone.utc).astimezone()
+    assert body["log"] == local.strftime("%Y-%m-%d %H:%M:%S") + " INF Registered tunnel connection connIndex=0\n"
+
+
+def test_localize_only_touches_utc_stamps_at_the_start_of_a_line():
+    """换算只认行首那种 ``...Z``：别的行原样留着，别把一页日志搞乱。"""
+    text = ("# 说明行，没有时间\n"
+            "2026-10-06T10:19:13Z INF [panel] 建隧道\n"
+            "这一行中间有 2026-10-06T10:19:13Z 但不是行首\n"
+            "2026-10-06T10:19:13+08:00 不是 Z 结尾\n")
+    out = cp.localize_utc_stamps(text).splitlines()
+
+    assert out[0] == "# 说明行，没有时间"
+    assert out[1].endswith(" INF [panel] 建隧道") and "Z" not in out[1]
+    assert out[2] == "这一行中间有 2026-10-06T10:19:13Z 但不是行首"
+    assert out[3] == "2026-10-06T10:19:13+08:00 不是 Z 结尾"
+
+
+def test_server_log_is_not_touched(client, log_path):
+    """server.log 本来就是本机时间写的，别去动它。"""
+    line = "2026-10-06T10:19:13Z 这一行故意写成 Z 结尾\n"
+    log_path.write_bytes(line.encode("utf-8"))
+    assert client.get("/panel/api/logs/server").json()["log"] == line
 
 
 def test_unknown_log_name_is_still_rejected(client):
