@@ -1,13 +1,17 @@
-"""局域网访问的「钥匙」：解锁页 + 拦截中间件 + 三个接口。
+"""局域网 / 公网访问的「钥匙」：解锁页 + 拦截中间件 + 几个接口。
 
 服务一旦监听 ``0.0.0.0``（控制面板 →「设置」→「向局域网开放」），同一局域网里的
-任何设备都能连上来。这个模块决定「让不让进」：
+任何设备、以及公网隧道转进来的访客都能连上来。这个模块决定「让不让进」：
 
 * 请求来自本机（127.0.0.1 / ::1）—— 永远放行，本机不需要钥匙；
-* 局域网访问没开 —— 局域网来的请求直接拒绝（那时服务本来也只监听本机）；
-* 开了、没设访问密码 —— 放行，谁都能看；
+* 局域网访问没开 —— 外面来的请求直接拒绝（那时服务本来也只监听本机）；
+* 开了、没设访问密码 —— 放行，谁都能看（面板上会先把这句话和后果说清楚，
+  挂公网之前也会再要一次确认）；
 * 开了、设了访问密码 —— 只放行「被信任的设备」（Cookie 里的凭据能在配置里对上号）。
-  其它设备会看到 ``/access`` 这一页，输入访问密码后设备被记住，以后不用再输。
+  其它设备只会看到 ``/access`` 这一页：页面请求 303 跳过去，接口请求回 401，
+  **在通过之前一点数据都不给**（连媒体、静态资源也先跳登录页）。
+* 猜错密码 —— 全服务共用一本账（``common/access.guard``）：连续错 5 次就锁住整个
+  登录入口，之后每再错一次时间翻倍。这本账记在服务端，换网络 / 清 Cookie 都躲不开。
 
 注意这跟控制面板自己的密码是**两道独立的锁**：过了访问密码只说明「这台设备允许连
 上来」，面板密码仍然照要（面板页面里的登录框、查看器里的登录框都由各自原有的逻辑
@@ -20,7 +24,6 @@ import json
 import logging
 import os
 import threading
-import time
 from urllib.parse import parse_qsl, quote
 
 from fastapi import APIRouter, Request
@@ -80,28 +83,21 @@ _ACCESS_LOG_HINT = {
     "/api/access/status": "局域网访问状态",
 }
 
-#: 访问密码的错误次数限制：同一个 IP 在窗口时间内错这么多次就暂时不理它。
-#: 局域网里谁都能连过来猜密码，纯靠密码强度不够，得有个刹车。计数只在内存里
-#: （重启服务就清空），所以它挡住的是「一直猜」这种行为，不是永久封禁。
-_FAIL_WINDOW_SECONDS = 300
-_MAX_FAILURES = 10
-_FAILURES_LOCK = threading.Lock()
-_FAILURES: dict[str, list[float]] = {}
-
-#: 「同一台设备连续错了几次」—— 到 ``access.MAX_PASSWORD_FAILURES`` 次就把这台设备
-#: 记进「需手动确认」并暂停它。**按设备（来源 IP + 浏览器指纹）计数**，跟信任设备
-#: 用同一把尺子；输对一次就清零。计数只在内存里，已经暂停的设备存在配置里。
+#: 「同一台设备连续错了几次」—— 到 ``access.MAX_DEVICE_FAILURES`` 次就把这台设备记进
+#: 「需手动确认」并单独暂停它（比全服务那本账更严，见下面为什么阈值更高）。**按设备
+#: （来源 IP + 浏览器指纹）计数**，跟信任设备用同一把尺子；输对一次就清零。计数只在
+#: 内存里（重启服务就清空），已经暂停的设备存在配置里。
+#:
+#: 为什么它比 ``access.MAX_PASSWORD_FAILURES``（全服务罚站的那本账）高：这本账认得是
+#: 「同一台设备」，主人自己在手机上连打错几次也会被它记上，阈值一样高的话他就会跟
+#: 正在猜密码的人同时进名单，还得专门去主机上「解除」。拉开距离之后，被它记上的基本
+#: 只剩「一直不停在猜」的那种。
 _DEVICE_FAILURES_LOCK = threading.Lock()
 _DEVICE_FAILURES: dict[tuple[str, str], int] = {}
 
 
 def _device_key(host: str, user_agent: str | None) -> tuple[str, str]:
     return str(host or ""), access._ua_fingerprint(user_agent)
-
-
-def _device_failures(key: tuple[str, str]) -> int:
-    with _DEVICE_FAILURES_LOCK:
-        return int(_DEVICE_FAILURES.get(key, 0))
 
 
 def _record_device_failure(key: tuple[str, str]) -> int:
@@ -120,33 +116,15 @@ def _clear_device_failures(key: tuple[str, str]) -> None:
         _DEVICE_FAILURES.pop(key, None)
 
 
-def _failed_attempts(host: str) -> int:
-    """这个地址在窗口时间内错了几次（顺便清掉过期的记录）。"""
-    now = time.time()
-    with _FAILURES_LOCK:
-        stamps = [t for t in _FAILURES.get(host, []) if now - t < _FAIL_WINDOW_SECONDS]
-        if stamps:
-            _FAILURES[host] = stamps
-        else:
-            _FAILURES.pop(host, None)
-        return len(stamps)
+def _client_host(request: Request) -> str:
+    """这次请求算「谁来的」（隧道转来的取真实访客地址，见 ``access.client_host``）。
 
-
-def _record_failure(host: str) -> None:
-    now = time.time()
-    with _FAILURES_LOCK:
-        stamps = [t for t in _FAILURES.get(host, []) if now - t < _FAIL_WINDOW_SECONDS]
-        stamps.append(now)
-        _FAILURES[host] = stamps
-        # 地址太多时顺手清一遍空桶，别让这个字典无限长
-        if len(_FAILURES) > 200:
-            for key in [k for k, v in _FAILURES.items() if not v]:
-                _FAILURES.pop(key, None)
-
-
-def _clear_failures(host: str) -> None:
-    with _FAILURES_LOCK:
-        _FAILURES.pop(host, None)
+    锁不锁、算哪台设备，都从这里取的地址出发；但它**不参与**那本账的判定 —— 决定性的
+    账（``access.guard``）根本不看到来的人是谁，地址只用来记日志和显示。
+    """
+    peer = request.client.host if request.client else ""
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    return access.client_host(peer, headers)
 
 
 def route_label(path: str) -> str | None:
@@ -157,6 +135,29 @@ def route_label(path: str) -> str | None:
 
 
 # ── 文案（跟面板一样中英双语；按浏览器的 Accept-Language 选） ──
+
+def _wait_zh(seconds: int) -> str:
+    """「还要等多久」的人话（中文）：秒 → 分钟 → 小时 + 分钟。"""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} 秒"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} 小时 {minutes} 分钟" if minutes else f"{hours} 小时"
+
+
+def _wait_en(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} seconds"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} minutes"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes} min" if minutes else f"{hours} h"
+
 
 _TEXTS = {
     "zh": {
@@ -171,8 +172,13 @@ _TEXTS = {
         "tip": "访问密码在运行这台电脑的面板里设置：先在「关于」页打开开发者模式，再到「设置 → 局域网访问」。",
         "blockedTitle": "这台设备已被暂停",
         "blockedPageTitle": "这台设备已被暂停 · 抖音聊天记录",
-        "blockedDesc": "这台设备连续输错访问密码 {n} 次，已经被暂停输入密码。",
+        "blockedDesc": "这台设备连续输错访问密码 {n} 次，已经被单独暂停输入密码。",
         "blockedTip": "想继续用这台设备：在运行服务的那台电脑上打开控制面板 →「设置 → 局域网访问 → 需手动确认」，找到这台设备点「解除」，然后刷新这一页重新输入访问密码。",
+        "lockedTitle": "登录已暂时锁定",
+        "lockedPageTitle": "登录已暂时锁定 · 抖音聊天记录",
+        "lockedDesc": "连续输错访问密码 {n} 次，登录入口已经锁住，大约 {wait} 后才能再试。",
+        "lockedTip": "这本账记在服务端、所有人共用：换网络、清 Cookie、换浏览器都躲不开它。主人可以在运行服务的那台电脑上打开控制面板 →「设置 → 局域网访问」，点「立即解锁」马上恢复。",
+        "wait": _wait_zh,
     },
     "en": {
         "lang": "en",
@@ -192,6 +198,15 @@ _TEXTS = {
         "blockedTip": "To use this device again: on the host machine open the control panel → "
                       "Settings → LAN access → Needs manual confirmation, find this device and "
                       "click Release, then reload this page and enter the password.",
+        "lockedTitle": "Login is temporarily locked",
+        "lockedPageTitle": "Login temporarily locked - Douyin chat export",
+        "lockedDesc": "The wrong access password was entered {n} times in a row, so the login "
+                      "is locked for about {wait}.",
+        "lockedTip": "This counter lives on the server and is shared by everyone: changing "
+                     "networks, clearing cookies or switching browsers does not reset it. The "
+                     "owner can unlock it right away on the host machine: control panel → "
+                     "Settings → LAN access → Unlock now.",
+        "wait": _wait_en,
     },
 }
 
@@ -261,11 +276,16 @@ def _theme_vars(theme: str, colors: dict | None) -> str:
 
 
 def render_access_page(*, next_path: str = "/", error: bool = False,
-                       blocked: bool = False, accept_language: str | None = None) -> str:
+                       blocked: bool = False, locked_seconds: int = 0,
+                       accept_language: str | None = None) -> str:
     """解锁页的 HTML（主题、字体跟随面板的外观设置）。
 
-    ``blocked=True`` 时是「被暂停」那一版：不显示密码输入框 —— 这台设备连续输错太多次，
-    已经不让它再猜了，要主机那边在面板里手动解除。
+    三种样子：正常（能输密码）、``locked_seconds > 0``（全服务那本账锁着，显示还要等
+    多久）、``blocked=True``（这台设备被单独暂停，要去主机上手动解除）。后两种都不
+    显示密码输入框 —— 反正这会儿输了也不受理。
+
+    优先级是「被单独暂停」>「全服务锁定」：前者得等主人手动解除，这时候告诉人家
+    「再等 15 分钟就行」是骗人。
     """
     lang = pick_language(accept_language)
     text = _TEXTS[lang]
@@ -273,8 +293,16 @@ def render_access_page(*, next_path: str = "/", error: bool = False,
     if blocked:
         title = text["blockedTitle"]
         page_title = text["blockedPageTitle"]
-        desc = text["blockedDesc"].format(n=access.MAX_PASSWORD_FAILURES)
+        desc = text["blockedDesc"].format(n=access.MAX_DEVICE_FAILURES)
         tip = text["blockedTip"]
+        pw_row = ""
+        error_html = f'<div class="err">{html.escape(desc)}</div>'
+    elif locked_seconds > 0:
+        title = text["lockedTitle"]
+        page_title = text["lockedPageTitle"]
+        desc = text["lockedDesc"].format(n=access.MAX_PASSWORD_FAILURES,
+                                         wait=text["wait"](locked_seconds))
+        tip = text["lockedTip"]
         pw_row = ""
         error_html = f'<div class="err">{html.escape(desc)}</div>'
     else:
@@ -313,6 +341,16 @@ def render_access_page(*, next_path: str = "/", error: bool = False,
 
 # ── 拦截：这个请求要不要先过访问密码 ──
 
+#: 登录页自己的地址，以及它需要的图标（图标不给就等于页面缺一块，而它只是个应用图标、
+#: 不含任何数据）。这几个地址永远不设防 —— 不让进的话连密码都没地方输。
+LOGIN_PATHS = ("/access", "/favicon.svg")
+
+
+def is_login_path(path: str) -> bool:
+    """这个地址是不是「登录页自己那套」（解锁页、图标、配套接口）。"""
+    return path in LOGIN_PATHS or path.startswith("/api/access/")
+
+
 def is_api_path(path: str) -> bool:
     """是不是接口请求（查看器的 /api/*、面板的 /panel/api/*）。
 
@@ -345,20 +383,26 @@ def gate_response(request: Request) -> Response:
     return RedirectResponse(f"/access?next={quote(target, safe='')}", status_code=303)
 
 
+#: 「进不来」那张说明页的文案（配色同样跟随面板主题）
+_DENIAL_TEXTS = {
+    "lan_off": {
+        "zh": ("未开放局域网访问",
+               "服务目前只监听本机（127.0.0.1）。要允许局域网里的其它设备访问，"
+               "请在运行这台电脑上的控制面板里：先在「关于」页打开开发者模式，"
+               "再到「设置 → 局域网访问」打开那一项。"),
+        "en": ("LAN access is off",
+               "The service is only listening on 127.0.0.1. To allow other devices on "
+               "this network, turn on developer mode on the About page of the control "
+               "panel on the host machine, then turn on \"LAN access\" "
+               "(Settings → LAN access)."),
+    },
+}
+
+
 def denial_response(request: Request) -> Response:
-    """局域网访问没打开时，从局域网来的请求看到的说明页（配色同样跟随面板主题）。"""
+    """局域网 / 公网都没开时，外面来的请求看到的那张说明页（配色同样跟随面板主题）。"""
     lang = pick_language(request.headers.get("accept-language"))
-    if lang == "en":
-        heading = "LAN access is off"
-        body = ("The service is only listening on 127.0.0.1. To allow other devices on "
-                "this network, turn on developer mode on the About page of the control "
-                "panel on the host machine, then turn on \"LAN access\" "
-                "(Settings → LAN access).")
-    else:
-        heading = "未开放局域网访问"
-        body = ("服务目前只监听本机（127.0.0.1）。要允许局域网里的其它设备访问，"
-                "请在运行这台电脑上的控制面板里：先在「关于」页打开开发者模式，"
-                "再到「设置 → 局域网访问」打开那一项。")
+    heading, body = _DENIAL_TEXTS["lan_off"][lang]
     theme, colors, font = _panel_style()
     page = (
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
@@ -378,18 +422,24 @@ def denial_response(request: Request) -> Response:
 
 
 async def gate_middleware(request: Request, call_next):
-    """本模块的主入口：在鉴权之前先决定局域网这次请求放不放行。"""
+    """本模块的主入口：在鉴权之前先决定这次请求放不放行。
+
+    「没通过」的两种回应都只吐登录相关的东西：页面请求 303 跳去 ``/access``（响应体
+    是空的，一个字节数据都不给），接口请求回一句 401 JSON。别的什么都不发。
+    """
     path = request.url.path
-    if path in ("/access", "/api/access/login") or path.startswith("/api/access/"):
+    if is_login_path(path):
         return await call_next(request)          # 解锁页和配套接口本身不设防
-    client_host = request.client.host if request.client else ""
+    client_host = _client_host(request)
     if not access.is_remote(client_host):
         return await call_next(request)          # 本机：永远不用钥匙
-    if not access.lan_enabled():
+    if not access.open_to_outsiders():
         log.info("拒绝来自 %s 的请求（未开放局域网访问）：%s", client_host, path)
         return denial_response(request)
     if should_gate(request):
-        log.info("局域网设备 %s 还没通过访问密码：%s", client_host, path)
+        locked = access.guard_locked_seconds()
+        log.info("设备 %s 还没通过访问密码%s：%s",
+                 client_host, f"（服务已锁定 {locked} 秒）" if locked else "", path)
         return gate_response(request)
     return await call_next(request)
 
@@ -423,18 +473,21 @@ async def _read_login_payload(request: Request) -> dict:
 async def access_page(request: Request, next: str = "/", err: str = ""):
     """解锁页：输入访问密码，密码对了这台设备就被记住。
 
-    「被暂停」这一版**只看当前状态**（这台设备是不是还在「需手动确认」列表里），
-    不在网址里留任何标记 —— 之前用的是 ``?blocked=1``，结果解除之后浏览器一刷新
-    还是那个网址，页面就一直说「已被暂停」，得手动去掉后缀才进得来。
+    「被暂停」和「已锁定」这两版都**只看当前状态**（这台设备在不在「需手动确认」列表
+    里、全服务那本账是不是还锁着），不在网址里留任何标记 —— 之前用的是 ``?blocked=1``，
+    结果解除之后浏览器一刷新还是那个网址，页面就一直说「已被暂停」，得手动去掉后缀
+    才进得来。
     """
     if not access.password_required():
-        # 不需要密码（或干脆没开局域网）时，这一页没有意义，直接送去该去的地方
+        # 不需要密码（没开局域网，或者开了但主人没设密码）时，这一页没有意义，
+        # 直接送去该去的地方 —— 没设密码那种情况本来就不拦人（面板上写着取舍）。
         return RedirectResponse(_safe_next(next), status_code=303)
-    client_host = request.client.host if request.client else ""
+    client_host = _client_host(request)
     paused = access.is_pending(client_host, request.headers.get("user-agent"))
     return HTMLResponse(
         content=render_access_page(
             next_path=next, error=bool(err), blocked=paused,
+            locked_seconds=0 if paused else access.guard_locked_seconds(),
             accept_language=request.headers.get("accept-language"),
         ),
         headers={"Cache-Control": "no-store"},
@@ -446,8 +499,8 @@ async def access_page(request: Request, next: str = "/", err: str = ""):
 async def access_login(request: Request):
     """校验访问密码：对了就下发凭据，这台设备进信任列表。
 
-    连续错 ``access.MAX_PASSWORD_FAILURES`` 次之后这台设备被暂停（记进「需手动确认」），
-    之后**连密码都不再校验** —— 猜密码这件事到此为止，要主机那边手动解除。
+    三种「不受理」：这台设备被单独暂停（要去面板手动解除）、全服务那本账还锁着（等它
+    自己解开）、密码不对（记进账本，错够了就锁住）。锁着的时候**连密码都不再校验**。
     """
     payload = await _read_login_payload(request)
     next_path = _safe_next(payload.get("next"))
@@ -458,37 +511,40 @@ async def access_login(request: Request):
         # 请求重发了一遍）。直接放行、**不再登记新设备** —— 否则同一个浏览器会在
         # 「信任设备」里凭空多出一台，看着像家里多了台设备。
         return RedirectResponse(next_path, status_code=303)
-    client_host = request.client.host if request.client else ""
+    client_host = _client_host(request)
     user_agent = request.headers.get("user-agent")
+    back_to_login = RedirectResponse(
+        f"/access?next={quote(next_path, safe='')}", status_code=303,
+    )
     if access.is_pending(client_host, user_agent):
         log.info("设备已被暂停（%s），不再受理它的密码尝试", client_host)
-        return RedirectResponse(
-            f"/access?next={quote(next_path, safe='')}", status_code=303,
-        )
-    if _failed_attempts(client_host) >= _MAX_FAILURES:
-        log.info("访问密码错误次数过多，暂时不受理来自 %s 的尝试", client_host)
-        return RedirectResponse(
-            f"/access?err=1&next={quote(next_path, safe='')}", status_code=303,
-        )
+        return back_to_login
+    locked = access.guard_locked_seconds()
+    if locked:
+        log.info("登录已锁定（还要 %d 秒），不受理来自 %s 的密码尝试", locked, client_host)
+        return back_to_login
     if not access.verify_password(str(payload.get("password") or "")):
-        _record_failure(client_host)
         key = _device_key(client_host, user_agent)
         count = _record_device_failure(key)
-        log.info("访问密码错误（来自 %s，这台设备连续第 %d 次）", client_host or "?", count)
-        if count >= access.MAX_PASSWORD_FAILURES:
-            # 连错太多次：把这台设备记进「需手动确认」并暂停它，等主机上的人来解除
+        state = access.record_guard_failure(ip=client_host, user_agent=user_agent)
+        log.info("访问密码错误（来自 %s，这台设备连续第 %d 次，全服务累计第 %d 次）",
+                 client_host or "?", count, state["failures"])
+        if count >= access.MAX_DEVICE_FAILURES:
+            # 这台设备错得实在太多：单独记进「需手动确认」，等主机上的人来解除
             access.remember_pending_device(
                 client_host, user_agent, reason=access.PENDING_TOO_MANY_FAILURES, failures=count)
             _clear_device_failures(key)
-            log.info("设备连错 %d 次访问密码，已暂停（%s）", count, client_host)
-            return RedirectResponse(
-                f"/access?next={quote(next_path, safe='')}", status_code=303,
-            )
+            log.info("设备连错 %d 次访问密码，已单独暂停（%s）", count, client_host)
+            return back_to_login
+        if access.guard_locked_seconds():
+            # 这一次错误刚好把全服务那本账点着了：让浏览器去看「已锁定、还要等多久」，
+            # 而不是显示一句「密码不对」再让人接着试
+            return back_to_login
         return RedirectResponse(
             f"/access?err=1&next={quote(next_path, safe='')}", status_code=303,
         )
-    _clear_failures(client_host)
     _clear_device_failures(_device_key(client_host, user_agent))
+    access.clear_guard()
     remembered = access.remember_device(client_host, user_agent)
     if not remembered:
         return RedirectResponse(
@@ -514,11 +570,16 @@ async def access_logout(request: Request):
 
 @access_gate_router.get("/api/access/status")
 async def access_status(request: Request):
-    """解锁页 / 面板要的当前状态（不含任何凭据）。"""
+    """解锁页 / 面板要的当前状态（不含任何凭据）。
+
+    ``locked_seconds`` 是「全服务那本账还要锁多久」，谁问都一样 —— 它不是凭据，
+    写在前端的倒计时里用。
+    """
     cookie = request.cookies.get(access.COOKIE_NAME)
     return {
         "lan_enabled": access.lan_enabled(),
         "password_required": access.password_required(),
         "trusted": access.is_trusted(cookie),
         "device_id": access.trusted_device_id(cookie) or "",
+        "locked_seconds": access.guard_locked_seconds(),
     }

@@ -84,7 +84,10 @@ def test_normalize_domain_rejects(value):
 # ── 前置条件与访问密码 ──
 
 def test_public_ready_only_requires_lan(cfg_file):
-    """挂载只要求先开局域网；没设访问密码不再硬拦 —— 面板会红字警告 + 二次确认。"""
+    """挂载只要求先开局域网；没设访问密码不硬拦 —— 面板会红字警告 + 二次确认。
+
+    用户明确要过这个规矩：**给警告、由他确认**，程序不替他关掉公网、也不替他拦住挂载。
+    """
     write_cfg(cfg_file, {})
     assert access.public_ready() == (False, "lan_off")
     write_cfg(cfg_file, {"lan_access": True})
@@ -398,7 +401,7 @@ def test_status_reports_whether_a_password_is_set(client, cfg_file):
 
 
 def test_panel_warns_with_red_bold_before_mounting_without_a_password():
-    """面板接线：没密码时红字警告 + 挂载前要过一次风险确认。"""
+    """面板接线：没密码时红字警告 + 挂载前要过一次风险确认（警告归警告，不拦着他挂）。"""
     html = open(PANEL_HTML, encoding="utf-8").read()
     assert "pubNoPasswordWarn" in html and "pubRiskConfirm" in html
     assert 'class="risk-strong"' in html and ".risk-strong" in html
@@ -407,11 +410,12 @@ def test_panel_warns_with_red_bold_before_mounting_without_a_password():
 
 
 def test_panel_asks_before_clearing_the_password_under_public_access():
-    """面板接线：公网开着时清密码，先问一句（正文是红字加粗的风险说明）。"""
+    """面板接线：公网开着时清密码，先问一句（正文说清楚「公网不会被关掉」）。"""
     html = open(PANEL_HTML, encoding="utf-8").read()
     assert "pubClearPasswordTitle" in html and "pubClearPassword" in html
     assert "if (lanAccess && lanAccess.public_on)" in html
     assert "clearLanPassword" in html
+    assert "公网访问不会被关掉" in html and "Public access will not be turned off" in html
 
 
 def test_panel_does_not_leave_the_mount_button_dead():

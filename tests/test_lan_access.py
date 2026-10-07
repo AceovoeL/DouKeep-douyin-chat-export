@@ -1,11 +1,13 @@
 """局域网访问（面板里要先用「关于」页的开发者模式打开，再看 设置 → 局域网访问）的行为测试。
 
-覆盖四件事：
+覆盖这几件事：
 
 1. ``common/access.py`` 里的地址判定与设置读写；
-2. 拦截中间件：本机直通、没开局域网拒绝、开了且有访问密码时要求解锁；
+2. 拦截中间件：本机直通、没开局域网拒绝、对外开放但还没设访问密码时外面一样什么都拿不到
+   （隧道转进来的公网访客也算「外面」，见 ``client_host``）；
 3. 解锁流程：输对访问密码 → 设备被记住 → 面板里能看到 / 能移除；
-4. 解锁页（以及「未开放局域网访问」页）的配色跟着主机上的面板主题走。
+4. 猜密码那本账：连着错就锁住**整个**登录入口，换网络、清 Cookie、换浏览器都躲不开；
+5. 解锁页（以及「未开放局域网访问」页）的配色跟着主机上的面板主题走。
 
 「访问密码」和「控制面板密码」是两道独立的锁，这里也各测一次：过了访问密码之后，
 面板自己的密码该要还是要（见最后两组用例）。
@@ -22,6 +24,7 @@ from common import access
 
 REMOTE_HOST = "192.168.1.9"               # 假装请求来自局域网里另一台设备
 LOCAL_HOST = "127.0.0.1"
+TUNNEL_HOST = "203.0.113.9"               # 假装请求是公网隧道转进来的访客
 
 
 class _FromHost:
@@ -52,15 +55,15 @@ def cfg_file(tmp_path, monkeypatch):
     path = tmp_path / "panel_config.json"
     monkeypatch.setattr(paths, "CONFIG_PATH", str(path))
     access.invalidate_cache()
-    # 错误次数计数是模块级的（内存里），用例之间互相不干扰
+    # 设备错误计数在内存里、猜密码那本账在配置里，两边都要清干净，用例之间互不干扰
     from backend.panel import access_gate
 
-    access_gate._FAILURES.clear()
     access_gate._DEVICE_FAILURES.clear()
+    access.clear_guard()
     yield path
     access.invalidate_cache()
-    access_gate._FAILURES.clear()
     access_gate._DEVICE_FAILURES.clear()
+    access.clear_guard()
 
 
 @pytest.fixture
@@ -228,15 +231,27 @@ def test_remote_denied_even_with_the_panel_password(remote, cfg_file, monkeypatc
     # 局域网没开：连登录接口都进不来（这道门在最外层，先于面板的一切）
     assert remote.post("/api/auth/login", json={"password": "panel"}).status_code == 403
     assert remote.get("/panel", headers={"Authorization": "Bearer whatever"}).status_code == 403
-    # 开了但没设访问密码：面板密码仍然照要（门开了不等于已经登录）
+    # 开了但没设访问密码：局域网里直接进（这是面板上写明了的取舍），面板密码仍然照要
     write_cfg(cfg_file, {"lan_access": True})
     assert remote.get("/panel/api/status").status_code == 401
     assert remote.get("/panel").status_code == 200        # 面板页面自带登录框
 
 
-def test_without_access_password_everyone_on_the_lan_gets_in(remote, cfg_file):
+def test_without_an_access_password_everyone_gets_in(remote, cfg_file, temp_db):
+    """没设访问密码就是谁都能看（局域网和公网隧道都一样）—— 这是面板上写明的取舍。
+
+    挂到公网之前面板会红字警告 + 要一次确认，但确认之后程序不替他关、也不替他拦。
+    ``temp_db`` 是为了那句数据接口断言：CI 上项目里没有真实的 chat.db。
+    """
+    import backend.main as main
+
     write_cfg(cfg_file, {"lan_access": True})
     assert remote.get("/panel").status_code == 200
+    assert remote.get("/api/stats").status_code == 200    # 数据接口照常（面板密码另算）
+    tunnel = TestClient(_FromHost(main.app, LOCAL_HOST), base_url=f"http://{LOCAL_HOST}",
+                        follow_redirects=False)
+    assert tunnel.get("/panel", headers={"cf-connecting-ip": TUNNEL_HOST}).status_code == 200
+    assert tunnel.get("/", headers={"cf-connecting-ip": TUNNEL_HOST}).status_code == 200
 
 
 def test_remote_must_unlock_when_access_password_is_set(remote, cfg_file):
@@ -277,7 +292,16 @@ def test_access_page_renders_and_carries_the_next_target(remote, cfg_file):
 
 
 def test_access_page_redirects_when_no_password_is_needed(remote, cfg_file):
+    """没设密码（或者干脆没开局域网）时，解锁页没有意义：直接送去该去的地方。"""
     write_cfg(cfg_file, {"lan_access": True})
+    r = remote.get("/access", params={"next": "/panel"})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/panel"
+
+
+def test_access_page_redirects_when_lan_access_is_off(remote, cfg_file):
+    """局域网关着时解锁页没有意义（外面本来就进不来），直接送去该去的地方。"""
+    write_cfg(cfg_file, {})
     r = remote.get("/access", params={"next": "/panel"})
     assert r.status_code == 303
     assert r.headers["location"] == "/panel"
@@ -341,14 +365,29 @@ def test_custom_theme_uses_the_saved_colors(remote, cfg_file):
 
 
 def test_panel_orders_public_access_above_the_device_lists():
-    """板块顺序：公网访问在上，然后是信任设备，再下面是需手动确认。"""
+    """板块顺序：公网访问在上，然后是登录保护、信任设备，再下面是需手动确认。"""
     with open(os.path.join(paths.REPO_ROOT, "backend", "panel", "static", "panel.html"),
               encoding="utf-8") as handle:
         html = handle.read()
     public_at = html.index('id="publicBox"')
+    guard_at = html.index('id="lanGuardBox"')
     trusted_at = html.index('id="lanDevicesBox"')
     pending_at = html.index('id="lanPendingBox"')
-    assert public_at < trusted_at < pending_at
+    assert public_at < guard_at < trusted_at < pending_at
+
+
+def test_panel_shows_the_login_guard_and_can_clear_it():
+    """面板接线：登录保护那一块要有状态、要接到清零接口上。"""
+    with open(os.path.join(paths.REPO_ROOT, "backend", "panel", "static", "panel.html"),
+              encoding="utf-8") as handle:
+        html = handle.read()
+    assert "function clearLanGuard(" in html
+    assert "/panel/api/lan/guard/clear" in html
+    assert "lanGuardLocked" in html and "lanGuardCounting" in html
+    assert "function lanGuardWhen(" in html
+    # 「是哪几台设备在猜」直接列在这一块里
+    assert 'id="lanGuardList"' in html and "function renderLanGuardDevices(" in html
+    assert "lanGuardDeviceMeta" in html and "lanGuardDevicesCount" in html
 
 
 def test_panel_renders_pending_devices_one_row_each_with_a_reason():
@@ -525,18 +564,126 @@ def test_trailing_slash_login_is_accepted(remote, cfg_file):
     assert r.cookies.get("access_token")
 
 
-def test_repeated_wrong_passwords_pause_the_device(remote, client, cfg_file):
-    """同一台设备连错 5 次访问密码之后被暂停：连正确的密码也不受理，要去面板里手动解除。"""
+def test_five_wrong_passwords_lock_the_whole_login(remote, client, cfg_file):
+    """连错 5 次访问密码：**整个登录入口**锁住，不只是那台设备。
+
+    这就是「换网络 / 清 Cookie 就当新设备接着猜」的解药：账记在服务端那本全服务共用的
+    本子上，跟「谁来的」无关。
+    """
     write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
     # 前 4 次只是普通的「密码不对」
     for _ in range(access.MAX_PASSWORD_FAILURES - 1):
         assert login(remote, "wrong").headers["location"].startswith("/access?err=1")
-    # 第 5 次：把这台设备暂停
+    # 第 5 次把账点着：跳回解锁页，不带「密码不对」那句（页面会说清锁到什么时候）
     where = login(remote, "wrong").headers["location"]
-    assert where.startswith("/access?next=")
+    assert where == "/access?next=%2Fpanel"
+    assert "blocked" not in where, "网址里不能留状态标记，否则解锁之后刷新还是那一版"
+    assert access.guard()["failures"] == access.MAX_PASSWORD_FAILURES
+    assert access.guard_locked_seconds() > 0
+
+    # 换台设备、换 IP、换浏览器（等于「换网络 + 清 Cookie」）拿正确密码也一样进不来
+    other = raw_client("192.168.1.77")
+    r = login(other, "pw", user_agent="Mozilla/5.0 (iPad) Safari/604.1")
+    assert "access_token" not in r.cookies
+    assert r.headers["location"].startswith("/access?next=")
+
+    # 这台设备看到的解锁页换成「已锁定」那一版：没有输入框，说清还要等多久
+    page = other.get("/access").text
+    assert "登录已暂时锁定" in page
+    assert 'name="password"' not in page
+    assert "立即解锁" in page
+
+    # 面板看得到这本账（含「是哪台设备在猜」），也能一键清零
+    payload = client.get("/panel/api/lan").json()
+    assert payload["guard"]["failures"] == access.MAX_PASSWORD_FAILURES
+    assert payload["guard"]["locked_seconds"] > 0
+    assert payload["guard"]["lock_after"] == access.MAX_PASSWORD_FAILURES
+    devices = payload["guard"]["devices"]
+    assert len(devices) == 1
+    assert devices[0]["ip"] == REMOTE_HOST
+    assert REMOTE_HOST in devices[0]["name"]
+    assert devices[0]["failures"] == access.MAX_PASSWORD_FAILURES
+    assert "ua_hash" not in devices[0]                # 内部指纹不给界面
+    assert client.post("/panel/api/lan/guard/clear", json={}).json()["ok"] is True
+    assert client.get("/panel/api/lan").json()["guard"]["failures"] == 0
+    assert client.get("/panel/api/lan").json()["guard"]["locked_seconds"] == 0
+    # 清零之后马上就能进
+    assert login(other, "pw").cookies.get("access_token")
+
+
+def test_locked_login_never_lets_anyone_guess_again(remote, cfg_file):
+    """锁着的时候连密码都不校验：换 IP、换浏览器、清 Cookie 也换不来一次新的猜测。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    for _ in range(access.MAX_PASSWORD_FAILURES):
+        login(remote, "wrong")
+    before = access.guard()
+
+    fresh = raw_client("10.1.2.3")                     # 新地址、新浏览器、手上什么都没有
+    assert "access_token" not in login(fresh, "pw", user_agent="curl/8.5").cookies
+    assert "access_token" not in login(fresh, "wrong2", user_agent="curl/8.5").cookies
+    # 账本一个数字都没动：不是「又猜了一次」，是根本没让它猜
+    assert access.guard() == before
+    # 接口那边一样拿不到东西
+    assert fresh.get("/api/stats").status_code == 401
+    assert fresh.get("/panel/api/status").status_code == 401
+
+
+def test_guard_doubles_the_wait_and_survives_a_restart(cfg_file):
+    """每多错一次锁得久一倍（24 小时封顶），而且这本账写进配置，重启服务也在。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    t0 = 1_700_000_000
+    for _ in range(access.MAX_PASSWORD_FAILURES):
+        access.record_guard_failure(now=t0)
+    assert access.guard()["locked_until"] == t0 + access.LOCK_STEP_SECONDS
+
+    # 锁一到期他又来一次：这次要等 30 分钟
+    access.record_guard_failure(now=t0 + access.LOCK_STEP_SECONDS)
+    assert access.guard()["locked_until"] == t0 + access.LOCK_STEP_SECONDS + 2 * access.LOCK_STEP_SECONDS
+
+    # 一直猜下去也不会超过 24 小时
+    for _ in range(40):
+        access.record_guard_failure(now=t0)
+    assert access.guard()["locked_until"] == t0 + access.LOCK_MAX_SECONDS
+
+    # 账本在配置里：重新读一次（等于换了个进程）依然认得出还没解禁
+    access.invalidate_cache()
+    assert access.guard_locked_seconds(now=t0) == access.LOCK_MAX_SECONDS
+    raw = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert raw["access_guard"]["failures"] == access.MAX_PASSWORD_FAILURES + 41
+
+
+def test_right_password_clears_the_ledger(remote, cfg_file):
+    """「连续」才算：中间输对过一次，账本就归零。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    for _ in range(access.MAX_PASSWORD_FAILURES - 1):
+        login(remote, "wrong")
+    assert access.guard()["failures"] == access.MAX_PASSWORD_FAILURES - 1
+    assert login(remote, "pw").cookies.get("access_token")
+    assert access.guard() == {"failures": 0, "locked_until": 0, "devices": []}
+
+    # 清掉 Cookie 再连错 4 次，也只是普通的「密码不对」（真的清零了）
+    fresh = raw_client()
+    for _ in range(access.MAX_PASSWORD_FAILURES - 1):
+        assert login(fresh, "wrong").headers["location"].startswith("/access?err=1")
+
+
+def test_device_is_paused_after_lots_of_guesses_and_can_be_released(remote, client, cfg_file):
+    """一直守着猜的那台设备，连着错够了会被单独停下，要在面板上点「解除」。
+
+    这本账认的是「同一台设备」（IP + 浏览器指纹），被换网络绕过去也无所谓 —— 卡住
+    「换网络接着猜」的是上面那本全服务共用的账。所以这里每错一次都把全服务的账解开，
+    模拟「锁一到期他又试一次」，才走得到这台设备的暂停。
+    """
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    where = ""
+    for _ in range(access.MAX_DEVICE_FAILURES):
+        access.clear_guard()
+        where = login(remote, "wrong").headers["location"]
+    assert where == "/access?next=%2Fpanel"
     assert "blocked" not in where, "网址里不能留「已暂停」的标记，否则解除之后刷新还是那一版"
 
     # 暂停之后连正确密码也不受理、也不下发凭据
+    access.clear_guard()
     r = login(remote, "pw")
     assert r.headers["location"].startswith("/access?next=")
     assert "access_token" not in r.cookies
@@ -555,6 +702,7 @@ def test_repeated_wrong_passwords_pause_the_device(remote, client, cfg_file):
     assert entry["ip"] == REMOTE_HOST
     assert REMOTE_HOST in entry["name"]
     assert payload["max_password_failures"] == access.MAX_PASSWORD_FAILURES
+    assert payload["max_device_failures"] == access.MAX_DEVICE_FAILURES
     assert "token_hash" not in entry
 
     # 面板上点「解除」之后：解锁页立刻回到「可以输密码」的那一版（刷新不会还停在暂停页）
@@ -570,36 +718,13 @@ def test_repeated_wrong_passwords_pause_the_device(remote, client, cfg_file):
     assert remote.get("/panel").status_code == 200
 
 
-def test_correct_password_resets_the_failure_counter(remote, cfg_file):
-    """「连续」才算：中间输对过一次，计数就归零。"""
-    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
-    for _ in range(access.MAX_PASSWORD_FAILURES - 1):
-        login(remote, "wrong")
-    assert login(remote, "pw").cookies.get("access_token")
-    # 计数已经清零：换一台「手上还没 Cookie」的同款设备再连错 4 次，也只是普通报错
-    fresh = raw_client()
-    for _ in range(access.MAX_PASSWORD_FAILURES - 1):
-        assert login(fresh, "wrong").headers["location"].startswith("/access?err=1")
-
-
-def test_failures_are_counted_per_device(remote, client, cfg_file):
-    """按设备算：另一台设备（不同浏览器）不该替它背锅。"""
-    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
-    for _ in range(access.MAX_PASSWORD_FAILURES):
-        login(remote, "wrong", user_agent="Mozilla/5.0 (Windows NT 10.0) Chrome/120.0")
-
-    assert client.get("/panel/api/lan").json()["pending"][0]["name"].startswith("Chrome")
-    # 另一台设备（iPad + Safari）：还能正常解锁
-    other = login(remote, "pw", user_agent="Mozilla/5.0 (iPad) Safari/604.1")
-    assert other.cookies.get("access_token")
-
-
 def test_pending_can_be_released_all_at_once(remote, client, cfg_file):
     """「全部解除」一次清空待确认列表。"""
     write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
     for agent in ("Mozilla/5.0 (Windows NT 10.0) Chrome/120.0",
                   "Mozilla/5.0 (iPad) Safari/604.1"):
-        for _ in range(access.MAX_PASSWORD_FAILURES):
+        for _ in range(access.MAX_DEVICE_FAILURES):
+            access.clear_guard()
             login(remote, "wrong", user_agent=agent)
     assert len(client.get("/panel/api/lan").json()["pending"]) == 2
 
@@ -608,15 +733,96 @@ def test_pending_can_be_released_all_at_once(remote, client, cfg_file):
     assert client.get("/panel/api/lan").json()["pending"] == []
 
 
-def test_clearing_the_password_also_clears_the_pending_list(remote, client, cfg_file):
-    """取消访问密码之后，「需手动确认」也一起清掉（否则列表里会留着再也拦不住的设备）。"""
+def test_clearing_the_password_also_clears_the_ledger_and_pending_list(remote, client, cfg_file):
+    """取消访问密码之后，猜密码那本账和「需手动确认」一起清掉。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    for _ in range(access.MAX_DEVICE_FAILURES):
+        access.clear_guard()
+        login(remote, "wrong")
+    assert len(client.get("/panel/api/lan").json()["pending"]) == 1
+    assert access.guard()["failures"] == 1          # 最后一次错误留在账本上
+
+    client.post("/panel/api/lan/password", json={"password": ""})
+    payload = client.get("/panel/api/lan").json()
+    assert payload["pending"] == []
+    assert payload["guard"]["failures"] == 0
+
+
+def test_setting_a_new_password_clears_the_ledger(remote, client, cfg_file):
+    """改密码的人是主人（只有本机面板能改）：顺手把账清零，不用再找一次「立即解锁」。"""
     write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
     for _ in range(access.MAX_PASSWORD_FAILURES):
         login(remote, "wrong")
-    assert len(client.get("/panel/api/lan").json()["pending"]) == 1
+    assert access.guard_locked_seconds() > 0
 
-    client.post("/panel/api/lan/password", json={"password": ""})
-    assert client.get("/panel/api/lan").json()["pending"] == []
+    client.post("/panel/api/lan/password", json={"password": "brand-new"})
+    assert access.guard() == {"failures": 0, "locked_until": 0, "devices": []}
+    assert login(remote, "brand-new").cookies.get("access_token")
+
+
+# ── 隧道转进来的请求（公网）──
+
+def test_login_guard_lists_which_devices_are_guessing(remote, client, cfg_file):
+    """「登录保护」要说清是哪几台设备在猜：同一台设备猜几次算一台，换地址才是另一台。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    login(remote, "wrong", user_agent="Mozilla/5.0 (Windows NT 10.0) Chrome/120.0")
+    login(raw_client(), "wrong", user_agent="Mozilla/5.0 (Windows NT 10.0) Chrome/120.0")
+    login(raw_client("192.168.1.30"), "wrong", user_agent="Mozilla/5.0 (iPad) Safari/604.1")
+
+    devices = client.get("/panel/api/lan").json()["guard"]["devices"]
+    assert len(devices) == 2, "同一台设备的两次猜测要并成一台，换地址才是另一台"
+    by_ip = {row["ip"]: row for row in devices}
+    assert by_ip[REMOTE_HOST]["failures"] == 2
+    assert REMOTE_HOST in by_ip[REMOTE_HOST]["name"]
+    assert by_ip["192.168.1.30"]["failures"] == 1
+    assert "iPad" in by_ip["192.168.1.30"]["name"]
+    assert all(row["last_at"] > 0 for row in devices)
+
+    # 清零之后这份清单也空了
+    client.post("/panel/api/lan/guard/clear", json={})
+    assert client.get("/panel/api/lan").json()["guard"]["devices"] == []
+
+
+def test_guard_device_list_is_capped(cfg_file):
+    """猜密码的设备太多时只留最近的那几台，别让配置无限长。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    for index in range(access.MAX_GUARD_DEVICES + 5):
+        access.record_guard_failure(ip=f"192.168.1.{index + 1}", user_agent=f"agent-{index}")
+    devices = access.guard_devices()
+    assert len(devices) == access.MAX_GUARD_DEVICES
+    assert devices[0]["ip"] == f"192.168.1.{access.MAX_GUARD_DEVICES + 5}"   # 最近的排最前
+
+
+def test_tunnel_requests_count_as_outsiders(cfg_file):
+    """公网隧道连的是本机回环地址：要把隧道写的真实访客地址认出来。
+
+    不认的话，公网访客在服务看来全是「本机」，访问密码那道门等于没关。
+    """
+    import backend.main as main
+
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    tunnel = TestClient(_FromHost(main.app, LOCAL_HOST), base_url=f"http://{LOCAL_HOST}",
+                        follow_redirects=False)
+    r = tunnel.get("/panel", headers={"cf-connecting-ip": TUNNEL_HOST})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/access?next=%2Fpanel"
+    r = tunnel.get("/panel", headers={"x-forwarded-for": f"{TUNNEL_HOST}, 172.68.1.1"})
+    assert r.status_code == 303
+    # 没有这些头（真的本机浏览器）：直接放行
+    assert tunnel.get("/panel").status_code == 200
+
+
+def test_a_lan_device_cannot_spoof_its_way_in(cfg_file):
+    """局域网里的设备自己编「我是本机」的头没用：对端不是回环，一个头都不看。"""
+    import backend.main as main
+
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    remote = TestClient(_FromHost(main.app, REMOTE_HOST), base_url=f"http://{REMOTE_HOST}",
+                        follow_redirects=False)
+    r = remote.get("/panel", headers={"cf-connecting-ip": "127.0.0.1",
+                                      "x-forwarded-for": "127.0.0.1"})
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/access?next=")
 
 
 # ── 面板接口 ──
@@ -736,7 +942,87 @@ def test_panel_sets_and_clears_the_access_password(client, remote, cfg_file):
     assert remote.get("/panel").status_code == 303
     r = client.post("/panel/api/lan/password", json={"password": ""})
     assert r.json()["has_password"] is False
+    # 密码一清，局域网里又回到「不用输密码直接进」
     assert remote.get("/panel").status_code == 200
+
+
+def test_changing_the_password_signs_every_device_out(cfg_file):
+    """换访问密码 = 换锁：所有设备的登录态立刻作废（局域网 + 公网都要用新密码重来）。
+
+    主人改密码往往正是因为「有别人知道旧密码」—— 那时候光换哈希还不够，对方手上那块
+    Cookie 还认不认才是关键。这里把「认不认」钉死。
+    """
+    import backend.main as main
+
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("old")})
+    lan = TestClient(_FromHost(main.app, REMOTE_HOST), base_url=f"http://{REMOTE_HOST}",
+                     follow_redirects=False)
+    tunnel = TestClient(_FromHost(main.app, LOCAL_HOST), base_url=f"http://{LOCAL_HOST}",
+                        follow_redirects=False)
+    host = TestClient(_FromHost(main.app, LOCAL_HOST), base_url=f"http://{LOCAL_HOST}",
+                      follow_redirects=False)
+    tunnel_headers = {"cf-connecting-ip": TUNNEL_HOST}
+
+    lan_token = login(lan, "old").cookies.get("access_token")
+    tunnel_token = tunnel.post("/api/access/login", data={"password": "old", "next": "/panel"},
+                               headers=tunnel_headers).cookies.get("access_token")
+    assert lan_token and tunnel_token
+    assert len(access.list_devices()) == 2
+    assert lan.get("/panel", headers={"cookie": f"access_token={lan_token}"}).status_code == 200
+    assert tunnel.get("/panel", headers={**tunnel_headers,
+                                         "cookie": f"access_token={tunnel_token}"}).status_code == 200
+
+    body = host.post("/panel/api/lan/password", json={"password": "new"}).json()
+
+    assert body["has_password"] is True
+    assert body["cleared_devices"] == 2
+    assert access.trusted_devices() == []
+    assert access.list_devices() == []
+
+    # 两台设备手上的通行证立刻失效：页面请求又被送去登录页，接口回 401
+    assert lan.get("/panel", headers={"cookie": f"access_token={lan_token}"}).status_code == 303
+    assert tunnel.get("/panel", headers={**tunnel_headers,
+                                         "cookie": f"access_token={tunnel_token}"}).status_code == 303
+    assert tunnel.get("/api/stats", headers={**tunnel_headers,
+                                             "cookie": f"access_token={tunnel_token}"}).status_code == 401
+
+    # 旧密码不认了，新密码能进
+    assert "access_token" not in login(lan, "old").cookies
+    assert login(lan, "new").cookies.get("access_token")
+
+
+def test_changing_the_password_also_clears_the_pending_list(client, cfg_file):
+    """「需手动确认」也是设备登录态的一部分：换密码时一起清掉。"""
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("old")})
+    for _ in range(access.MAX_DEVICE_FAILURES):
+        access.clear_guard()
+        login(raw_client(), "wrong")
+    assert len(access.list_pending_devices()) == 1
+
+    client.post("/panel/api/lan/password", json={"password": "new"})
+    assert access.list_pending_devices() == []
+
+
+def test_clearing_the_password_keeps_public_access(client, cfg_file, monkeypatch):
+    """公网开着的时候清掉访问密码：会警告、要确认，但**不会**顺手关掉公网访问。
+
+    这条钉住「不替用户关」这半边（警告那半边由 test_public_access 钉住）：清密码只改回
+    密码本身，公网访问保持原来的开关和域名，隧道进程也不去动它。
+    """
+    from backend import cloudflared as cf
+
+    write_cfg(cfg_file, {"lan_access": True, "lan_password_hash": access.hash_password("pw")})
+    access.set_public_access(enabled=True, domain="example.com")
+    stopped = []
+    monkeypatch.setattr(cf, "stop_tunnel", lambda: stopped.append(True) or True)
+
+    body = client.post("/panel/api/lan/password", json={"password": ""}).json()
+
+    assert body["has_password"] is False
+    assert "public_closed" not in body
+    assert stopped == [], "清密码不该去动隧道"
+    assert access.public_enabled() is True
+    assert access.public_domain() == "example.com"
 
 
 def test_panel_lan_toggle_reports_the_current_listen_address(client, cfg_file):

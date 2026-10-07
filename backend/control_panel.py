@@ -28,6 +28,7 @@ from common import github_auth as _github_auth
 from common import version as _version
 from backend.panel import emoji_pack as _emoji_pack
 from backend.panel import notify as _notify
+from backend.panel import access_gate as _gate
 from backend.panel.scheduler import (
     parse_cron as _parse_cron,
     next_cron_run as _next_cron_run,
@@ -1010,7 +1011,8 @@ def _lan_port() -> int:
 def _lan_status_payload(request: Request, expect_host: str = "") -> dict:
     """面板「局域网访问」这一块要的全部数据。"""
     cfg = _load_config()
-    client_host = request.client.host if request.client else ""
+    # 「你从哪个地址进来的」：隧道转进来的取真实访客地址（见 access_gate._client_host）
+    client_host = _gate._client_host(request)
     cookie_id = _access.trusted_device_id(request.cookies.get(_access.COOKIE_NAME))
     address = _server_cli_address()
     host = address[0] if address else _access.LOCAL_HOST
@@ -1029,10 +1031,13 @@ def _lan_status_payload(request: Request, expect_host: str = "") -> dict:
         "restarting": bool(_lan_restart_state["running"]),
         "addresses": _access.access_addresses(port, client_host),
         "devices": _access.list_devices(cookie_id),
-        # 连续输错太多次访问密码的设备：要在界面上「手动确认」才放行（理由由面板翻文案）
+        # 全服务共用的猜密码账本：连着错就会锁住整个登录入口（换网络 / 清 Cookie 躲不开）
+        "guard": _access.guard_snapshot(),
+        # 单独被暂停的设备：要在界面上「手动确认」才放行（理由由面板翻文案）
         "pending": _access.list_pending_devices(
             client_host, request.headers.get("user-agent")),
         "max_password_failures": _access.MAX_PASSWORD_FAILURES,
+        "max_device_failures": _access.MAX_DEVICE_FAILURES,
         # 公网访问搭在局域网访问上：面板关开关前要据此先问一句（域名会留着）
         "public_on": _access.public_enabled(),
     }
@@ -1092,14 +1097,25 @@ async def set_lan_access(req: LanAccessRequest, request: Request):
 
 @control_router.post("/api/lan/password")
 async def set_lan_password(req: LanPasswordRequest, request: Request):
-    """设置 / 取消局域网访问密码（不用重启：每次请求都会读配置）。"""
+    """设置 / 更换 / 取消局域网访问密码（不用重启：每次请求都会读配置）。
+
+    换密码 = 换锁：``_access.set_password()`` 会把所有设备的登录态清掉（信任设备手上的
+    Cookie 立刻失效，「需手动确认」和猜密码那本账也一起清），局域网和公网的设备都要拿新
+    密码重新来一次 —— 主人改密码往往正是因为「有别人知道旧密码」。
+
+    取消密码时**不替用户关公网访问**：公网开着又没有密码确实很危险（谁都能看），但那是
+    用户的取舍 —— 面板那边如果公网正开着会先弹风险确认，他确认了才走到这里。
+    """
     password = req.password or ""
+    cleared = len(_access.list_devices())          # 换 / 清密码会作废这么多台设备
     _access.set_password(password)
     if password:
-        message = "访问密码已设置：局域网里的设备第一次访问时要输入它"
+        message = f"访问密码已更换：{cleared} 台设备的登录态已清空，都要用新密码重新进" \
+            if cleared else "访问密码已设置：局域网里的设备第一次访问时要输入它"
     else:
         message = "访问密码已取消：局域网里的设备都能直接访问"
     return {"ok": True, "message": message, "has_password": bool(password),
+            "cleared_devices": cleared,
             "payload": _lan_status_payload(request)}
 
 
@@ -1133,6 +1149,16 @@ async def release_all_pending_devices(request: Request):
     count = _access.forget_all_pending_devices()
     return {"ok": True, "removed": count,
             "payload": _lan_status_payload(request)}
+
+
+@control_router.post("/api/lan/guard/clear")
+async def clear_lan_guard(request: Request):
+    """猜密码那本账清零、立刻解锁（只有本机的面板能点，外面的人够不着）。
+
+    「需手动确认」里的设备**不动**：那批是单独被停下的，各有自己的「解除」按钮。
+    """
+    _access.clear_guard()
+    return {"ok": True, "payload": _lan_status_payload(request)}
 
 
 # ── 公网访问（用 Cloudflare 隧道接到自己的域名）──

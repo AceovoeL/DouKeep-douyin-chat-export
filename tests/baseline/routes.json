@@ -82,6 +82,7 @@
  "POST /panel/api/lan",
  "POST /panel/api/lan/devices/forget",
  "POST /panel/api/lan/devices/forget-all",
+ "POST /panel/api/lan/guard/clear",
  "POST /panel/api/lan/password",
  "POST /panel/api/lan/pending/forget",
  "POST /panel/api/lan/pending/forget-all",

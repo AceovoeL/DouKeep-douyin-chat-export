@@ -21,6 +21,20 @@
 设备 id + token，用 Cookie 放在那台设备上（``access_token``），同时把 token 的
 sha256 记进配置。之后这台设备再访问就凭 Cookie 通过，不用再输密码。用户可以在面板
 里对某台设备点「不信任」—— 那一行从配置里删掉，那台设备手上的 Cookie 立刻失效。
+**主人换了访问密码，这些记录会全部清掉**（见 ``set_password()``）：局域网和公网的设备
+都要拿新密码重新来一次。
+
+**这块 Cookie 只是「省得重输密码」，不是安全凭据。** 它放在对方手里，人家清掉浏览器
+数据就没了、也能整个复制走；IP 同样不算凭据（换个网络、开个热点就变了）。所以真正
+管住「有人在猜密码」的是下面这本账：
+
+    全服务共用一本「猜错了几次」的账（``access_guard``，存在配置里、重启也在）。
+    连续错 MAX_PASSWORD_FAILURES 次 → 整个登录入口先锁 LOCK_STEP_SECONDS；解禁之后
+    再错一次，锁的时间翻倍，直到 LOCK_MAX_SECONDS 封顶。谁输对了、或者主人点了面板上
+    的「立即解锁」，这本账才清零。
+
+账记在**服务端**，跟「谁来的、有没有 Cookie」全都无关：换网络、清 Cookie、换浏览器、
+直接上脚本，都改不了这本账里的数字，能多猜的次数也就被卡死了。
 """
 from __future__ import annotations
 
@@ -31,6 +45,7 @@ import secrets
 import socket
 import threading
 import time
+from collections.abc import Mapping
 from urllib.parse import unquote
 
 from common import config, paths
@@ -48,8 +63,22 @@ LOCAL_HOST = "127.0.0.1"
 #: 信任设备最多留这么多台，超了就丢掉最早信任的那台（配合界面上的手动移除）
 MAX_TRUSTED_DEVICES = 50
 
-#: 连续输错多少次访问密码，就把这台设备标成「需手动确认」（暂停它再输密码）
+#: 全服务共用一本账：连续输错这么多次访问密码，就把整个登录入口锁住（见 ``guard``）
 MAX_PASSWORD_FAILURES = 5
+
+#: 第 MAX_PASSWORD_FAILURES 次错误先锁这么久；之后再错一次翻一倍
+LOCK_STEP_SECONDS = 15 * 60
+
+#: 翻倍的上限：最多锁这么久（免得一本账把人永久关在门外）
+LOCK_MAX_SECONDS = 24 * 60 * 60
+
+#: 同一台设备单独错这么多次，就把它记进「需手动确认」（要主人在面板上点「解除」）。
+#: 比上面那本全服务的账高：这本账认得出「同一台设备」，主人自己在手机上连打错几次也会
+#: 被它记上，阈值一样高的话他会跟正在猜密码的人一起进名单，还得专门跑一趟主机去解除。
+MAX_DEVICE_FAILURES = 10
+
+#: 「登录保护」里最多列出这么多台「正在猜密码的设备」（只用来显示，不参与判定）
+MAX_GUARD_DEVICES = 10
 
 #: 「需手动确认」的原因代码：面板按代码翻成人话
 PENDING_TOO_MANY_FAILURES = "too_many_failures"
@@ -216,7 +245,11 @@ def password_hash() -> str | None:
 
 
 def password_required() -> bool:
-    """要不要过访问密码：局域网和公网只要开了一个就要（两个都关时一律 False）。"""
+    """要不要过访问密码：局域网和公网只要开了一个、而且设了密码，就要。
+
+    没设密码时是 False —— 那会儿局域网里谁都能直接进（面板上会把后果写在明处）；
+    「没设密码就不许挂到公网」由 ``public_ready()`` 拦着，见它的说明。
+    """
     return open_to_outsiders() and password_hash() is not None
 
 
@@ -245,22 +278,168 @@ def verify_password(password: str) -> bool:
 
 
 def set_password(password: str) -> bool:
-    """设置访问密码；传空字符串 = 取消密码。
+    """设置 / 更换访问密码；传空字符串 = 取消密码。
 
-    取消密码时，之前信任过的设备和「需手动确认」列表会一起清掉 —— 那时候已经不需要
-    凭据了，留着这些记录只会让下一轮重新设密码时凭空多出几台信任设备、或者让一台早就
-    该被忘掉的设备继续被暂停。
+    **两条路都把「设备登录态」清干净**：信任设备（它们手上的 Cookie 立刻失效）、「需手动
+    确认」列表、还有猜密码那本账，一律清掉。理由不一样，结果一样：
+
+    * 换密码：密码是唯一的凭据，换了就等于换锁 —— 旧密码知道的人不该还能靠手里的 Cookie
+      继续看（局域网和公网设备都是）。主人改密码往往正是因为「有别人知道旧密码」。
+    * 取消密码：那时候已经不需要凭据了，留着这些记录只会让下一轮重新设密码时凭空多出几台
+      信任设备、或者让一台早该被忘掉的设备继续被暂停。
+
+    清掉之后，之前被信任的设备再访问就会重新看到解锁页；面板上「信任设备」列表也一起空掉。
     """
     def mutate(cfg: dict) -> None:
+        cfg.pop("access_guard", None)
+        cfg.pop("access_trusted_devices", None)
+        cfg.pop("access_pending_devices", None)
         if password:
             cfg["lan_password_hash"] = hash_password(password)
         else:
             cfg.pop("lan_password_hash", None)
-            cfg.pop("access_trusted_devices", None)
-            cfg.pop("access_pending_devices", None)
 
     update_config(mutate)
     return bool(password)
+
+
+# ── 猜密码账本（全服务共用，换网络 / 清 Cookie 都躲不开）──
+#
+# 以前是「按来源 IP + 浏览器型号」数错误次数，换个网络就成了一台「新设备」，错误次数
+# 重新从 0 开始；Cookie 也一样能清。任何放在来访者手里、或者跟着网络变的东西都算不上
+# 凭据。所以决定性的那本账改成**只记在服务端**：不看到来人是谁，只看「一共猜错了几次」。
+
+def guard() -> dict:
+    """猜密码账本：``{"failures": 连续错了几次, "locked_until": 解禁时间戳, "devices": [...]}``。
+
+    ``devices`` 是「是哪几台设备在猜」（名字 / 来源地址 / 各自错了几次 / 最近一次什么时候），
+    只用来显示给主人看 —— 决定锁不锁的只有 ``failures`` 那一个数字，它跟「谁来的」无关。
+
+    读不到、或者配置被手改坏了，都当成「干干净净的一本账」，绝不让脏数据把主人挡在外面。
+    """
+    empty = {"failures": 0, "locked_until": 0, "devices": []}
+    raw = load_config_cached().get("access_guard")
+    if not isinstance(raw, dict):
+        return empty
+    try:
+        failures = max(0, int(raw.get("failures") or 0))
+        locked_until = max(0, int(float(raw.get("locked_until") or 0)))
+    except (TypeError, ValueError):
+        return empty
+    devices: list[dict] = []
+    for row in raw.get("devices") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            devices.append({
+                "name": str(row.get("name") or "未知设备"),
+                "ip": str(row.get("ip") or ""),
+                "ua_hash": str(row.get("ua_hash") or ""),
+                "failures": max(0, int(row.get("failures") or 0)),
+                "first_at": max(0, int(row.get("first_at") or 0)),
+                "last_at": max(0, int(row.get("last_at") or 0)),
+            })
+        except (TypeError, ValueError):
+            continue                              # 单条坏了就丢这一条，别拖垮整本账
+    return {"failures": failures, "locked_until": locked_until, "devices": devices}
+
+
+def guard_devices() -> list[dict]:
+    """「正在猜密码的设备」清单（最近一次在猜的排最前；不含内部指纹，界面用不上）。
+
+    先倒过来再按时间排：「同一秒里猜的」很常见（连着试几次），配置里最后写进去的那台
+    才是最近的，排序是稳定的，倒过来就能让它在同一秒的几台里排前面。
+    """
+    rows = [{
+        "name": device["name"],
+        "ip": device["ip"],
+        "failures": device["failures"],
+        "first_at": device["first_at"],
+        "last_at": device["last_at"],
+    } for device in guard()["devices"]]
+    rows.reverse()
+    rows.sort(key=lambda row: row["last_at"], reverse=True)
+    return rows
+
+
+def guard_locked_seconds(now: float | None = None) -> int:
+    """还要等多少秒才受理密码（没锁时是 0）；不足一秒也算 1 秒。"""
+    moment = time.time() if now is None else float(now)
+    remaining = guard()["locked_until"] - moment
+    if remaining <= 0:
+        return 0
+    seconds = int(remaining)
+    return seconds + 1 if remaining > seconds else seconds
+
+
+def record_guard_failure(now: float | None = None, ip: str = "",
+                         user_agent: str | None = None) -> dict:
+    """又错了一次：记进账本，错够了就锁住（解禁之后每再错一次，时间翻倍）。
+
+    每次点着都是「**从现在起**再锁这么久」（不是往上一段锁的尾巴上叠）—— 这样不管被
+    点着几次，最多也就等到 ``LOCK_MAX_SECONDS`` 之后，不会越叠越远。
+
+    ``ip`` / ``user_agent`` 只影响「是哪台设备在猜」那份清单（给主人看的），跟锁不锁
+    完全无关：锁的是 ``failures`` 那一个数字。同一台设备（来源地址 + 浏览器指纹，跟信任
+    设备用同一把尺子）重复猜只累积次数，不会把清单刷满。
+    """
+    moment = int(time.time() if now is None else now)
+    state = {"failures": 0, "locked_until": 0}
+    record = {
+        "name": device_name(user_agent, ip),
+        "ip": str(ip or ""),
+        "ua_hash": _ua_fingerprint(user_agent),
+        "last_at": moment,
+    }
+    key = device_group_key(record)
+
+    def mutate(cfg: dict) -> None:
+        raw = cfg.get("access_guard")
+        raw = dict(raw) if isinstance(raw, dict) else {}
+        try:
+            failures = max(0, int(raw.get("failures") or 0)) + 1
+        except (TypeError, ValueError):
+            failures = 1
+        locked_until = 0
+        if failures >= MAX_PASSWORD_FAILURES:
+            step = min(failures - MAX_PASSWORD_FAILURES, 20)     # 巨大数字也不要溢出
+            penalty = min(LOCK_STEP_SECONDS * (2 ** step), LOCK_MAX_SECONDS)
+            locked_until = moment + penalty
+        rows = [row for row in raw.get("devices") or [] if isinstance(row, dict)]
+        same = next((row for row in rows if device_group_key(row) == key), None)
+        try:
+            previous = int(same.get("failures") or 0) if same else 0
+            first_at = int(same.get("first_at") or moment) if same else moment
+        except (TypeError, ValueError):
+            previous, first_at = 0, moment
+        entry = dict(record, failures=previous + 1, first_at=first_at)
+        kept = [row for row in rows if device_group_key(row) != key]
+        kept.append(entry)
+        cfg["access_guard"] = {"failures": failures, "locked_until": locked_until,
+                               "devices": kept[-MAX_GUARD_DEVICES:]}
+        state.update({"failures": failures, "locked_until": locked_until})
+
+    update_config(mutate)
+    return state
+
+
+def clear_guard() -> None:
+    """把账本清零、立刻解锁（面板上的「立即解锁」按钮、主人改密码时用）。"""
+    update_config(lambda cfg: cfg.pop("access_guard", None))
+
+
+def guard_snapshot() -> dict:
+    """给面板看的状态（剩余秒数由界面自己换算成「到几点几分」，设备清单从最近一次排起）。"""
+    state = guard()
+    return {
+        "failures": state["failures"],
+        "locked_seconds": guard_locked_seconds(),
+        "locked_until": state["locked_until"],
+        "lock_after": MAX_PASSWORD_FAILURES,
+        "lock_step_seconds": LOCK_STEP_SECONDS,
+        "lock_max_seconds": LOCK_MAX_SECONDS,
+        "devices": guard_devices(),
+    }
 
 
 def set_lan_access(enabled: bool) -> None:
@@ -304,6 +483,49 @@ def is_local_address(host: str) -> bool:
 def is_remote(host: str) -> bool:
     """这个来源地址要不要过局域网那道锁（本机一律不拦）。"""
     return not is_local_address(host)
+
+
+#: 隧道 / 反代写在请求头上的「真实访客地址」（按可信程度排序；键都是小写）
+CLIENT_HOST_HEADERS = ("cf-connecting-ip", "x-forwarded-for")
+
+
+def _first_header_value(headers: Mapping | None, name: str) -> str:
+    """从头里取一个值（``x-forwarded-for`` 这种可能有好几段时只取第一段）。"""
+    if not headers:
+        return ""
+    try:
+        value = headers.get(name)
+    except AttributeError:                      # 不是 Mapping（拿错东西了）：当没有
+        return ""
+    text = str(value or "").strip()
+    if name == "x-forwarded-for" and "," in text:
+        text = text.split(",", 1)[0].strip()
+    return text
+
+
+def client_host(peer: str, headers: Mapping | None = None) -> str:
+    """这次请求在服务看来是「谁来的」（``headers`` 的键必须是小写）。
+
+    对端**不是**本机 —— 局域网里的设备直连 —— 就只用对端地址，一个头都不看：那台设备
+    能自己编 ``X-Forwarded-For``，认它等于让人随便冒充。uvicorn 自带的反代处理也是这个
+    原则（只信 ``127.0.0.1`` 这种可信对端转发的头），这里再兜一层。
+
+    对端是本机（``127.0.0.1``）时有两种可能：真的是本机浏览器，或者 cloudflared 隧道把
+    外面的请求转进来了。后者带着隧道写的真实访客地址，**必须**认出来 —— 隧道连的就是
+    本机回环地址，不认这些头的话，公网访客在服务看来全是「本机」，访问密码那道门等于
+    没关。区分这两种也没有风险：能连上回环的本来就只有这台电脑上的程序。
+
+    （正常情况下 uvicorn 的 ``--proxy-headers`` 已经把头换算成 ``request.client.host``
+    了，这里只是不依赖那个开关 —— 少一个「换个启动方式就漏」的坑。）
+    """
+    address = normalize_host(peer)
+    if not is_local_address(address):
+        return address
+    for name in CLIENT_HOST_HEADERS:
+        found = _first_header_value(headers, name)
+        if found and not is_local_address(found):
+            return found
+    return address
 
 
 def trusted_devices() -> list[dict]:
@@ -512,9 +734,14 @@ def list_devices(current_id: str | None = None) -> list[dict]:
 
 
 # ── 需手动确认（连续输错密码的设备）──
-# 连续输错 MAX_PASSWORD_FAILURES 次访问密码之后，这台设备被**暂停**：不能继续输密码，
+# 连续输错 MAX_DEVICE_FAILURES 次访问密码之后，这台设备被**暂停**：不能继续输密码，
 # 要在面板的「需手动确认」里点「解除」才重新放行。判断「是不是同一台设备」跟信任设备
 # 用同一把尺子（来源 IP + 浏览器指纹，见 device_group_key）。
+#
+# 这只是**额外**一层：它认的是 IP + 浏览器指纹，被换网络 / 关掉无痕绕过去都正常 ——
+# 真正卡住「换个网络接着猜」的是上面那本全服务共用的账（``guard``），这本账不看到来
+# 的人是谁。设备这一条的价值在于「把正在猜的那台单独按下暂停」，并让主人在面板上看到
+# 是哪台设备在猜。
 #
 # 记录写进配置（重启也在），而"错了几次"只记在内存里（见 access_gate.py）——
 # 重启服务会把计数清零，但已经暂停的设备不会因此被放出来。
