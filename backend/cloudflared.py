@@ -507,7 +507,9 @@ def configured_tunnel_uuid() -> str:
     match = re.search(r"^\s*credentials-file:\s*(.+?)\s*$", text, re.M)
     if not match:
         return ""
-    uuid = os.path.splitext(os.path.basename(match.group(1)))[0]
+    # 两种分隔符都认：config.yml 多半是在 Windows 上写的，但读它的代码不该只在 Windows 上对
+    filename = re.split(r"[\\/]", match.group(1))[-1]
+    uuid = os.path.splitext(filename)[0]
     return uuid if re.fullmatch(r"[0-9a-fA-F-]{36}", uuid) else ""
 
 

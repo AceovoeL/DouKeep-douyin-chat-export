@@ -1031,15 +1031,18 @@ def test_mount_is_quiet_when_the_record_already_points_here(cfg_file, fake_tunne
 
 
 def test_configured_tunnel_uuid_reads_the_credentials_filename(cfg_file, tmp_path, monkeypatch):
+    """两种路径写法都要认得出文件名 —— CI 跑在 Linux 上，Windows 风格的路径也得认。"""
     config = tmp_path / "config.yml"
-    config.write_text(
-        f"tunnel: {HERE_UUID}\n"
-        f"credentials-file: C:\\somewhere\\{HERE_UUID}.json\n"
-        "ingress:\n  - hostname: example.com\n    service: http://127.0.0.1:8000\n",
-        encoding="utf-8")
     monkeypatch.setattr(cf, "CONFIG_FILE", str(config))
 
-    assert cf.configured_tunnel_uuid() == HERE_UUID
+    for path in (f"C:\\somewhere\\{HERE_UUID}.json",
+                 f"/home/runner/.cloudflared/{HERE_UUID}.json"):
+        config.write_text(
+            f"tunnel: {HERE_UUID}\n"
+            f"credentials-file: {path}\n"
+            "ingress:\n  - hostname: example.com\n    service: http://127.0.0.1:8000\n",
+            encoding="utf-8")
+        assert cf.configured_tunnel_uuid() == HERE_UUID, path
 
 
 def test_configured_tunnel_uuid_gives_up_on_a_junk_config(cfg_file, tmp_path, monkeypatch):
