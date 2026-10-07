@@ -854,10 +854,12 @@ def test_argo_credentials_gives_up_on_a_broken_file(tmp_path, monkeypatch):
     assert cf.argo_credentials() == {}
 
 
-def _fake_api(records, calls, *, delete_ok=True):
-    """假的 Cloudflare 接口：查询返回固定记录，删除按 ``delete_ok``。"""
-    def fake(path, *, method="GET", timeout=30):
+def _fake_api(records, calls, *, delete_ok=True, update_ok=True):
+    """假的 Cloudflare 接口：查询返回固定记录，删除按 ``delete_ok``，改写按 ``update_ok``。"""
+    def fake(path, *, method="GET", timeout=30, data=None):
         calls.append((method, path))
+        if method in ("PUT", "PATCH"):
+            return update_ok, {"success": update_ok, "result": dict(data or {})}
         if method == "DELETE":
             return delete_ok, {"success": delete_ok, "result": {}}
         return True, {"success": True, "result": records}
@@ -975,4 +977,154 @@ def test_route_dns_puts_the_overwrite_flag_before_the_positional_arguments(cfg_f
 
     assert seen[0] == ["tunnel", "route", "dns", "doukeep", "chat.example.com"]
     assert seen[1] == ["tunnel", "route", "dns", "--overwrite-dns", "doukeep", "chat.example.com"]
+
+
+# ── 域名指着**别的**隧道时，cloudflared 会「假成功」（2026-10-07 的坑）──
+#
+# cloudflared 撞上一条「已经指向别的隧道」的解析记录时，**连 --overwrite-dns 都不覆盖**，
+# 只打一句「is already configured to route to your tunnel tunnelID=<别的>」然后**退出 0**。
+# 光看退出码 = 把「什么都没做」当成「改好了」：挂载时谎报「解析已建好」，按钮谎报
+# 「覆盖了原有记录」，用户那边打开就是 404。下面几条钉住这个判断。
+
+HERE_UUID = "11111111-2222-3333-4444-555555555555"
+OTHER_UUID = "99999999-1111-2222-3333-444444444444"
+ALREADY_ELSEWHERE = ("INF example.com is already configured to route to your tunnel "
+                     f"tunnelID={OTHER_UUID}")
+
+
+def test_dns_route_owner_reads_the_tunnel_out_of_the_message():
+    assert cf.dns_route_owner(ALREADY_ELSEWHERE) == OTHER_UUID
+    assert cf.dns_route_owner("Added CNAME example.com") is None
+    # 认得出这句话、但话里没带 ID：返回空串（和「没说这话」区分开）
+    assert cf.dns_route_owner("INF example.com is already configured to route to your tunnel") == ""
+
+
+def test_mount_warns_when_the_record_points_at_another_tunnel(cfg_file, fake_tunnel, monkeypatch):
+    """指着别的隧道时不能算「解析已建好」—— 得把警告亮出来，好让用户点按钮修。"""
+    lan_on_with_password(cfg_file)
+    monkeypatch.setattr(cf, "route_dns",
+                        lambda name, domain, *, overwrite=False: (True, ALREADY_ELSEWHERE))
+
+    snapshot = _run_flow()
+
+    assert snapshot["state"] == "done"
+    assert snapshot["warning"] == "dns_exists"
+    log = "\n".join(snapshot["log"])
+    assert "解析已建好" not in log
+    assert "另一条隧道" in log and OTHER_UUID in log
+
+
+def test_mount_is_quiet_when_the_record_already_points_here(cfg_file, fake_tunnel, monkeypatch):
+    """记录本来就指着这条隧道：这次没动手，但结果是好的，不该报警。"""
+    lan_on_with_password(cfg_file)
+    monkeypatch.setattr(cf, "ensure_tunnel", lambda name: HERE_UUID)
+    monkeypatch.setattr(
+        cf, "route_dns",
+        lambda name, domain, *, overwrite=False: (
+            True, "INF example.com is already configured to route to your tunnel "
+                  f"tunnelID={HERE_UUID}"))
+
+    snapshot = _run_flow()
+
+    assert snapshot["warning"] == ""
+    assert snapshot["steps"]["dns"] == "done"
+
+
+def test_configured_tunnel_uuid_reads_the_credentials_filename(cfg_file, tmp_path, monkeypatch):
+    config = tmp_path / "config.yml"
+    config.write_text(
+        f"tunnel: {HERE_UUID}\n"
+        f"credentials-file: C:\\somewhere\\{HERE_UUID}.json\n"
+        "ingress:\n  - hostname: example.com\n    service: http://127.0.0.1:8000\n",
+        encoding="utf-8")
+    monkeypatch.setattr(cf, "CONFIG_FILE", str(config))
+
+    assert cf.configured_tunnel_uuid() == HERE_UUID
+
+
+def test_configured_tunnel_uuid_gives_up_on_a_junk_config(cfg_file, tmp_path, monkeypatch):
+    config = tmp_path / "config.yml"
+    config.write_text("credentials-file: not-a-uuid.json\n", encoding="utf-8")
+    monkeypatch.setattr(cf, "CONFIG_FILE", str(config))
+
+    assert cf.configured_tunnel_uuid() == ""
+
+
+def test_overwrite_dns_retargets_the_record_through_the_api(cfg_file, monkeypatch):
+    """按钮要真的改记录：走接口把那条 CNAME 指到本机隧道。"""
+    access.set_public_access(enabled=True, domain="chat.example.com")
+    monkeypatch.setattr(cf, "argo_credentials",
+                        lambda: {"zoneID": "zone-1", "apiToken": "tok-1"})
+    monkeypatch.setattr(cf, "configured_tunnel_uuid", lambda: HERE_UUID)
+    seen = []
+
+    def fake(path, *, method="GET", timeout=30, data=None):
+        seen.append((method, path, data))
+        if method in ("PUT", "PATCH"):
+            return True, {"success": True, "result": {}}
+        return True, {"success": True, "result": [
+            {"id": "rec-1", "name": "chat.example.com", "type": "CNAME",
+             "content": f"{OTHER_UUID}.cfargotunnel.com"}]}
+
+    monkeypatch.setattr(cf, "api_call", fake)
+    monkeypatch.setattr(cf, "_run", lambda *a, **k: pytest.fail("接口能走通就不该退回命令行"))
+
+    assert cf.overwrite_dns() == (True, "")
+    writes = [item for item in seen if item[0] in ("PUT", "PATCH")]
+    assert writes and writes[0][1] == "/zones/zone-1/dns_records/rec-1"
+    assert writes[0][2]["content"] == f"{HERE_UUID}.cfargotunnel.com"
+    assert writes[0][2]["type"] == "CNAME"
+
+
+def test_overwrite_dns_is_not_fooled_by_the_cli_saying_already_configured(cfg_file, monkeypatch):
+    """接口走不通时退回命令行；命令行说「已经指向别的隧道」= 它没改，不能报成功。"""
+    access.set_public_access(enabled=True, domain="chat.example.com")
+    monkeypatch.setattr(cf, "configured_tunnel_uuid", lambda: "")
+    monkeypatch.setattr(cf, "argo_credentials", lambda: {})
+    monkeypatch.setattr(cf, "route_dns",
+                        lambda name, domain, *, overwrite=False: (True, ALREADY_ELSEWHERE))
+
+    ok, detail = cf.overwrite_dns()
+
+    assert ok is False
+    assert OTHER_UUID in detail
+
+
+def test_verify_public_url_accepts_the_lan_password_gate(cfg_file, monkeypatch):
+    """设了访问密码时接口回的是 lan_access_password_required —— 那也是「到了本机」。
+
+    挂了密码的公网访问正是推荐用法；以前这会让第 6 步一路误报失败。
+    """
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"error": "lan_access_password_required"}).encode("utf-8")
+
+    monkeypatch.setattr(cf.urllib.request, "urlopen",
+                        lambda request, timeout=0: _Response())
+
+    assert cf.verify_public_url("chat.example.com") is True
+
+
+def test_verify_public_url_still_says_no_when_the_page_is_not_ours(cfg_file, monkeypatch):
+    """回了一段别的 JSON（记录指向别处）→ 还是失败。"""
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"hello": "world"}).encode("utf-8")
+
+    monkeypatch.setattr(cf.urllib.request, "urlopen",
+                        lambda request, timeout=0: _Response())
+
+    assert cf.verify_public_url("chat.example.com") is False
 

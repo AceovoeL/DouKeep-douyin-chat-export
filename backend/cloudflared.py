@@ -494,6 +494,23 @@ def write_config(tunnel_uuid: str, domain: str) -> str:
     return CONFIG_FILE
 
 
+def configured_tunnel_uuid() -> str:
+    """本机 config.yml 里那条隧道的 UUID（认不出就返回空串）。
+
+    不发任何网络请求：``write_config`` 把凭据写成 ``<uuid>.json``，文件名本身就是 UUID。
+    """
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return ""
+    match = re.search(r"^\s*credentials-file:\s*(.+?)\s*$", text, re.M)
+    if not match:
+        return ""
+    uuid = os.path.splitext(os.path.basename(match.group(1)))[0]
+    return uuid if re.fullmatch(r"[0-9a-fA-F-]{36}", uuid) else ""
+
+
 def route_dns(name: str, domain: str, *, overwrite: bool = False) -> tuple[bool, str]:
     """把域名指到这条隧道；返回 ``(成功, 说明)``。
 
@@ -515,6 +532,24 @@ def route_dns(name: str, domain: str, *, overwrite: bool = False) -> tuple[bool,
     if code == 0:
         return True, out
     return False, out
+
+
+#: cloudflared 撞上「这条域名已经指向某条隧道」时打的话。要命的是：它**照样退出 0**，
+#: 而且**连 --overwrite-dns 都不肯覆盖** —— 光看退出码会把「什么都没做」当成「改好了」。
+_ROUTE_OWNER_RE = re.compile(
+    r"is already configured to route to your tunnel(?:\s+tunnelID=([0-9a-fA-F-]{36}))?",
+    re.I)
+
+
+def dns_route_owner(output: str) -> str | None:
+    """读 cloudflared 上面那句话，返回这条域名**已经**指向的隧道 ID。
+
+    没说过这话 → ``None``（它这次真的动手了）；说了但话里没带 ID → 空串。
+    """
+    match = _ROUTE_OWNER_RE.search(str(output or ""))
+    if not match:
+        return None
+    return match.group(1) or ""
 
 
 def delete_tunnel(name: str) -> bool:
@@ -565,15 +600,21 @@ def api_error(payload: dict) -> str:
     return f"{message}（code {code}）" if code else message
 
 
-def api_call(path: str, *, method: str = "GET", timeout: float = 30) -> tuple[bool, dict]:
-    """调一次 Cloudflare 接口；返回 ``(成功, 响应 JSON)``，失败的响应里带原因。"""
+def api_call(path: str, *, method: str = "GET", timeout: float = 30,
+             data: dict | None = None) -> tuple[bool, dict]:
+    """调一次 Cloudflare 接口；返回 ``(成功, 响应 JSON)``，失败的响应里带原因。
+
+    ``data`` 不为空时按 JSON 发出去（改解析记录要 PUT 一份新的记录内容）。
+    """
     creds = argo_credentials()
     if not creds:
         return False, {"errors": [{"message": "没有 Cloudflare 凭据"}]}
-    request = urllib.request.Request(
-        _API_BASE + path, method=method,
-        headers={"Authorization": "Bearer " + str(creds["apiToken"]),
-                 "User-Agent": _UA})
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    headers = {"Authorization": "Bearer " + str(creds["apiToken"]), "User-Agent": _UA}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(_API_BASE + path, data=body, method=method,
+                                     headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8", "replace"))
@@ -639,23 +680,60 @@ def delete_dns(name: str, domain: str) -> bool:
     return False
 
 
+def retarget_dns(domain: str, tunnel_uuid: str) -> tuple[bool, str]:
+    """把 ``domain`` 那条**指向隧道**的解析改成指向 ``tunnel_uuid``（走 Cloudflare 接口）。
+
+    cloudflared 的命令行改不动这种记录（见 ``dns_route_owner``：它认了「已经配置好」
+    就不再动手，还照样退出 0），所以必须自己调接口。只动
+    ``CNAME → *.cfargotunnel.com`` 这一种：域名上用户自己的记录一概不碰。
+    """
+    zone, record_id, reason = tunnel_dns_record(domain)
+    if not zone or not record_id:
+        return False, reason or "这个域名上没有指向隧道的解析记录"
+    ok, payload = api_call(
+        f"/zones/{zone}/dns_records/{record_id}", method="PUT",
+        data={"type": "CNAME", "name": domain,
+              "content": f"{tunnel_uuid}.cfargotunnel.com",
+              "proxied": True, "ttl": 1})
+    if ok:
+        return True, ""
+    return False, api_error(payload)
+
+
 def overwrite_dns() -> tuple[bool, str]:
     """把域名解析改成指向**本机这条**隧道（面板「把解析改到这台电脑」按钮用）。
 
     平时挂载绝不覆盖别人的记录；只有用户明确点了这个按钮，才带 ``--overwrite-dns``。
-    改成功就把「记录已存在」那句提示收掉 —— 它已经不成立了。
+
+    优先走 Cloudflare 接口：cloudflared 遇到「已经指向别的隧道」的记录**不会覆盖**，
+    却照样退出 0 —— 2026-10-07 那次「点了按钮还是打不开、面板却说改好了」就是栽在这。
     """
     name = _access.public_tunnel_name()
     domain = _access.public_domain()
     if not domain:
         return False, "no_domain"
+    uuid = configured_tunnel_uuid()
+    if uuid:
+        ok, reason = retarget_dns(domain, uuid)
+        if ok:
+            _append_tunnel_log("INF [panel]",
+                               f"按用户要求把 {domain} 的解析改指向本机这条隧道（{uuid}）")
+            JOB.clear_warning()
+            return True, ""
+        _append_tunnel_log("INF [panel]", f"接口改解析没成（{reason}），退回命令行再试一次")
     ok, out = route_dns(name, domain, overwrite=True)
-    if ok:
+    owner = dns_route_owner(out)
+    if ok and (owner is None or (uuid and owner == uuid)):
         _append_tunnel_log("INF [panel]",
                            f"按用户要求把 {domain} 的解析改指向本机这条隧道（覆盖了原有记录）")
         JOB.clear_warning()
         return True, ""
-    return False, out.strip()[-300:]
+    if owner:
+        _append_tunnel_log(
+            "INF [panel]",
+            f"{domain} 的解析还指着另一条隧道（{owner}），命令行不肯覆盖 —— "
+            "请到 Cloudflare 的 DNS 页面把这条 CNAME 改成本机隧道，或先把它删掉")
+    return False, out.strip()[-300:] or "改解析没成功"
 
 
 # ── 授权 ──
@@ -1007,6 +1085,9 @@ def verify_public_url(domain: str, timeout: float = 20) -> bool | None:
     """从公网绕一圈回来看看：这个域名是不是真的回到了这台电脑。
 
     走 ``/api/auth/check``（不需要登录）：能解析出这个接口特有的 JSON 就算通。
+    设了**局域网访问密码**时这个接口会先被那道门拦住，回
+    ``{"error": "lan_access_password_required"}`` —— 那同样是「请求已经到达本机」的
+    证据，不能当成没通（挂了密码的公网访问是推荐用法，以前这会一路误报失败）。
     解析记录指向别处、或还没生效时返回 False；网络本身不通返回 None（不算失败，
     只是「没验成」）。
     """
@@ -1021,7 +1102,9 @@ def verify_public_url(domain: str, timeout: float = 20) -> bool | None:
         return False
     except OSError:
         return None                                 # 网络本身不通：验不了，不当失败
-    return isinstance(data, dict) and "need_password" in data
+    return isinstance(data, dict) and (
+        "need_password" in data
+        or data.get("error") == "lan_access_password_required")
 
 
 # ── 一次「挂载到公网」的过程 ──
@@ -1162,7 +1245,7 @@ class MountJob:
             self._step_binary()
             self._step_auth()
             tunnel_uuid = self._step_create(tunnel_name)
-            self._step_dns(tunnel_name, domain)
+            self._step_dns(tunnel_name, tunnel_uuid, domain)
             self._step_start(tunnel_name, tunnel_uuid, domain)
             self._step_verify(domain)
             _access.set_public_access(enabled=True, domain=domain, tunnel=tunnel_name)
@@ -1244,7 +1327,7 @@ class MountJob:
         self.finish_step("create")
         return tunnel_uuid
 
-    def _step_dns(self, tunnel_name: str, domain: str) -> None:
+    def _step_dns(self, tunnel_name: str, tunnel_uuid: str, domain: str) -> None:
         self.begin_step("dns")
         if self.cancelled():
             raise TunnelError("cancelled")
@@ -1259,6 +1342,16 @@ class MountJob:
                 self.finish_step("dns")
                 return
             raise TunnelError("dns_failed", out.strip()[-300:])
+        owner = dns_route_owner(out)
+        if owner is not None and owner != tunnel_uuid:
+            # cloudflared 认了这条记录、不肯覆盖：它还指着**别的**隧道，域名打开就是 404。
+            # 它退出码是 0，这里绝不能当成功（2026-10-07 那次「挂载完却打不开」的坑）。
+            self.add_log(f"{domain} 的解析指向的是另一条隧道"
+                         f"（{owner or '未知'}），没有替你改")
+            with self._lock:
+                self.warning = "dns_exists"
+            self.finish_step("dns")
+            return
         self.add_log(f"解析已建好：{domain} → 这条隧道")
         self.finish_step("dns")
 
