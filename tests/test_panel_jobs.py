@@ -5,6 +5,7 @@ middleware and the Playwright login probe.
 """
 import asyncio
 import sys
+import threading
 
 import pytest
 
@@ -96,6 +97,31 @@ def test_voice_backfill_start_conflict(monkeypatch):
     monkeypatch.setitem(cp._scrape_state, "status", "running")
     res = asyncio.run(cp.start_voice_backfill())
     assert getattr(res, "status_code", None) == 409
+
+
+def test_pending_videos_count_is_computed_off_the_event_loop_and_cached(monkeypatch):
+    """「待下载视频条数」要整表扫 raw_data，绝不能占住处理请求的那条线。
+
+    库上 GB、十几万条消息时，那条查询要 5 秒左右，而面板每次打开都会问一次。以前它
+    就在请求里同步算，等于一刷新页面服务就冻住 —— 版本号、配置这些不查库的接口
+    也跟着等（真机反馈过）。所以：算的地方必须在别的线程，算出来的数字要缓存。
+    """
+    threads = []
+
+    def fake_count():
+        threads.append(threading.current_thread())
+        return 7
+
+    monkeypatch.setattr(cp, "_count_pending_videos", fake_count)
+
+    assert asyncio.run(cp.video_backfill_pending()) == {"pending": 7}
+    assert threads and threads[0] is not threading.main_thread()   # 不在事件循环线程里
+    assert asyncio.run(cp.video_backfill_pending()) == {"pending": 7}
+    assert len(threads) == 1        # 第二次用的是缓存，没有再扫一遍库
+
+    cp._forget_video_pending()      # 回填跑完会忘掉缓存
+    assert asyncio.run(cp.video_backfill_pending()) == {"pending": 7}
+    assert len(threads) == 2
 
 
 def test_windows_subprocess_output_is_forced_to_utf8(monkeypatch):

@@ -30,6 +30,27 @@ def _never_migrate_the_real_project(monkeypatch):
     monkeypatch.setattr(paths, "migrate_legacy_layout", lambda: [])
 
 
+@pytest.fixture(autouse=True)
+def _reset_panel_caches():
+    """清掉面板里那几份模块级缓存（「Token 是谁」、「待下载视频条数」）。
+
+    它们是进程级的（设计如此：跑起来之后不用反复问 GitHub / 反复扫全表），
+    不清的话上一个用例算出来的值会漏给下一个用例，测出来的就不是各用例自己的行为了。
+    """
+    import sys
+
+    def clear():
+        module = sys.modules.get("backend.control_panel")
+        if module is not None:
+            module._github_login_cache = None
+            module._github_login_refreshing = False
+            module._video_pending_cache = None
+
+    clear()
+    yield
+    clear()
+
+
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
     """Create an isolated chat.db with the real schema and repoint the single

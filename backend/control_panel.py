@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from threading import Lock
+from threading import Lock, Thread
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
@@ -1637,16 +1637,59 @@ async def video_backfill_status():
     }
 
 
+# ── 「待下载视频条数」的缓存 ──
+#
+# 这条统计要把整张 messages 表按 raw_data 扫一遍（库上 GB、十几万条消息时实测要
+# 5 秒），而面板每次打开都会问一次。旧代码就在处理请求的那条线上同步算：算的这几秒
+# 里服务谁都答不上来，于是版本号、配置这些根本不用查库的接口也跟着一起等 —— 表现成
+# 「刷新页面要等 5 秒才显示」。现在：算的地方丢线程池（不再占住那条线），算出来的
+# 数字缓存一小会儿（连着刷新不反复扫全表）。
+#: 缓存多久算新鲜：30 秒。
+_VIDEO_PENDING_TTL = 30.0
+
+#: 最近一次算出来的 ``(时间戳, 条数)``。
+_video_pending_cache: tuple[float, int] | None = None
+
+#: 同时只让一个线程去扫库（大库上几条并发扫描只会互相拖慢）。
+_video_pending_lock = Lock()
+
+
+def _count_pending_videos() -> int:
+    """现算一次「待下载视频条数」（整表扫描，只许在线程里调用）。"""
+    from extractor.video_downloader import pending_videos
+    from backend.database import get_db
+
+    conn = get_db()
+    try:
+        return len(pending_videos(conn))
+    finally:
+        conn.close()
+
+
+def _video_pending_count() -> int:
+    """缓存里的「待下载视频条数」；没算过或过期了才现算（在线程池里跑）。"""
+    global _video_pending_cache
+    with _video_pending_lock:
+        if _video_pending_cache is not None:
+            stamp, count = _video_pending_cache
+            if time.time() - stamp < _VIDEO_PENDING_TTL:
+                return count
+        count = _count_pending_videos()
+        _video_pending_cache = (time.time(), count)
+        return count
+
+
+def _forget_video_pending() -> None:
+    """忘掉缓存（回填刚跑完，条数已经变了），下次重新现算。"""
+    global _video_pending_cache
+    _video_pending_cache = None
+
+
 @control_router.get("/api/media/videos/pending")
 async def video_backfill_pending():
     # Reuse the same Python filter as the backfill itself so the count matches
     # what will actually be processed (excludes text replies that quote a video).
-    from extractor.video_downloader import pending_videos
-    from backend.database import get_db
-    conn = get_db()
-    rows = pending_videos(conn)
-    conn.close()
-    return {"pending": len(rows)}
+    return {"pending": await asyncio.to_thread(_video_pending_count)}
 
 
 @control_router.post("/api/media/videos/backfill")
@@ -1738,6 +1781,8 @@ async def _run_video_backfill():
         _video_backfill_state["finished_at"] = time.time()
         _video_backfill_state["paused"] = False
         _video_backfill_state["stop"] = False
+        # 刚补过一轮，「待下载条数」肯定变了：别让面板还显示缓存里那个旧数字
+        _forget_video_pending()
 
 
 @control_router.get("", response_class=HTMLResponse)
@@ -1749,24 +1794,37 @@ async def panel_page():
     )
 
 
-@control_router.get("/api/status")
-async def panel_status():
+def _panel_status_snapshot() -> dict:
+    """面板运行状态轮询里那几个数据库数字。
+
+    放到线程里跑：库可能有上 GB、十几万条消息，冷启动时那句 ``COUNT(*)`` 要接近
+    1 秒 —— 直接在请求里等就把整条通道占住了。
+    """
     stats = database.get_stats()
-    from backend.database import get_db
-    conn = get_db()
-    row = conn.execute("SELECT MAX(last_message_time) FROM conversations").fetchone()
-    last_time = row[0] if row and row[0] else 0
-    convs = conn.execute("SELECT name FROM conversations ORDER BY last_message_time DESC").fetchall()
-    conn.close()
-
-    cfg = _load_config()
-
+    conn = database.get_db()
+    try:
+        row = conn.execute("SELECT MAX(last_message_time) FROM conversations").fetchone()
+        last_time = row[0] if row and row[0] else 0
+        convs = conn.execute(
+            "SELECT name FROM conversations ORDER BY last_message_time DESC").fetchall()
+    finally:
+        conn.close()
     return {
         "conversations": stats["conversations"],
         "messages": stats["messages"],
         "users": stats["users"],
         "last_message_time": last_time,
         "conversation_names": [c[0] for c in convs if c[0]],
+    }
+
+
+@control_router.get("/api/status")
+async def panel_status():
+    snapshot = await asyncio.to_thread(_panel_status_snapshot)
+    cfg = _load_config()
+
+    return {
+        **snapshot,
         "custom_filters": cfg.get("custom_filters", []),
         "scrape": {
             "status": _scrape_state["status"],
@@ -2099,7 +2157,7 @@ async def _collect_update_uncached() -> dict:
     commit 先按旧 → 新排好序，再逐个标上 local_count + 序号 + 1，于是每一条的
     版本号都等于「它进入历史时」的版本号，最后一条就是远端最新版本。
     """
-    local_count = _local_commit_count()
+    local_count = await asyncio.to_thread(_local_commit_count)
     if not local_count:
         raise _UpdateCheckError("bad_local_version")
     _check_log_add(f"本地版本 v{_version.VERSION}（第 {local_count} 个 commit）")
@@ -2128,7 +2186,7 @@ async def _collect_update_uncached() -> dict:
     # 面板按「最新在前」显示
     versions.reverse()
     remote_version = _version.version_string(local_count + behind) if behind else _version.VERSION
-    repository = _remote_repository()
+    repository = await asyncio.to_thread(_remote_repository)
     # 「查看更新内容」的链接：用 commit 直接对比（GitHub 会列出落后的那些提交）。
     # 以前是比 vX.Y.Z 标签，但标签需要维护者手动推到远端、经常没有，链接就会指向
     # 一个打不开的页面；连本地 commit 也读不到时退回远端提交列表页，照样看得到更新。
@@ -2292,6 +2350,73 @@ def _github_account(token: str) -> str:
     return str(data.get("login") or "") if isinstance(data, dict) else ""
 
 
+# ── 「Token 是谁」的缓存 ──
+#
+# 这个答案要问 GitHub，慢网络下能等满接口超时（15 秒）。旧代码是在处理请求的过程里
+# **同步**等它的，而处理请求的只有唯一那条通道 —— 它一卡，面板上别的接口（版本号、
+# 配置、运行状态…）全都跟着等，表现成「打开面板要十几秒才出内容」。
+# 现在：答案只从下面这份缓存里取（没有就先给空串），问的事丢给后台线程去做。
+#: 缓存多久算新鲜：10 分钟。同一个 Token 的登录名不会变，没必要反复问。
+_GITHUB_ACCOUNT_TTL = 600.0
+
+#: 最近一次问到的登录名：``(时间戳, 登录名)``。问不到也记（空串），
+#: 否则每次打开面板都要为同一个失败再等一遍。
+_github_login_cache: tuple[float, str] | None = None
+
+#: 后台补问有没有在跑（慢网络上别堆出一串请求）。
+_github_login_refreshing = False
+
+
+def _github_login_snapshot() -> tuple[str, bool]:
+    """**立刻**能拿到的登录名，以及它是不是已经过期（过期就该后台补问一次）。
+
+    从没问过时是空串 —— 面板那句「是谁」先空着，不让打开面板的人等网络。
+    """
+    if _github_login_cache is None:
+        return "", False
+    stamp, login = _github_login_cache
+    return login, (time.time() - stamp) < _GITHUB_ACCOUNT_TTL
+
+
+def _remember_github_login(login: str) -> None:
+    """记住「Token 是谁」；问不到时记空串（失败也缓存，不反复重试）。"""
+    global _github_login_cache
+    _github_login_cache = (time.time(), login)
+
+
+def _forget_github_login() -> None:
+    """忘掉记住的登录名（Token 换了或删了），下次打开面板时后台重新问一遍。"""
+    global _github_login_cache
+    _github_login_cache = None
+
+
+def _schedule_github_login_refresh(token: str) -> None:
+    """在后台线程里补问一次「Token 是谁」，**绝不在这里等网络**。"""
+    global _github_login_refreshing
+    if not token or _github_login_refreshing:
+        return
+    _github_login_refreshing = True
+
+    def run() -> None:
+        global _github_login_refreshing
+        try:
+            _remember_github_login(_github_account(token))
+        except Exception:                  # 问不到也算一个答案，别让线程炸出去
+            _remember_github_login("")
+        finally:
+            _github_login_refreshing = False
+
+    Thread(target=run, name="github-login-refresh", daemon=True).start()
+
+
+def warm_github_login() -> None:
+    """服务启动时先问一次「Token 是谁」（后台线程），面板第一次打开就有名字。
+
+    没有可用的 Token（没配、或开发者模式关着）时什么都不做。
+    """
+    _schedule_github_login_refresh(_github_token())
+
+
 def _credential_scope(token: str) -> tuple[str, str]:
     """检查 Token 能用吗，返回 (状态, 登录名)。
 
@@ -2328,9 +2453,15 @@ async def update_token_status():
     except ValueError:
         location = _github_auth.TOKEN_PATH
     usable = _github_token()
+    login = ""
+    if usable:
+        # 「是谁」只看缓存，不在这个请求里等 GitHub（等的话面板会卡十几秒）
+        login, fresh = _github_login_snapshot()
+        if not fresh:
+            _schedule_github_login_refresh(usable)
     return {
         "configured": bool(token),
-        "login": (_github_account(usable) if usable else ""),
+        "login": login,
         "path": location,
     }
 
@@ -2358,6 +2489,10 @@ async def update_token_save(req: _GithubTokenRequest):
     _github_auth.save(token)
     # 换了凭据，之前缓存的检测结果可能已经不成立
     _invalidate_update_cache()
+    if login:
+        _remember_github_login(login)     # 刚才校验时已经知道是谁，先记下来给面板用
+    else:
+        _forget_github_login()            # 没问出来：下次打开面板让后台再问
     return {"saved": True, "login": login, "login_unknown": not login}
 
 
@@ -2365,20 +2500,31 @@ async def update_token_save(req: _GithubTokenRequest):
 async def update_token_clear():
     cleared = _github_auth.clear()
     _invalidate_update_cache()
+    _forget_github_login()
     return {"cleared": cleared}
 
 
 @control_router.get("/api/update/info")
 async def update_info():
-    """「关于」页的静态信息：版本号、仓库地址、作者。"""
-    payload = _local_version_payload()
+    """「关于」页的静态信息：版本号、仓库地址、作者。
+
+    这里全是本地信息，**一个网络请求都不发**：面板一打开就要显示版本号，不能让它
+    等 GitHub（慢网络下那一步要十几秒）。读 git 拿 commit 数会开子进程，所以放到
+    线程里跑；Token 的「是谁」同样只取缓存，问的事交给后台线程。
+    """
+    payload = await asyncio.to_thread(_local_version_payload)
     token = _github_auth.load()
     usable = _github_token()
+    login = ""
+    if usable:
+        login, fresh = _github_login_snapshot()
+        if not fresh:
+            _schedule_github_login_refresh(usable)
     payload.update({
         "repository_git_url": _version.REPOSITORY_GIT_URL,
         "token": {
             "configured": bool(token),
-            "login": (_github_account(usable) if usable else ""),
+            "login": login,
         },
         "update": {
             "status": _update_state["status"],
@@ -2815,7 +2961,7 @@ async def _auto_update_gate() -> dict:
     busy = _busy_job_labels()
     if busy:
         return {"blocked": ("busy", "、".join(busy)), "dirty_checked": True}
-    if not _version.is_fork_repository(_remote_repository()):
+    if not _version.is_fork_repository(await asyncio.to_thread(_remote_repository)):
         return {"blocked": ("foreign", ""), "dirty_checked": True}
     dirty = await asyncio.to_thread(_worktree_dirty_paths)
     if dirty:
@@ -3425,7 +3571,7 @@ async def update_run(req: _UpdateRunRequest | None = None):
     if _scrape_state["status"] == "running":
         return JSONResponse({"error": "有采集任务在运行，请先停止再更新"}, status_code=409)
 
-    repository = _remote_repository()
+    repository = await asyncio.to_thread(_remote_repository)
     if not _version.is_fork_repository(repository):
         return JSONResponse({
             "error": f"当前仓库地址（{repository}）不是本项目的更新源，请手动更新",

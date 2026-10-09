@@ -9,6 +9,7 @@
 """
 import io
 import json
+import time
 import urllib.error
 
 import pytest
@@ -156,7 +157,9 @@ def test_github_json_reports_invalid_token(monkeypatch, token_file):
 
 def test_token_status_never_returns_the_token(monkeypatch, token_file):
     github_auth.save(TOKEN)
-    monkeypatch.setattr(cp, "_github_account", lambda token: "AceovoeL")
+    cp._remember_github_login("AceovoeL")       # 后台已经问到的名字
+    monkeypatch.setattr(cp, "_github_account",
+                        lambda token: pytest.fail("这个接口不该同步去问 GitHub"))
 
     payload = cp.asyncio.run(cp.update_token_status())
 
@@ -167,13 +170,157 @@ def test_token_status_never_returns_the_token(monkeypatch, token_file):
 
 def test_update_info_never_returns_the_token(monkeypatch, token_file):
     github_auth.save(TOKEN)
-    monkeypatch.setattr(cp, "_github_account", lambda token: "AceovoeL")
+    cp._remember_github_login("AceovoeL")
+    monkeypatch.setattr(cp, "_github_account",
+                        lambda token: pytest.fail("「关于」页不该同步去问 GitHub"))
     monkeypatch.setattr(cp, "_remote_repository", lambda: version.REPOSITORY_URL)
 
     payload = cp.asyncio.run(cp.update_info())
 
     assert payload["token"] == {"configured": True, "login": "AceovoeL"}
     assert TOKEN not in json.dumps(payload, ensure_ascii=False)
+
+
+# ── 「Token 是谁」的缓存：面板不能被 GitHub 的慢网络拖住 ──
+#
+# 这个答案要问 api.github.com，慢网络下能等满 15 秒的接口超时。它是**同步**问的
+# 时候，处理请求的那唯一一条通道就被占住，面板上版本号 / 配置 / 运行状态全都跟着
+# 等 —— 用户看到的就是「打开面板十几秒才出东西」。所以：答案只从缓存里取，
+# 问的事交给后台线程，10 分钟内不重复问，问不到也记下来。
+
+def _forbid_sync_github(monkeypatch, asked):
+    """同步问 GitHub 就判失败，同时记录「后台补问」被安排了几次。
+
+    替身只记**真的带着 Token** 的那几次 —— 和真函数一样，空 Token 是直接返回的
+    （没有可用的 Token 时连问都不该问）。
+    """
+    monkeypatch.setattr(cp, "_github_account",
+                        lambda token: pytest.fail("不该在处理请求的过程中问 GitHub"))
+    monkeypatch.setattr(cp, "_schedule_github_login_refresh",
+                        lambda token: asked.append(token) if token else None)
+
+
+def test_update_info_does_not_wait_for_github(monkeypatch, token_file):
+    github_auth.save(TOKEN)
+    monkeypatch.setattr(cp, "_remote_repository", lambda: version.REPOSITORY_URL)
+    asked = []
+    _forbid_sync_github(monkeypatch, asked)
+
+    payload = cp.asyncio.run(cp.update_info())
+
+    assert payload["version"] == version.VERSION      # 本地版本号照常给
+    assert payload["token"]["login"] == ""            # 还没问过：先空着，不在这儿等
+    assert asked == [TOKEN], "要安排一次后台补问"
+
+
+def test_token_status_asks_github_only_in_the_background(monkeypatch, token_file):
+    github_auth.save(TOKEN)
+    asked = []
+    _forbid_sync_github(monkeypatch, asked)
+
+    payload = cp.asyncio.run(cp.update_token_status())
+
+    assert payload["configured"] is True
+    assert payload["login"] == ""
+    assert asked == [TOKEN]
+
+
+def test_github_login_is_not_asked_again_within_ten_minutes(monkeypatch, token_file):
+    """缓存 10 分钟：反复打开面板不再反复问 GitHub。"""
+    github_auth.save(TOKEN)
+    cp._remember_github_login("AceovoeL")
+    asked = []
+    _forbid_sync_github(monkeypatch, asked)
+
+    for _ in range(3):
+        assert cp.asyncio.run(cp.update_token_status())["login"] == "AceovoeL"
+    assert asked == [], "10 分钟之内不该再问一次"
+
+
+def test_warm_github_login_is_done_at_startup(token_file, monkeypatch):
+    """服务启动时先在后台问一次：面板第一次打开就有名字，且这一问不挡启动。"""
+    github_auth.save(TOKEN)
+    asked = []
+    _forbid_sync_github(monkeypatch, asked)
+
+    cp.warm_github_login()
+
+    assert asked == [TOKEN]
+
+
+def test_warm_github_login_does_nothing_without_a_token(token_file, panel_config,
+                                                        monkeypatch):
+    _set_developer_mode(panel_config, False)
+    github_auth.save(TOKEN)
+    asked = []
+    _forbid_sync_github(monkeypatch, asked)
+
+    cp.warm_github_login()
+
+    assert asked == [], "开发者模式关着时连「是谁」都不问"
+
+
+def test_scheduling_a_refresh_without_a_token_does_nothing(monkeypatch, token_file):
+    """空 Token 直接返回：后台线程都不该开（没有可用的凭据就别去问）。"""
+    called = []
+    monkeypatch.setattr(cp, "_github_account",
+                        lambda token: called.append(token) or "")
+
+    cp._schedule_github_login_refresh("")
+
+    time.sleep(0.05)
+    assert called == []
+    assert cp._github_login_refreshing is False
+
+
+def test_a_failed_lookup_is_remembered_too(monkeypatch, token_file):
+    """问不到也记住（空串）：别为同一个失败每次打开面板都重试一遍。"""
+    github_auth.save(TOKEN)
+    cp._remember_github_login("")
+    asked = []
+    _forbid_sync_github(monkeypatch, asked)
+
+    for _ in range(3):
+        assert cp.asyncio.run(cp.update_token_status())["login"] == ""
+    assert asked == []
+
+
+def test_clearing_the_token_forgets_the_login(monkeypatch, token_file):
+    github_auth.save(TOKEN)
+    cp._remember_github_login("AceovoeL")
+    monkeypatch.setattr(cp, "_schedule_github_login_refresh", lambda token: None)
+
+    cp.asyncio.run(cp.update_token_clear())
+
+    payload = cp.asyncio.run(cp.update_token_status())
+    assert payload["configured"] is False
+    assert payload["login"] == "", "Token 都删了，别再显示上一个账号的名字"
+
+
+def test_saving_a_token_remembers_who_it_belongs_to(monkeypatch, token_file):
+    """保存 Token 时本来就已经问过一次「是谁」，结果直接记下来给面板用。"""
+    monkeypatch.setattr(cp, "_credential_scope", lambda token: ("ok", "AceovoeL"))
+
+    cp.asyncio.run(cp.update_token_save(cp._GithubTokenRequest(token=TOKEN)))
+
+    asked = []
+    _forbid_sync_github(monkeypatch, asked)
+    assert cp.asyncio.run(cp.update_token_status())["login"] == "AceovoeL"
+    assert asked == []
+
+
+def test_background_refresh_records_the_answer(monkeypatch, token_file):
+    """后台线程问到的名字要落到缓存里（它是真的自己开一个线程去问）。"""
+    github_auth.save(TOKEN)
+    monkeypatch.setattr(cp, "_github_account", lambda token: "AceovoeL")
+
+    cp._schedule_github_login_refresh(TOKEN)
+
+    for _ in range(500):                              # 最多等 5 秒
+        if cp._github_login_cache and cp._github_login_cache[1]:
+            break
+        time.sleep(0.01)
+    assert cp._github_login_cache and cp._github_login_cache[1] == "AceovoeL"
 
 
 def test_token_save_rejects_short_token(token_file):

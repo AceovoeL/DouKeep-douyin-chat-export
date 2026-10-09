@@ -375,6 +375,7 @@ from backend.control_panel import (
     restore_schedule_on_startup,
     restore_update_schedule_on_startup,
     restore_update_done_notice_on_startup,
+    warm_github_login,
 )
 app.include_router(control_router)
 
@@ -403,6 +404,9 @@ async def startup():
         print(f"[i] 已清除 {len(unmarked)} 个文件的下载标记，下次双击启动脚本不会再弹安全警告", flush=True)
     init_db()
     config.ensure_api_token()
+    # 「面板上这个 Token 是谁」不急，但面板一打开就要显示：趁启动的空档先在后台问一次
+    # （它只是开个线程，不挡服务起来；问不到也不影响，面板那边只从缓存里取，不等网络）。
+    warm_github_login()
     await restore_schedule_on_startup()
     await restore_update_schedule_on_startup()
     # 若是刚更新完自动重启起来的，把「更新完成」弹给用户看一次
