@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export chat data from SQLite to ChatLab v0.0.2 format (JSON/JSONL)."""
+"""Export chat data from SQLite to ChatLab v0.0.2 format (JSON/JSONL) or plain text (TXT)."""
 import base64
 import json
 import mimetypes
@@ -9,7 +9,7 @@ import time
 import urllib.parse
 
 from common import paths
-from common.message_kinds import is_view_once, locale_notice_text
+from common.message_kinds import is_view_once, locale_notice_text, share_kind, share_text
 from common.owner import FALLBACK_NAME, detect_owner
 from extractor.im_media import live_photo_cenc
 from extractor.models import get_db
@@ -70,7 +70,7 @@ def build_export_filename(
     """
     export_time = time.localtime(time.time() if timestamp is None else timestamp)
     stamp = time.strftime("%Y%m%d%H%M%S", export_time)
-    extension = ".json" if output_format == "json" else ".jsonl"
+    extension = {"json": ".json", "txt": ".txt"}.get(output_format, ".jsonl")
     collision_suffix = f"_{collision_index}" if collision_index else ""
     suffix = f"{collision_suffix}_{stamp}_export{extension}"
     component = _safe_filename_component(
@@ -244,7 +244,56 @@ def _message_field(msg, key: str, default=None):
         return default
 
 
-def _resolve_message(msg, cj: dict | None, media_dir: str, embed_images: bool = True) -> tuple:
+#: 纯文本导出里系统消息的固定开头（见 plain_text_line / _plain_system_text）。
+SYSTEM_TEXT_LABEL = "[系统消息]"
+
+#: 系统消息原本的类型标签（"[系统] "、"[通话成功]"…），纯文本导出统一换掉。
+_SYSTEM_LABEL_RE = re.compile(r"^\[[^\]]*\]\s*")
+
+
+def plain_text_line(display_name: str, content: str) -> str:
+    """txt 导出里的一行：``[昵称]正文``。
+
+    系统消息没有发送者（``sender_uid`` 常为空，昵称会退化成会话名，写出来是
+    「[会话名][系统消息]…」这种假昵称），所以统一写成 ``[系统消息] 正文`` ——
+    正文的 ``[系统消息]`` 开头就是这里的标记。
+    """
+    text = str(content or "").strip()
+    if text.startswith(SYSTEM_TEXT_LABEL):
+        return text
+    return f"[{display_name}]{text}"
+
+
+def _plain_system_text(text: str) -> str:
+    """系统消息在纯文本导出里的写法：统一 ``[系统消息] 正文``。
+
+    系统消息本来带的 ``[系统]``、``[通话成功]``、``[一起看视频]`` 都是类型标签，
+    这里统一换成 ``[系统消息]`` 一个前缀、剩下的当正文 —— 否则会写成
+    「[系统消息][系统] 小明关注了你」这种两层括号。
+    """
+    body = _SYSTEM_LABEL_RE.sub("", str(text or "").strip()).strip()
+    return f"{SYSTEM_TEXT_LABEL} {body}".strip()
+
+
+def is_empty_system_line(line: str) -> bool:
+    """这一行是不是「只有 ``[系统消息]`` 标签、没有正文」的空壳通知。
+
+    抖音有时只发一个通知壳：库里 ``content`` 就是 ``"[系统消息]"`` 这个占位，
+    模板也渲染不出东西。面板里本来就不显示这种消息（见 common/display_rules.py），
+    纯文本导出同样不写这一行 —— 免得文件里混着一堆没有内容的行。
+    """
+    return str(line or "").strip() == SYSTEM_TEXT_LABEL
+
+
+def _system_text(content, cj, plain: bool) -> str:
+    """系统消息的正文；纯文本导出统一写成 ``[系统消息] 正文``。"""
+    text = _system_message_text(content, cj)
+    return _plain_system_text(text) if plain else text
+
+
+def _resolve_message(
+    msg, cj: dict | None, media_dir: str, embed_images: bool = True, plain: bool = False
+) -> tuple:
     """Decide the ChatLab content + type for one DB message.
 
     Returns (content, chatlab_type, stats) where stats is a dict of counter
@@ -255,29 +304,42 @@ def _resolve_message(msg, cj: dict | None, media_dir: str, embed_images: bool = 
     embed_images=False keeps images as a plain ``[图片]`` label (type IMAGE)
     instead of inlining base64 data URLs — used by the ChatLab pull API where
     payload size matters and the picture itself adds nothing to analysis.
+
+    plain=True 是「纯文本导出」（txt）用的形态：不内嵌图片、不写链接与作者，
+    分享消息写成 ``[分享X] 标题``、系统消息写成 ``[系统消息] 正文``；语音时长与转写、
+    视频时长、表情文字标签、图片/实况图标签这些和非纯文本一致。
+
     实况图（aweType=2704，一张静态封面 + 一段小视频）的图片本身照旧导出，只是标签
     写成 ``[实况图]``：导出格式里没有"角标"这回事，标签是唯一能表达它的地方。
     """
     cj = cj if isinstance(cj, dict) else {}
+    embed_images = embed_images and not plain   # 纯文本导出不内嵌图片（base64 会把文件撑大）
     msg_type = msg["msg_type"]
     content = msg["content"] or ""
     awe = str(cj.get("aweType", ""))
     if cj.get("name") and (cj.get("secUID") or cj.get("sec_uid") or cj.get("uid")):
+        if plain:
+            # 纯文本只留名片的名字：简介和主页链接对分析没有用。
+            return "[用户名片] " + str(cj["name"]), 27, {}
         uid = cj.get("secUID") or cj.get("sec_uid") or cj.get("uid")
         link = "https://www.douyin.com/user/" + urllib.parse.quote(str(uid), safe="")
         return " | ".join(str(v) for v in ["[用户名片] " + str(cj["name"]), cj.get("desc"), link] if v), 27, {}
     patch = as_object(as_object(cj.get("im_dynamic_patch")).get("raw_data"))
     if awe == "11029" and patch:
-        title = as_object(patch.get("content_top")).get("content") or "商品"
+        title = as_object(patch.get("content_top")).get("content") or ""
+        if plain:
+            # 商品名的正主在动态卡片的布局里，正文里可能只剩一个 "[分享商品]" 标签。
+            return (f"[分享商品] {title}" if title else share_text(cj, content)), 24, {"share": 1}
+        title = title or "商品"
         actions = as_object(patch.get("whole_card")).get("action_info") or []
         schema = as_object(as_object(actions[0]).get("params")).get("schema", "") if isinstance(actions, list) and actions else ""
         match = re.search(r"commodity_id=(\d+)", str(schema))
         link = " | https://www.douyin.com/product/" + match[1] if match else ""
         return "[分享商品] " + str(title) + link, 24, {"share": 1}
     if awe == "9000":
-        return _system_message_text(None, cj), 0, {"system": 1}
+        return _system_text(None, cj, plain), 0, {"system": 1}
     if cj.get("tips") and not cj.get("resource_url"):
-        return _system_message_text(None, cj), 0, {"system": 1}
+        return _system_text(None, cj, plain), 0, {"system": 1}
     if awe in {"500", "501", "507", "508", "510", "514", "516"}:
         msg_type = 2
         content = cj.get("display_name") or "[表情]"
@@ -374,37 +436,52 @@ def _resolve_message(msg, cj: dict | None, media_dir: str, embed_images: bool = 
 
     # 分享消息：以 cj 的形态判断（含 itemId），不依赖 msg_type。
     # 不要放宽到 aweType / content_title 等字段 —— 表情消息的 cj 也带这些。
+    if plain:
+        # 纯文本导出多认一批卡片：它们只有下划线的 item_id（11054/11063/11070…）
+        # 或只有 push_detail 的类型标注，没有 itemId，走不进下面那条判断，
+        # 但正文本身就是 "[分享图文]标题"，正好能写成 [分享图文] 标题。
+        # 已经在上面认出是表情（5）或图片（1）的，不因为顺带带着卡片字段就被改写。
+        extra_card = bool(cj.get("item_id") or cj.get("im_dynamic_patch")
+                          or share_kind(cj, content))
+        share_like = bool(cj and cj.get("itemId")) or (extra_card and chatlab_type not in (1, 5))
+    else:
+        share_like = bool(cj and cj.get("itemId"))
     if view_once:
         content = str(cj.get("text") or content)
         chatlab_type = 0  # TEXT
-    elif not is_voice and not is_video and cj and cj.get("itemId"):
-        item_id = cj.get("itemId", "")
-        title = (cj.get("content_title") or "").strip()
-        author = (cj.get("content_name") or "").strip()
-        parts = []
-        if title:
-            parts.append(title)
-        if author:
-            parts.append(f"@{author}")
-        if item_id:
-            parts.append(f"https://www.douyin.com/video/{item_id}")
-        # aweType=805 是「限时日常」作品分享（卡片没有标题），单独标注。
-        kind = "限时日常" if str(cj.get("aweType")) == "805" else "视频"
-        content = (f"[分享{kind}] " + " | ".join(parts)) if parts else f"[分享{kind}]"
-        if cj.get("comment"):
-            content += "\n" + str(cj.get("comment_user_name") or "") + ": " + str(cj["comment"])
+    elif not is_voice and not is_video and share_like:
+        if plain:
+            # 分享只留「[分享视频] 标题」这种一句话，不带作者和跳转链接。
+            content = share_text(cj, content)
+        else:
+            item_id = cj.get("itemId", "")
+            title = (cj.get("content_title") or "").strip()
+            author = (cj.get("content_name") or "").strip()
+            parts = []
+            if title:
+                parts.append(title)
+            if author:
+                parts.append(f"@{author}")
+            if item_id:
+                parts.append(f"https://www.douyin.com/video/{item_id}")
+            # aweType=805 是「限时日常」作品分享（卡片没有标题），单独标注。
+            kind = "限时日常" if str(cj.get("aweType")) == "805" else "视频"
+            content = (f"[分享{kind}] " + " | ".join(parts)) if parts else f"[分享{kind}]"
+            if cj.get("comment"):
+                content += "\n" + str(cj.get("comment_user_name") or "") + ": " + str(cj["comment"])
         chatlab_type = 24  # SHARE，统一类型
         stats["share"] = 1
     # 系统消息（msg_type=0 但不是语音 / 不是 share / 不是 video）
     elif not is_voice and not is_video and msg_type == 0:
-        content = _system_message_text(content, cj)
+        content = _system_text(content, cj, plain)
         if chatlab_type == 99:
             chatlab_type = 0  # TEXT
         stats["system"] = 1
 
     # 最终兜底：还是 JSON 的内容统一收敛
     if isinstance(content, str) and content.startswith("{"):
-        content = str(cj.get("text") or cj.get("description") or cj.get("content_title") or "[分享内容]")
+        fallback = str(cj.get("text") or cj.get("description") or cj.get("content_title") or "")
+        content = fallback if plain else (fallback or "[分享内容]")
 
     return content, chatlab_type, stats
 
@@ -427,17 +504,17 @@ def _build_reply_to(ref_msg_raw) -> dict | None:
         return None
 
 
-def _forward_text(detail, media_dir):
+def _forward_text(detail, media_dir, plain=False):
     if not detail:
         return "[合并转发] 正文未取得"
     lines = [f"[合并转发] {detail['title']}（已取得 {detail['available']}/{detail['total']} 条）"]
     for row in detail['items']:
         if row.get('forward_detail') is not None:
-            text = _forward_text(row['forward_detail'], media_dir)
+            text = _forward_text(row['forward_detail'], media_dir, plain)
         elif row.get('detail_missing'):
             text = '[正文未取得，仅摘要] ' + (row.get('content') or '')
         else:
-            text, _, _ = _resolve_message(row, _get_content_json(row), media_dir)
+            text, _, _ = _resolve_message(row, _get_content_json(row), media_dir, plain=plain)
         who = row.get('sender_name') or row.get('sender_uid') or '未知用户'
         lines.append(f"{who}: {text}")
     return "\n".join(lines)
@@ -488,13 +565,16 @@ def sender_display_name(uid: str, sender_name: str | None, *, users_map: dict,
 def build_chatlab_message(msg, conn, media_dir: str, *, users_map: dict,
                           owner_uid: str, owner_name: str, conv_type: int,
                           conv_name: str | None, previous_shares: dict,
-                          embed_images: bool = True) -> tuple[dict, dict]:
+                          embed_images: bool = True, plain: bool = False) -> tuple[dict, dict]:
     """Convert one DB message row into a ChatLab message dict.
 
     ``previous_shares`` (itemId → msg_id) is threaded through consecutive calls
     so a "引用视频" reply can point back at the share it refers to; callers that
     page through messages keep it per page. Returns (message, stats) where stats
     is the counter dict from ``_resolve_message``.
+
+    ``plain=True`` 供纯文本导出使用：``content`` 变成贴一行就能读的纯文字
+    （见 ``_resolve_message``），引用视频不再追写跳转链接。
     """
     cj = _get_content_json(msg)
     uid = msg["sender_uid"] or ""
@@ -503,10 +583,10 @@ def build_chatlab_message(msg, conn, media_dir: str, *, users_map: dict,
         owner_name=owner_name, conv_type=conv_type, conv_name=conv_name,
     )
 
-    content, chatlab_type, stats = _resolve_message(msg, cj, media_dir, embed_images)
+    content, chatlab_type, stats = _resolve_message(msg, cj, media_dir, embed_images, plain)
     if str((cj or {}).get("aweType")) == "13600":
         detail = resolve_forward(dict(msg), conn)
-        content = _forward_text(detail, media_dir)
+        content = _forward_text(detail, media_dir, plain)
         chatlab_type = 26
 
     chatlab_msg = {
@@ -527,10 +607,10 @@ def build_chatlab_message(msg, conn, media_dir: str, *, users_map: dict,
     elif as_object((cj or {}).get("related_share_video")).get("itemId"):
         item_id = str(cj["related_share_video"]["itemId"])
         target = previous_shares.get(item_id)
-        if target:
+        if target and not plain:
             chatlab_msg["replyToMessageId"] = target
         content = str((cj or {}).get("text") or content)
-        chatlab_msg["content"] = content + "\n[引用视频] https://www.douyin.com/video/" + item_id
+        chatlab_msg["content"] = content if plain else content + "\n[引用视频] https://www.douyin.com/video/" + item_id
     if (cj or {}).get("itemId") and not (cj or {}).get("related_share_video"):
         previous_shares[str(cj["itemId"])] = msg["msg_id"]
 
@@ -545,7 +625,7 @@ class ChatLabExporter:
         output_dir: str | os.PathLike[str] | None = None,
     ):
         self.conv_name = conv_name
-        self.output_format = output_format  # "json" or "jsonl"
+        self.output_format = output_format  # "json" / "jsonl" / "txt"（纯文字，见 _resolve_message）
         self.output_dir = (
             paths.DATA_DIR if output_dir is None else os.fspath(output_dir)
         )
@@ -642,14 +722,16 @@ class ChatLabExporter:
         system_count = 0
         share_normalized = 0
         ref_count = 0
+        skipped_empty = 0        # txt 里没写的空壳系统通知（见 is_empty_system_line）
 
         previous_shares = {}
+        plain = self.output_format == "txt"
         for msg in messages:
             chatlab_msg, stats = build_chatlab_message(
                 msg, conn, media_dir, users_map=users_map,
                 owner_uid=owner_uid, owner_name=owner_name,
                 conv_type=row["conv_type"], conv_name=conv_name,
-                previous_shares=previous_shares,
+                previous_shares=previous_shares, plain=plain,
             )
             voice_count += stats.get("voice", 0)
             video_count += stats.get("video", 0)
@@ -672,6 +754,17 @@ class ChatLabExporter:
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(output, f, ensure_ascii=False)
             print(f"[+] JSON 导出完成: {output_path}")
+        elif self.output_format == "txt":
+            # 一条消息一行「[昵称]正文」；合并转发的正文本身是几行，照原样写。
+            # 只有 "[系统消息]" 标签、没有正文的空壳通知不写这一行（见 is_empty_system_line）。
+            with open(output_path, "w", encoding="utf-8") as f:
+                for msg in chatlab_messages:
+                    line = plain_text_line(msg["accountName"], msg["content"])
+                    if is_empty_system_line(line):
+                        skipped_empty += 1
+                        continue
+                    f.write(line + "\n")
+            print(f"[+] 纯文本导出完成: {output_path}")
         else:
             # JSONL format
             with open(output_path, "w", encoding="utf-8") as f:
@@ -691,17 +784,23 @@ class ChatLabExporter:
         print(f"  消息: {len(chatlab_messages)}")
         print(f"  成员: {len(members)}")
         if image_count:
-            print(f"  图片: {image_count} (嵌入 data URL: {image_embedded})")
+            if plain:
+                print(f"  图片: {image_count} (只写 [图片] 标签)")
+            else:
+                print(f"  图片: {image_count} (嵌入 data URL: {image_embedded})")
         if emoji_count:
             print(f"  表情: {emoji_count} (转为文字标签)")
         if voice_count:
             print(f"  语音: {voice_count} (转为文字标签)")
         if video_count:
-            print(f"  视频: {video_count} (转为文字标签 + 封面图)")
+            tail = "" if plain else " + 封面图"
+            print(f"  视频: {video_count} (转为文字标签{tail})")
         if system_count:
-            print(f"  系统消息: {system_count} (模板渲染为文字)")
+            tail = f"，另有 {skipped_empty} 条空通知未写入" if skipped_empty else " (模板渲染为文字)"
+            print(f"  系统消息: {system_count - skipped_empty}{tail}")
         if share_normalized:
-            print(f"  分享视频: {share_normalized} (含 type=1 错分类的)")
+            label = "分享" if plain else "分享视频"
+            print(f"  {label}: {share_normalized} (含 type=1 错分类的)")
         if ref_count:
             print(f"  引用/回复: {ref_count}")
         size_mb = os.path.getsize(output_path) / (1024 * 1024)

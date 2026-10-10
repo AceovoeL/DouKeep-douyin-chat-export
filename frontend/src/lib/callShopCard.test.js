@@ -6,12 +6,12 @@ const ICON = 'http://p3-life-governance-serving.byteimg.com/tos-cn-i-ri7wgflg39/
 // 卡片结构取自真实样本：content_json 里嵌 im_dynamic_patch，raw_data 是再次编码的排版 JSON。
 // 排版里 content_left 是电话图标、content_middle_top/bottom 是两行文案、
 // content_right 是「联系」按钮（带拨号 schema）。
-// 样本里的门店电话、消息 ID、会话 ID 都属于个人信息，已换成一眼可辨的假值。
+// 样本里的门店电话、消息 ID、会话 ID、两行文案都属于个人信息，已换成一眼可辨的假值。
 function callShopMsg({ aweType = 110284, cardType = 'life_bar_link_private_msg_guide', layout = true } = {}) {
   const raw = {
     content_left: { content: ICON, type: 'im-image', ui_info: { border_radius: 21 } },
     content_middle_top: { content: '联系门店', type: 'im-text' },
-    content_middle_bottom: { content: '回复较慢，可拨打电话', type: 'im-text' },
+    content_middle_bottom: { content: '示例副标题', type: 'im-text' },
     content_right: {
       action_info: { action: 'tap', event: 'openSchema', params: { schema: 'aweme://lynxview_popup/?merchant_phone_number=10000000000' } },
       content: '联系',
@@ -21,9 +21,9 @@ function callShopMsg({ aweType = 110284, cardType = 'life_bar_link_private_msg_g
   }
   const contentJson = {
     aweType,
-    description: '回复较慢，建议拨打门店电话',
+    description: '示例说明文字',
     is_system_type: true,
-    push_detail: '回复较慢，建议拨打门店电话',
+    push_detail: '示例说明文字',
     ui_info: { location_type: 1 },
     im_dynamic_patch: {
       card_key: 'bar_link',
@@ -36,7 +36,7 @@ function callShopMsg({ aweType = 110284, cardType = 'life_bar_link_private_msg_g
   return {
     msg_id: 'srv_7000000000000000001',
     msg_type: 0,
-    content: '回复较慢，建议拨打门店电话',
+    content: '示例说明文字',
     conv_id: '0:1:1000000000000001:1000000000000002',
     sender_uid: '1000000000000002',
     raw_data: JSON.stringify({ content_json: JSON.stringify(contentJson) }),
@@ -50,7 +50,7 @@ describe('联系门店引导卡片', () => {
     const card = getCallShopCard(callShopMsg())
     expect(card.button).toBe('联系')
     expect(card.title).toBe('联系门店')
-    expect(card.subtitle).toBe('回复较慢，可拨打电话')
+    expect(card.subtitle).toBe('示例副标题')
     expect(card.icon).toBe(ICON)
   })
 

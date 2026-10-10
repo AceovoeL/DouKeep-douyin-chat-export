@@ -1746,12 +1746,14 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
       <select id="exportFormat" onchange="updateExportMode()">
         <option value="jsonl">JSONL</option>
         <option value="json">JSON</option>
+        <option value="txt" data-i18n="txtFormat">纯文本 TXT（只有昵称和正文）</option>
         <option value="database" data-i18n="databaseFormat">整个数据库（SQLite，可导入）</option>
       </select>
       <button class="btn btn-primary" id="exportBtn" onclick="startExport()" data-i18n="exportBtn">导出</button>
       <a class="btn btn-success" id="downloadBtn" style="display:none;text-decoration:none" href="/panel/api/export/download" data-i18n="download">下载</a>
     </div>
     <div class="meta" id="databaseExportHint" style="display:none;margin-top:6px" data-i18n="databaseExportHint">整库导出会生成一个可在本面板覆盖导入的 SQLite 文件。</div>
+    <div class="meta" id="txtExportHint" style="display:none;margin-top:6px" data-i18n="txtExportHint">每条写成「[昵称]正文」：表情是 [憨笑] 这样的文字，分享只留 [分享视频] 标题，系统消息写成 [系统消息] 内容（没有内容的空通知不写）；不含链接与图片，几万条消息也能直接喂给 AI。</div>
     <div id="exportConversationOptions">
     <div class="conv-list-toolbar" style="margin-top:10px;">
       <span data-i18n="selectConvsLabel">选择会话:</span>
@@ -2433,7 +2435,10 @@ const T = {
     schedSavedOff: '已关闭定时采集：想让它跑，把上面的开关打开再点一次「应用」。',
     exportTitle: '导出/导入',
     exportBtn: '导出',
+    exportNeedConv: '请先勾选要导出的会话（要全部记录请选「整个数据库」）',
     download: '下载',
+    txtFormat: '纯文本 TXT（只有昵称和正文）',
+    txtExportHint: '每条写成「[昵称]正文」：表情是 [憨笑] 这样的文字，分享只留 [分享视频] 标题，系统消息写成 [系统消息] 内容（没有内容的空通知不写）；不含链接与图片，几万条消息也能直接喂给 AI。',
     databaseFormat: '整个数据库（SQLite，可导入）',
     databaseExportHint: '整库导出会生成一个可在本面板覆盖导入的 SQLite 文件。',
     databaseImportTitle: '数据库覆盖导入',
@@ -3032,7 +3037,10 @@ const T = {
     schedSavedOff: 'Scheduled scraping is off. Turn the switch on and hit Apply to run it.',
     exportTitle: 'Export / Import',
     exportBtn: 'Export',
+    exportNeedConv: 'Pick at least one conversation (choose "Entire database" for everything)',
     download: 'Download',
+    txtFormat: 'Plain text TXT (nickname + message only)',
+    txtExportHint: 'One "[nickname]message" per message: emoji stay as text like [haha], shares keep just the [share video] title, system notices become [system message]content; empty notices are skipped. No links, no images — small enough to feed a huge conversation to an AI.',
     databaseFormat: 'Entire database (SQLite, importable)',
     databaseExportHint: 'The full export is a SQLite file that can be imported here to replace the database.',
     databaseImportTitle: 'Replace database by import',
@@ -3722,7 +3730,8 @@ async function loadStatus() {
     const es = d.export;
     const ee = document.getElementById('exportStatus');
     setStatusEl(ee, es.status);
-    document.getElementById('exportBtn').disabled = es.status === 'running';
+    exportRunning = es.status === 'running';
+    updateExportGate();
     document.getElementById('exportMsg').textContent = es.message || '';
     document.getElementById('downloadBtn').style.display = (es.status === 'completed' && es.file_path) ? '' : 'none';
 
@@ -3921,11 +3930,28 @@ function renderConvList(prefix) {
   }
 }
 
+//: 「导出」按钮能不能点：一个会话都没勾（而且不是整库导出）时置灰，并在计数旁边写明
+//: 原因。后端同样会拒绝这种请求（见 backend/control_panel.py 的 start_export）——
+//: 以前它会把「一个都没勾」当成「没指定」，顺手导出最近活跃的那一个会话。
+let exportBlocked = false;
+let exportRunning = false;
+
+function updateExportGate() {
+  const formatEl = document.getElementById('exportFormat');
+  const databaseMode = !!formatEl && formatEl.value === 'database';
+  exportBlocked = !databaseMode && selectedMap.export.size === 0;
+  const btn = document.getElementById('exportBtn');
+  if (btn) btn.disabled = exportBlocked || exportRunning;
+}
+
 function renderConvCounts() {
   ['scrape', 'schedule', 'export'].forEach(prefix => {
+    if (prefix === 'export') updateExportGate();
     const el = document.getElementById(prefix + 'ConvCount');
     if (!el) return;
-    el.textContent = t('convsCount', selectedMap[sectionKey(prefix)].size, discoveredConvs.length);
+    let text = t('convsCount', selectedMap[sectionKey(prefix)].size, discoveredConvs.length);
+    if (prefix === 'export' && exportBlocked) text += ' · ' + t('exportNeedConv');
+    el.textContent = text;
   });
 }
 
@@ -5100,16 +5126,38 @@ async function applyCronExpr() {
 async function startExport() {
   const format = document.getElementById('exportFormat').value;
   const conversations = [...selectedMap.export];
+  const msg = document.getElementById('exportMsg');
+  // 一个都没勾就别发了：后端会拒绝（400），这里先把话说清楚，别让按钮看着像坏了
+  if (format !== 'database' && conversations.length === 0) {
+    setDynText(msg, t('exportNeedConv'));
+    return;
+  }
   if (format !== 'database' && conversations.length > 1 && !confirm(t('confirmMultiExport', conversations.length))) {
     return;
   }
-  document.getElementById('exportBtn').disabled = true;
+  exportRunning = true;
+  updateExportGate();
   setStatusEl(document.getElementById('exportStatus'), 'running');
-  await fetch('/panel/api/export', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ format, conversations }),
-  });
+  try {
+    const r = await fetch('/panel/api/export', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ format, conversations }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      exportRunning = false;
+      updateExportGate();
+      setDynText(msg, d.error || t('error'));
+      setStatusEl(document.getElementById('exportStatus'), 'idle');
+      return;
+    }
+  } catch (e) {
+    exportRunning = false;
+    updateExportGate();
+    setDynText(msg, t('error') + ': ' + (e.message || e));
+    return;
+  }
   loadStatus();
 }
 
@@ -5122,11 +5170,15 @@ function updateDatabaseFileName(input) {
 }
 
 function updateExportMode() {
-  const databaseMode = document.getElementById('exportFormat').value === 'database';
+  const mode = document.getElementById('exportFormat').value;
+  const databaseMode = mode === 'database';
   const options = document.getElementById('exportConversationOptions');
   const hint = document.getElementById('databaseExportHint');
+  const txtHint = document.getElementById('txtExportHint');
   if (options) options.style.display = databaseMode ? 'none' : '';
   if (hint) hint.style.display = databaseMode ? '' : 'none';
+  if (txtHint) txtHint.style.display = mode === 'txt' ? '' : 'none';
+  updateExportGate();
 }
 
 async function importDatabase() {

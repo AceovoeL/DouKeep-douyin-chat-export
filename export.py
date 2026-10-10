@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""导出聊天记录为 ChatLab 格式（JSON/JSONL），无需浏览器。
+"""导出聊天记录（ChatLab JSON/JSONL 或纯文本 TXT），无需浏览器。
 
 用法:
   python3 export.py                              # 导出最近会话为 JSONL
   python3 export.py --filter "会话名称"           # 导出指定会话
   python3 export.py --filter "会话名称" --format json  # 导出为 JSON
+  python3 export.py --filter "会话名称" --format txt   # 导出为纯文本（体积最小）
   python3 export.py --output data/my_export.jsonl      # 指定输出路径
 
 未指定 --output 时，文件名自动使用“会话昵称_YYYYMMDDHHMMSS_export”格式。

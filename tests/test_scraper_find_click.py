@@ -92,8 +92,8 @@ def test_empty_dom_then_list_appears():
         return {"index": 0, "text": name, "names": [name]}
 
     s = _scraper_with_list_stubs(match, at_bottom=True)
-    result = _run(s._find_and_click_conversation("小魚大王", timeout_s=2, poll_s=0.01))
+    result = _run(s._find_and_click_conversation("示例会话", timeout_s=2, poll_s=0.01))
 
-    assert result == {"found": True, "text": "小魚大王"}
+    assert result == {"found": True, "text": "示例会话"}
     assert calls["n"] >= 3
-    assert s._clicks == [(0, "小魚大王")]
+    assert s._clicks == [(0, "示例会话")]

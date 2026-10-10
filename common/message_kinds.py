@@ -55,6 +55,105 @@ def daily_share_text(cj) -> str:
     return f"[分享限时日常] {title}" if title else "[分享限时日常]"
 
 
+# ── 分享卡片的类型与正文（纯文字导出用）──────────────────────────────
+# 与前端搜索结果里那一行（frontend/src/lib/sharePreview.js）是同一套规则，
+# 改这里时两边一起看。
+
+#: 作品分享的 aweType：卡片本身就是一支作品（视频 / 图文 / 动图 / 直播…）。
+#: 认不出更具体的类型时按「视频」算 —— 这类卡片绝大多数就是分享视频。
+VIDEO_SHARE_AWE_TYPES = frozenset([
+    800, 801, 803, 11054, 11055, 11063, 11066, 11067, 11069, 11070,
+])
+
+#: 卡片自带的类型标注：push_detail = "分享[图文]"。这个字段只出现在卡片载荷里，
+#: 所以整串里找就行。
+_SHARE_KIND_RE = re.compile(r"\[(?:分享)?(动图|图文|视频|评论|文章|商品|直播)\]")
+
+#: 正文开头的类型标注（"[分享动图]标题" / "分享[视频]"）。只认开头 —— 正文中间的
+#: "[视频]" 可能只是用户自己打的字，那种普通文本消息不能被改写成分享卡片。
+_SHARE_KIND_PREFIX_RE = re.compile(
+    r"^(?:\[分享|分享\[|\[)(动图|图文|视频|评论|文章|商品|直播)\]"
+)
+
+#: 正文开头的类型标签（"[分享视频]标题" / "分享[商品]: 标题" / 只有标签的 "分享[视频]"），
+#: 剥掉它剩下的才是标题；剥完是空的就说明这张卡片没给标题。
+_SHARE_LABEL_RE = re.compile(r"^(?:分享\[[^\]]+\][:：]?\s*|\[分享[^\]]*\]\s*)")
+
+
+def strip_share_label(content) -> str:
+    """剥掉正文开头的 ``[分享X]`` / ``分享[X]: `` 标签，留下作品标题或评论。
+
+    正文本身是 JSON（老数据把整包塞在 ``content`` 里）时返回空串 ——
+    这种内容不该原样写进纯文字导出。
+    """
+    text = content.strip() if isinstance(content, str) else ""
+    if not text or text.startswith("{"):
+        return ""
+    return _SHARE_LABEL_RE.sub("", text).strip()
+
+
+def share_kind(cj, content="") -> str:
+    """分享卡片的类型词，认不出来返回空串。
+
+    取值：视频 / 图文 / 动图 / 文章 / 评论 / 商品 / 直播 / 限时日常。
+    判定顺序与前端 ``sharePreview`` 一致：评论 → 卡片自带的标注 → 作品类型
+    → 商品 → 限时日常 → 视频。
+    """
+    cj = cj if isinstance(cj, dict) else {}
+    awe = "" if cj.get("aweType") in (None, "") else str(cj.get("aweType"))
+    # 10500 是「引用视频评论」：卡片不给出作品标题，正文就是评论内容。
+    comment = cj.get("comment")
+    if (isinstance(comment, str) and comment.strip()) or awe == "10500":
+        return "评论"
+    push_detail = cj.get("push_detail")
+    found = _SHARE_KIND_RE.search(push_detail) if isinstance(push_detail, str) else None
+    if found:
+        return found.group(1)
+    text = content.strip() if isinstance(content, str) else ""
+    if not text.startswith("{"):
+        found = _SHARE_KIND_PREFIX_RE.match(text)
+        if found:
+            return found.group(1)
+    aweme_type = "" if cj.get("awemeType") in (None, "") else str(cj.get("awemeType"))
+    if aweme_type == "68":      # 图文作品；is_live_photo=1 是会动的实况图
+        return "动图" if str(cj.get("is_live_photo")) == "1" else "图文"
+    if aweme_type == "163":
+        return "文章"
+    if awe in {"11029", VIEW_ONCE_AWE_TYPE}:   # 商品卡；10401 的纯文本正文由 is_view_once 拦掉
+        return "商品"
+    if awe == DAILY_SHARE_AWE_TYPE:
+        return "限时日常"
+    if awe.isdigit() and int(awe) in VIDEO_SHARE_AWE_TYPES:
+        return "视频"
+    return ""
+
+
+def share_text(cj, content="") -> str:
+    """分享消息的纯文字写法：``[分享图文] 标题``。
+
+    不含作者、跳转链接与原始 JSON。标题依次取作品标题字段、正文标签后的文字、
+    ``push_detail`` 里的说明；评论分享取评论本身。什么都取不到时只留标签。
+    """
+    cj = cj if isinstance(cj, dict) else {}
+    kind = share_kind(cj, content)
+    body = ""
+    if kind == "评论":
+        for field in ("comment", "text"):
+            value = cj.get(field)
+            if isinstance(value, str) and value.strip():
+                body = value.strip()
+                break
+    if not body:
+        for field in ("content_title", "aweme_title", "poi_name", "bottom_card_title"):
+            value = cj.get(field)
+            if isinstance(value, str) and value.strip():
+                body = value.strip()
+                break
+    if not body:
+        body = strip_share_label(content) or strip_share_label(cj.get("push_detail"))
+    return f"[分享{kind}] {body}".strip() if kind else f"[分享] {body}".strip()
+
+
 # 群通知模板里的编号占位，例如 "{0}邀请{1}加入了群聊"。
 _LOCALE_PLACEHOLDER_RE = re.compile(r"\{(\d+)\}")
 

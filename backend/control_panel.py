@@ -4537,6 +4537,18 @@ async def start_export(req: ExportRequest):
     if _export_state["status"] == "running":
         return JSONResponse({"error": "Export already running"}, status_code=409)
 
+    # 勾选是精确的昵称列表。空串不算"选了一个会话"，否则会去库里找一个名字为空的会话。
+    convs = [str(name).strip() for name in (req.conversations or []) if str(name).strip()]
+
+    if req.format != "database" and not convs and not (req.filter or "").strip():
+        # 以前这里把「一个都没勾」当成「没指定」→ 顺手导出了最近活跃的那一个会话：
+        # 用户看着是"什么都没勾却导出了一大堆"（实测挑中过一个 2.8 万条消息、509 MB 的
+        # 会话）。现在直接拒绝并说明白，别替他做主。整库导出不受勾选影响。
+        return JSONResponse(
+            {"error": "请先勾选要导出的会话；只想要全部聊天记录就选「整个数据库」格式"},
+            status_code=400,
+        )
+
     _export_state["status"] = "running"
     _export_state["file_path"] = None
     _export_state["message"] = "正在导出..."
@@ -4544,12 +4556,11 @@ async def start_export(req: ExportRequest):
     # Persist selection
     if req.conversations is not None:
         cfg = _load_config()
-        cfg["export_selected"] = list(req.conversations)
+        cfg["export_selected"] = list(convs)
         _save_config(cfg)
 
-    convs = list(req.conversations) if req.conversations else None
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _do_export, req.format, req.filter, convs)
+    await loop.run_in_executor(None, _do_export, req.format, req.filter, convs or None)
     return {
         "status": _export_state["status"],
         "message": _export_state["message"],

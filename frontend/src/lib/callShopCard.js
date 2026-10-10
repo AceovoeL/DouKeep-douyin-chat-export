@@ -3,7 +3,7 @@
 // im_dynamic_patch.raw_data 里：
 //   content_left           左侧橙色电话圆形图标（im-image）
 //   content_middle_top     主标题（im-text，如「联系门店」）
-//   content_middle_bottom  副标题（im-text，如「回复较慢，可拨打电话」）
+//   content_middle_bottom  副标题（im-text，商家写的说明，如「请电话联系」）
 //   content_right          右侧按钮（im-button，如「联系」，带拨号 schema）
 //   whole_card             整卡可点区域（同样是拨号 schema）
 // 卡片外观直接用项目 assets/call-to-shop.png（构建时打进 dist/assets），

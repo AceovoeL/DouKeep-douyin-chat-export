@@ -422,7 +422,7 @@ describe('仅看一次 / 撤回 / 编辑 / 表情快捷回复 标注', () => {
   })
   it('type_code=104 时即使没有结论也认得出仅看一次', () => {
     const m = msg({
-      msg_type: 1, content: '都不用我撤回了',
+      msg_type: 1, content: '示例消息内容',
       raw_data: JSON.stringify({ type_code: 104, is_recalled: 1778510951356 }),
     })
     expect(isViewOnce(m)).toBe(true)
