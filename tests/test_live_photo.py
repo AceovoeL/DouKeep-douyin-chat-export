@@ -140,7 +140,9 @@ def test_save_cenc_jobs_writes_live_video_path_without_touching_the_cover(
     live = conn.execute("SELECT media_local_path, live_video_path FROM messages "
                         "WHERE msg_id=?", (f"srv_{SID}",)).fetchone()
     assert live["live_video_path"] == f"videos/{SID}.mp4"
-    assert live["media_local_path"] == f"images/{SID}.jpg"     # 封面没被顶掉
+    # 封面（media_local_path）是**测试自己先塞进去的**，这一轮只确认它没被小视频顶掉，
+    # 跟采集端给图片取什么名字无关。
+    assert live["media_local_path"] == f"images/{SID}.jpg"
 
     video = conn.execute("SELECT media_local_path, live_video_path FROM messages "
                          "WHERE msg_id='srv_video'").fetchone()
@@ -167,8 +169,8 @@ def test_missing_cover_is_filled_by_the_clip_pass(temp_db, media_dirs, monkeypat
 
     row = conn.execute("SELECT media_local_path FROM messages WHERE msg_id=?",
                        (f"srv_{SID}",)).fetchone()
-    assert row["media_local_path"] == f"images/{SID}.jpg"
-    assert (images / f"{SID}.jpg").read_bytes() == jpeg
+    assert row["media_local_path"] == "images/img.jpg"
+    assert (images / "img.jpg").read_bytes() == jpeg
     # 封面补上之后这一轮就只剩小视频要补了
     assert video_downloader.live_photo_jobs(conn)[0]["needs_cover"] is False
     conn.close()

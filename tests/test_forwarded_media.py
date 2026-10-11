@@ -55,8 +55,71 @@ def test_download_image_decrypts_origin(tmp_path, monkeypatch):
         "resource_url": {"skey": KEY, "origin_url_list": ["https://example.com/img"]},
         "inline_pic": "thumb",
     }, SID)
-    assert path == f"images/{SID}.jpg"
+    # 存档名用链接里那截名字（img），不再用消息号
+    assert path == "images/img.jpg"
     assert os.path.getsize(os.path.join(tmp_path, path)) == len(jpeg)
+
+
+def test_image_file_name_comes_from_the_link(tmp_path, monkeypatch):
+    """链接尾巴上有正经文件名时就用它（抖音的精灵素材就是这种）。"""
+    from extractor.im_media import _server_image_name
+
+    assert _server_image_name(
+        "https://lf6-creative.dailygn.com/obj/dino/pet_elf/images/food/hotstick_card.png"
+    ) == "hotstick_card.png"
+    # 上传图的链接带图片处理后缀，砍掉它才是真名字
+    assert _server_image_name(
+        "https://p26-sign.douyinpic.com/tos-cn-o-00061/uploadv2_SrAMM999fqifpMPD~tplv-x-get:.image?lk3s=1"
+    ) == "uploadv2_SrAMM999fqifpMPD"
+    # 给不出安全的名字时返回空串，调用方退回老命名
+    assert _server_image_name("") == ""
+    assert _server_image_name("https://example.com/") == ""
+    assert _server_image_name("https://example.com/..%2Fbad") == ""
+
+    images, _ = _patch_media(monkeypatch, tmp_path)
+    jpeg = b"\xff\xd8\xff" + b"JPEGDATA" * 8
+    monkeypatch.setattr("extractor.im_media._fetch", lambda url, timeout=20: _gcm(jpeg))
+    path = download_direct_media({
+        "aweType": 2702,
+        "resource_url": {"skey": KEY, "origin_url_list": [
+            "https://lf6-creative.dailygn.com/obj/dino/pet_elf/images/food/hotstick_card.png"]},
+    }, SID)
+    assert path == "images/hotstick_card.png"
+    assert (images / "hotstick_card.png").read_bytes() == jpeg
+    # 再问一次不该重新下载（按链接里的文件名找得到）
+    assert download_direct_media({
+        "aweType": 2702,
+        "resource_url": {"skey": KEY, "origin_url_list": [
+            "https://lf6-creative.dailygn.com/obj/dino/pet_elf/images/food/hotstick_card.png"]},
+    }, SID) == "images/hotstick_card.png"
+
+
+def test_same_name_different_image_does_not_overwrite(tmp_path, monkeypatch):
+    """两条链接名字撞车但图不一样时，第二张加一小截哈希区分，别把第一张盖掉。"""
+    images, _ = _patch_media(monkeypatch, tmp_path)
+    first = b"\xff\xd8\xff" + b"FIRST" * 4
+    second = b"\xff\xd8\xff" + b"SECOND" * 4
+    monkeypatch.setattr("extractor.im_media._fetch", lambda url, timeout=20: _gcm(first))
+    a = download_direct_media({
+        "aweType": 2702,
+        "resource_url": {"skey": KEY, "origin_url_list": ["https://cdn.example.com/a/same.jpg"]},
+    }, "1000000000000000001")
+    assert a == "images/same.jpg"
+
+    monkeypatch.setattr("extractor.im_media._fetch", lambda url, timeout=20: _gcm(second))
+    b = download_direct_media({
+        "aweType": 2702,
+        "resource_url": {"skey": KEY, "origin_url_list": ["https://cdn.example.com/b/same.jpg"]},
+    }, "1000000000000000002")
+    assert b != a and b.startswith("images/same-") and b.endswith(".jpg")
+    assert (images / "same.jpg").read_bytes() == first
+
+    # 同一张图再下一次时按内容认出已有文件，不再另存一份
+    monkeypatch.setattr("extractor.im_media._fetch", lambda url, timeout=20: _gcm(first))
+    assert download_direct_media({
+        "aweType": 2702,
+        "resource_url": {"skey": KEY, "origin_url_list": ["https://cdn.example.com/a/same.jpg"]},
+    }, "1000000000000000001") == "images/same.jpg"
 
 
 def test_resolve_forward_attaches_decrypted_image(temp_db, tmp_path, monkeypatch):
@@ -84,7 +147,7 @@ def test_resolve_forward_attaches_decrypted_image(temp_db, tmp_path, monkeypatch
     }
     result = resolve_forward(message, conn)
     assert result["complete"]
-    assert result["items"][0]["media_local_path"] == f"images/{SID}.jpg"
+    assert result["items"][0]["media_local_path"] == "images/img.jpg"
     conn.close()
 
 
@@ -169,7 +232,7 @@ def test_forward_media_queues_live_photo_clip(tmp_path, monkeypatch):
     asyncio.run(_materialize_forward_media("PAGE", bodies, "srv_parent"))
     assert seen["jobs"] == [{"file_id": SID, "kind": "live", "tkey": "vid-live",
                              "skey": "00" * 16, "msg_id": f"srv_{SID}"}]
-    assert os.path.isfile(images / f"{SID}.jpg")     # 静态封面也解密了
+    assert os.path.isfile(images / "img.jpg")     # 静态封面也解密了（名字取链接里那截）
 
 
 def test_materialize_bodies_respects_budget(tmp_path, monkeypatch):
@@ -206,8 +269,8 @@ def test_downloads_monster_emoji_519(tmp_path, monkeypatch):
         "display_name": "笑死",
         "url": {"url_list": ["https://p26-sign.douyinpic.com/obj/tos-cn-i/1010.webp"]},
     }, SID)
-    # 表情按 URL 哈希存进 emoji/（跟别的表情一样，不按 server_id 命名）。
-    assert path.startswith("emoji/") and path.endswith(".webp")
+    # 表情也用链接里那截名字存进 emoji/（这里是 1010.webp），不按 server_id 命名。
+    assert path == "emoji/1010.webp"
     assert os.path.getsize(os.path.join(tmp_path, path)) == len(webp)
     assert fetched == ["https://p26-sign.douyinpic.com/obj/tos-cn-i/1010.webp"]
     # 同一张表情再遇到（另一个 server_id）直接用已存的那份，不再下载。

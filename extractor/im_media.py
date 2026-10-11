@@ -79,6 +79,54 @@ def _fetch(url, timeout=20):
         return resp.read()
 
 
+def _server_image_name(url):
+    """链接里那截文件名，当存档名用（用户 2026-10-11 要求）。
+
+    抖音给的地址尾巴就是它在服务端的名字，例如
+    ``.../images/food/hotstick_card.png`` → ``hotstick_card.png``；
+    ``.../obj/tos-cn-o-0812/owxAKAFKAmAQCAwqEANFE2TCICKfjArQegDGyd`` →
+    ``owxAKAFKAmAQCAwqEANFE2TCICKfjArQegDGyd``。名字里可能带 ``~tplv-x-get:large.image``
+    这种图片处理后缀，砍掉它才是真名字。
+
+    只接受 ``字母数字._-`` 组成、且不含 ``..`` 的名字（要拼进本地路径）；给不出这样的
+    名字时返回空串，调用方退回原来的哈希命名。
+    """
+    import re
+    from urllib.parse import unquote, urlparse
+
+    if not isinstance(url, str) or not url:
+        return ""
+    base = unquote(urlparse(url).path.rsplit("/", 1)[-1]).strip()
+    if not base:
+        return ""
+    # 砍掉图片处理后缀（上传的图都是 `xxx~tplv-xxx:yyy.image` 这种形状）
+    if "~" in base:
+        base = base.split("~", 1)[0]
+    if not base or base in (".", "..") or ".." in base:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", base):
+        return ""
+    return base
+
+
+def _has_image_ext(name):
+    """名字末尾本来就是图片扩展名时不要再拼一次。"""
+    return os.path.splitext(name)[1].lower() in (
+        ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".mp4")
+
+
+def _existing_media(directory, prefix, names, exts=(".jpg", ".png", ".webp", ".gif", ".mp4")):
+    """目录里已经躺着这几个（不带扩展名的）名字时，返回它的相对路径。"""
+    for name in names:
+        if not name:
+            continue
+        for ext in exts:
+            path = os.path.join(directory, f"{name}{ext}")
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                return f"{prefix}/{name}{ext}"
+    return None
+
+
 def _save_emoji(url, emoji_dir):
     import hashlib
     from urllib.parse import urlparse
@@ -87,8 +135,11 @@ def _save_emoji(url, emoji_dir):
     ext = os.path.splitext(path)[1].lower()
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
         ext = ".png"
-    h = hashlib.md5(path.encode("utf-8")).hexdigest()[:16]
-    filename = f"{h}{ext}"
+    # 优先用链接里那截名字（owxAKAF...）；给不出才退回路径哈希（老行为）。
+    # 名字里本来就带扩展名时直接用，别再拼一次。
+    named = _server_image_name(url)
+    base = named or hashlib.md5(path.encode("utf-8")).hexdigest()[:16]
+    filename = base if (named and _has_image_ext(base)) else f"{base}{ext}"
     target = os.path.join(emoji_dir, filename)
     rel = f"emoji/{filename}"
     if os.path.exists(target):
@@ -103,7 +154,11 @@ def _save_emoji(url, emoji_dir):
 
 
 def _save_image(origin_url, skey_hex, server_id, img_dir, video_dir=None):
-    """Download AES-GCM ciphertext and store the decrypted image or mp4."""
+    """Download AES-GCM ciphertext and store the decrypted image or mp4.
+
+    存档名优先用链接里那截名字（见 :func:`_server_image_name`），给不出才退回消息号；
+    视频仍按消息号存（阅读端靠这个约定把实况图的封面和小视频配起来）。
+    """
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     if video_dir is None:
@@ -111,11 +166,12 @@ def _save_image(origin_url, skey_hex, server_id, img_dir, video_dir=None):
     os.makedirs(img_dir, exist_ok=True)
     os.makedirs(video_dir, exist_ok=True)
 
-    for d, prefix in ((img_dir, "images"), (video_dir, "videos")):
-        for ext in (".jpg", ".png", ".webp", ".gif", ".mp4"):
-            t = os.path.join(d, f"{server_id}{ext}")
-            if os.path.exists(t):
-                return f"{prefix}/{server_id}{ext}"
+    named = _server_image_name(origin_url)
+    names = (named, server_id)
+    # 链接里那截名字的文件已经在本地就直接用它，不用再下一次。
+    existing = _existing_media(img_dir, "images", names)
+    if existing:
+        return existing
 
     cipher = _fetch(origin_url)
     if len(cipher) < 28:
@@ -130,8 +186,28 @@ def _save_image(origin_url, skey_hex, server_id, img_dir, video_dir=None):
         kind, ext = "image", ".jpg"
     target_dir = video_dir if kind == "video" else img_dir
     prefix = "videos" if kind == "video" else "images"
-    filename = f"{server_id}{ext}"
-    with open(os.path.join(target_dir, filename), "wb") as f:
+    # 视频文件名保持「消息号」（见 docstring），只有图片用链接里的名字。
+    # 链接里的名字本来就带扩展名时（hotstick_card.png）直接用它，别再拼一次。
+    if kind == "video":
+        filename = f"{server_id}{ext}"
+    elif named:
+        filename = named if _has_image_ext(named) else f"{named}{ext}"
+    else:
+        filename = f"{server_id}{ext}"
+    target = os.path.join(target_dir, filename)
+    # 重名不覆盖：同名的另一张图（罕见）加一小截链接哈希区分开。
+    if os.path.exists(target) and os.path.getsize(target) > 0:
+        with open(target, "rb") as handle:
+            if handle.read() == plain:
+                return f"{prefix}/{filename}"
+        stem, dot, suffix = filename.rpartition(".")
+        import hashlib
+        digest = hashlib.md5(origin_url.encode("utf-8")).hexdigest()[:6]
+        filename = f"{stem}-{digest}{dot}{suffix}" if dot else f"{filename}-{digest}"
+        target = os.path.join(target_dir, filename)
+        if os.path.exists(target):
+            return f"{prefix}/{filename}"
+    with open(target, "wb") as f:
         f.write(plain)
     return f"{prefix}/{filename}"
 
@@ -145,12 +221,17 @@ def media_file_id(server_id):
     return sid
 
 
-def find_local_media(server_id):
-    """Return a relative media path if a previously decrypted file exists."""
+def find_local_media(server_id, url=None):
+    """Return a relative media path if a previously decrypted file exists.
+
+    图片现在按链接里那截名字存（见 :func:`_server_image_name`），所以调用方把原链接
+    一起传进来时也按那个名字找一遍；老数据（按消息号存）照旧能找得到。
+    """
     sid = media_file_id(server_id)
-    if not sid:
+    named = _server_image_name(url)
+    if not sid and not named:
         return None
-    names = (sid, f"srv_{sid}")
+    names = tuple(n for n in (named, sid, f"srv_{sid}" if sid else "") if n)
     folders = (
         (IMAGES_DIR, "images"),
         (VIDEOS_DIR, "videos"),
@@ -228,7 +309,11 @@ def download_direct_media(cj, server_id):
     Encrypted origin URLs (images / in-chat mp4) are decrypted with resource_url.skey.
     Emoji and voice use plaintext CDN URLs. Returns a relative path or None.
     """
-    existing = find_local_media(server_id)
+    resource = cj.get("resource_url") if isinstance(cj.get("resource_url"), dict) else {}
+    origin = _first_url(resource.get("origin_url_list"))
+    # 表情走 url，图片走 resource_url.origin_url_list；本地已有的话按链接里那截名字找。
+    hint = _first_url(cj.get("url")) or origin
+    existing = find_local_media(server_id, hint)
     if existing:
         return existing
     sid = media_file_id(server_id)
@@ -242,8 +327,6 @@ def download_direct_media(cj, server_id):
             if path:
                 media_log.info("表情 %s → %s", sid, path)
             return path
-        resource = cj.get("resource_url") if isinstance(cj.get("resource_url"), dict) else {}
-        origin = _first_url(resource.get("origin_url_list"))
         skey = resource.get("skey")
         if awe in _IMAGE_TYPES and skey and origin:
             path = _save_image(origin, skey, sid, IMAGES_DIR, VIDEOS_DIR)
