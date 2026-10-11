@@ -623,14 +623,43 @@ export function modifyTimestamp(msg) {
   return Number(rawData(msg)?.is_recalled) || 0
 }
 
+// 第 15 号字段里除了真正的表情，还会记别的东西。实测（2026-10-11，库里 213 条带这段的
+// 消息）真正的表情都带 ``se:`` 显示名（如 ``se:[爱心]``），解析后是「[爱心]」这种
+// 「[中文]」形式；只有 12 条例外，名字是 bullet 这种裸的英文记号：
+//   * 既没有 ``se:`` 也没有 ``e:`` 前缀，拿不到中文显示名；
+//   * 12 条的回应者都恰好是消息发送者本人（真表情里 202 条只有 10 条是这样）；
+//   * 只出现在卡片消息上，时间紧跟在卡片被处理之后。
+// 它在界面上只会变成一个英文单词（截图里那句「bullet | 昵称」就是这么来的），
+// 对看聊天记录的人没有任何意义，所以按「表情名必须是 [中文] 才显示」筛掉。
+const DISPLAY_EMOJI_RE = /^\[[^\]]+\]$/
+
+// 空 emoji 是回填模式读不出名字时的占位（见 common/message_modify.py），保留 ——
+// 界面会显示成「[表情]」，至少还能看出这条有过回应。
+function displayableReactions(value) {
+  if (!Array.isArray(value)) return []
+  return value.filter(item =>
+    item && typeof item === 'object' &&
+    typeof item.emoji === 'string' &&
+    (item.emoji === '' || DISPLAY_EMOJI_RE.test(item.emoji)))
+}
+
 // raw_data.modify 里记着「这条消息发生过什么」（抓取端写入）。
 function modifyInfo(msg) {
   const raw = rawData(msg)
   const info = raw && raw.modify
   if (!info || typeof info !== 'object') return null
-  const kinds = Array.isArray(info.kinds) ? info.kinds.filter(kind => kind in MODIFY_KIND_LABELS) : []
+  let kinds = Array.isArray(info.kinds) ? info.kinds.filter(kind => kind in MODIFY_KIND_LABELS) : []
+  // 回应里一个真表情都没有（全是卡片状态记号）时，连「表情快捷回复」这个标签也去掉，
+  // 否则会剩一个没有内容的标签挂在那儿。
+  const reactions = displayableReactions(info.reactions)
+  if (!reactions.length) kinds = kinds.filter(kind => kind !== 'reaction')
+  // edited === false 是抖音亲口说「内容没改过」，不能算编辑。小火人 AI 每条消息都带
+  // 一段 edit_info（其中 content_is_edited 全是 false，见 common/message_modify.py），
+  // 早先按「有这段就是编辑」硬认，每组 AI 消息的最后一条都挂了假的「已编辑」。
+  // 抓取端已经改掉这个判据，这里再兜一层：修好之前落库的老数据不必重抓也能正常显示。
+  if (info.edited === false) kinds = kinds.filter(kind => kind !== 'edit')
   if (!kinds.length) return null
-  return { kinds, info }
+  return { kinds, info: { ...info, reactions } }
 }
 
 // 这条消息发生过的操作，按 仅看一次 / 撤回 / 编辑 / 表情快捷回复 的顺序返回。

@@ -9,6 +9,7 @@
 //    于是压根不在发送者名单里；后端认出来的本机账号要补进去，否则选不了自己。
 //
 // 这里只处理传进来的数据，不碰真实昵称和 uid —— 测试里用的都是占位示例。
+import { getSpiritAi } from './spiritAi'
 
 //: 认不出本机账号昵称时的占位名
 export const SELF_FALLBACK_NAME = '我'
@@ -18,16 +19,26 @@ export function senderDisplayName(msg, {
   isGroup = false,
   embedded = false,
   selfUid = '',
+  localUid = '',
   users = {},
 } = {}) {
   const uid = String(msg?.sender_uid ?? '')
   if (selfUid && uid === String(selfUid)) {
     return users[uid]?.nickname || SELF_FALLBACK_NAME
   }
+  // 小火人（精灵 AI）是会话里的机器人，不是「对方」：它的名字不能跟着会话名走，
+  // 否则单聊里会显示成对方的备注名（见 lib/spiritAi.js）。
+  const spirit = getSpiritAi(msg)
+  if (spirit) return spirit.name
   // 单聊的会话名就是「我给对方起的名字」：粉丝团表情、群邀请卡这类消息落库时
   // sender_name 是空的，用会话名才对得上侧边栏 —— 抖音昵称随时会改，users 表里的
   // 往往不是用户熟悉的那个。
-  if (!isGroup && !embedded && conversationName) {
+  //
+  // ⚠️ 会话名指的是**本机账号对面那个人**，所以只对「不是本机账号发的」消息用它。
+  // 早先这里只判断「不是当前选中的我」，于是把视角切到对方之后，本机账号发的那条
+  // 也去套会话名，两边就都显示成对方的名字了（用户 2026-10-11 反馈）。
+  const isLocalAccount = !!localUid && uid === String(localUid)
+  if (!isGroup && !embedded && conversationName && !isLocalAccount) {
     return conversationName
   }
   const known = users[uid]?.nickname
@@ -40,6 +51,10 @@ export function senderDisplayName(msg, {
   if (embedded || isGroup) {
     return uid ? `用户${uid.slice(-6)}` : '群成员'
   }
+  // 本机账号查不到昵称：走到这里说明视角已经切到对方了（视角等于本机账号时
+  // 上面第一个分支就返回了），这一条在界面上代表的是「对面那个人」，再叫「我」
+  // 只会更糊涂，用 uid 后缀的中性名字。
+  if (isLocalAccount) return uid ? `用户${uid.slice(-6)}` : SELF_FALLBACK_NAME
   return conversationName || '对方'
 }
 

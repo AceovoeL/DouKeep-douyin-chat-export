@@ -13,9 +13,14 @@
   还没过期的链接也能补回来。
 
 存档键用哈希而不是 server_id：同一个人被反复拉进同一个群，群头像只该存一份。
+
+例外是「精灵」那套素材（``*.dailygn.com`` 图床，如喂食卡的背景图和食物图）：抖音给它们
+起的文件名本身就是它的名字（``like2.png`` / ``hotstick_icon.png``），存档时**沿用官方
+原名**（见 :func:`icon_filename`），打开目录一眼就知道哪张是哪张。
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -26,11 +31,21 @@ from common.paths import MEDIA_DIR
 log = logging.getLogger("app.media")
 
 CARD_ICON_DIR_NAME = "card_icons"
+#: 「会被落成普通消息」的表情 aweType：抖音给的载荷和别的表情一模一样（display_name
+#: 是「笑死」「续火花」这类文字、图在 ``url.url_list[0]``），但采集端以前不在名单里，
+#: 于是落库成了普通消息（msg_type=0）、图也没下。
+#:
+#: 挑出来单列是因为补图用：这些老数据只能靠载荷里的 ``aweType`` 粗筛出来
+#: （见 ``extractor/media_backfill.py``），别的表情落库就是 msg_type=2，不用它。
+#: 515 / 517 / 519 / 520 与阅读端 ``LOOSE_EMOJI_AWES`` 是同一批；519 是「小火人」
+#: （monster emoji），520 是精灵自己发的表情（用户 2026-10-11 反馈它一直没被存下来）。
+LOOSE_EMOJI_AWE_TYPES = frozenset({"515", "517", "519", "520"})
+
 #: 表情包 / 贴纸的 aweType（采集端、转发记录、阅读端都用这一份名单）。
-#: 519 是「小火人」（monster emoji）：载荷里 display_name 是「笑死」「续火花」，
-#: 图在 url.url_list[0]，卡片形状和别的表情一模一样。比较时统一用 str(aweType)，
-#: 因为接口有时给数字、有时给字符串。
-EMOJI_AWE_TYPES = frozenset({"500", "501", "507", "508", "510", "514", "516", "519"})
+#: 比较时统一用 str(aweType)，因为接口有时给数字、有时给字符串。
+EMOJI_AWE_TYPES = frozenset({
+    "500", "501", "507", "508", "510", "514", "516",
+}) | LOOSE_EMOJI_AWE_TYPES
 #: 只认这几种扩展名，别的当 webp 处理（抖音的群头像基本是 webp）。
 _ICON_EXTS = (".jpg", ".png", ".webp", ".gif", ".bmp")
 #: 单张卡片图的体积上限，超过就别往库里塞（正常几 KB ~ 200KB）。
@@ -73,8 +88,10 @@ def is_allowed_icon_url(url: object) -> bool:
         return False
     return host.endswith(
         (".douyinpic.com", ".byteimg.com", ".douyin.com", ".douyinstatic.com",
-         ".bytedance.com", ".bytecdn.cn", ".ibytedtos.com", ".volces.com")
-    ) or host in ("douyinpic.com", "byteimg.com", "douyin.com")
+         ".bytedance.com", ".bytecdn.cn", ".ibytedtos.com", ".volces.com",
+         # 精灵（小火人 / 合养精灵）那套素材走这个图床，喂食卡的背景和食物图都在上面。
+         ".dailygn.com")
+    ) or host in ("douyinpic.com", "byteimg.com", "douyin.com", "dailygn.com")
 
 
 def icon_extension(url: str, content_type: str = "") -> str:
@@ -87,9 +104,40 @@ def icon_extension(url: str, content_type: str = "") -> str:
     return mapped or ".webp"
 
 
-def icon_filename(url: str) -> str:
-    """链接 → 存档文件名（哈希去重，同图不同链接也能共用一份）。"""
-    return fnv1a_32(url) + icon_extension(url)
+def icon_filename(url: str, content_type: str = "") -> str:
+    """链接 → 存档文件名。
+
+    两种命名：
+    * **官方原名**（精灵素材，见 :func:`official_asset_name`）：``like2.png`` 就存成
+      ``like2.png``，和抖音自己叫的一样，翻目录时一眼认得出。
+    * 其余一律按链接哈希去重（同一个人被反复拉进同一个群，群头像只存一份）。
+    """
+    official = official_asset_name(url)
+    if official:
+        return official
+    return fnv1a_32(url) + icon_extension(url, content_type)
+
+
+def official_asset_name(url: str) -> str:
+    """精灵素材的官方文件名；不是这套素材则返回空串。
+
+    抖音给「小火人 / 合养精灵」那套素材起的名字本身就是它的身份（喂食卡的背景
+    ``like2.png``、食物 ``hotstick_icon.png``），所以这几个图床上的图**沿用官方原名**
+    存盘（用户 2026-10-11 要求）。别的图还是走哈希，免得两个卡片用同一个 <img> 名。
+    """
+    if not isinstance(url, str):
+        return ""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not (host == "dailygn.com" or host.endswith(".dailygn.com")):
+        return ""
+    name = os.path.basename(parsed.path)
+    if not name or os.path.splitext(name)[1].lower() not in _ICON_EXTS:
+        return ""
+    # 只认「目录/名字」这种干净的样子，别把带奇怪字符的东西当文件名写进磁盘。
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        return ""
+    return name
 
 
 def icon_proxy_url(url: object) -> str:
@@ -103,6 +151,21 @@ def icon_proxy_url(url: object) -> str:
 #: 豆包分享卡（见 frontend/src/lib/cardKinds.js 的 getMusicCard）
 MUSIC_CARD_AWE_TYPE = 6001
 INVITE_TYPE_DESCS = ("群聊邀请", "群邀请")
+
+#: 「聊天火花」关系卡（更改为姐妹 / 兄弟 / 伴侣 / 死党火花）的两个类型号。
+#: 这几种**共用同一张卡片外观**（卡片底纹 + 底部「聊天火花」条，由客户端画，载荷里没有），
+#: 只有上面那颗火花图标不一样 —— 图标就在载荷里，所以按卡片类型把它存下来。
+#: 别的小火人 / 合养精灵卡是另一个页脚（「合养精灵」），各有各的外观，不在这里。
+FIRE_CARD_KEY = "msg_fire_invitation"
+FIRE_CARD_TYPES = (
+    "im_msg_fire_invitation_send",           # 邀请更改为姐妹/兄弟/伴侣/死党火花
+    "im_msg_fire_invitation_accept_memory",  # 你们已更改为 XX 火花（纪念卡）
+)
+
+#: 「喂精灵」卡（aweType=110274）。它的封面由**两张图叠出来**：一张背景（小火人 + 爱心
+#: 光晕）加一张食物图居中盖在上面，下面是项目自带的 assets/feed-card.png。两张图都在
+#: 载荷里，链接过期就没了，所以两张都要存（见 :func:`feed_card_image_urls`）。
+FEED_CARD_TYPES = ("im_msg_fire_invitation_feeding",)
 
 
 def image_url(value) -> str:
@@ -150,11 +213,117 @@ def is_music_card(cj) -> bool:
     return str(cj.get("aweType")) == str(MUSIC_CARD_AWE_TYPE)
 
 
+def is_fire_card(cj) -> bool:
+    """「聊天火花」关系卡（更改为姐妹 / 兄弟 / 伴侣 / 死党火花）。"""
+    if not isinstance(cj, dict):
+        return False
+    patch = cj.get("im_dynamic_patch")
+    if not isinstance(patch, dict):
+        return False
+    if str(patch.get("card_key")) != FIRE_CARD_KEY:
+        return False
+    return str(patch.get("card_type")) in FIRE_CARD_TYPES
+
+
+def _fire_layout(cj) -> dict | None:
+    """关系卡的排版（``im_dynamic_patch.raw_data``，可能是再次编码的字符串）。"""
+    patch = cj.get("im_dynamic_patch") if isinstance(cj, dict) else None
+    raw = patch.get("raw_data") if isinstance(patch, dict) else None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _fire_icon_url(cj) -> str:
+    """关系卡上那颗火花的原图链接。
+
+    邀请卡在 ``top.content``（字符串）；接受纪念卡在 ``top@1.content.flame_icon``，
+    老载荷会把它放在 ``top.content.flame_icon``。
+    """
+    layout = _fire_layout(cj)
+    if not layout:
+        return ""
+    top1 = layout.get("top@1")
+    content = top1.get("content") if isinstance(top1, dict) else None
+    if isinstance(content, dict):
+        url = _image_url(content.get("flame_icon")) or _image_url(content.get("icon"))
+        if url:
+            return url
+    top = layout.get("top")
+    if isinstance(top, dict):
+        direct = top.get("content")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+        nested = top.get("top_content")
+        if isinstance(nested, dict):
+            url = _image_url(nested.get("flame_icon")) or _image_url(nested.get("content"))
+            if url:
+                return url
+        content = top.get("content")
+        if isinstance(content, dict):
+            url = _image_url(content.get("flame_icon")) or _image_url(content.get("icon"))
+            if url:
+                return url
+    return ""
+
+
+def is_feed_card(cj) -> bool:
+    """「喂精灵」卡（aweType=110274 / card_type=im_msg_fire_invitation_feeding）。"""
+    if not isinstance(cj, dict):
+        return False
+    patch = cj.get("im_dynamic_patch")
+    if not isinstance(patch, dict):
+        return False
+    if str(patch.get("card_key")) != FIRE_CARD_KEY:
+        return False
+    return str(patch.get("card_type")) in FEED_CARD_TYPES
+
+
+def _whole_card_ui(layout: dict) -> dict:
+    ui = layout.get("whole_card") if isinstance(layout, dict) else None
+    ui = ui.get("ui_info") if isinstance(ui, dict) else None
+    return ui if isinstance(ui, dict) else {}
+
+
+def feed_card_image_urls(cj) -> tuple[str, str]:
+    """喂食卡封面的两张图 ``(背景图, 食物图)``；缺哪张哪张是空串。
+
+    背景在 ``whole_card.ui_info.background_image@light``（``@dark`` 是深色模式那张，
+    优先用 ``@light``）；食物在 ``top.content`` —— 卡片里那根辣条就是它，居中盖在
+    背景上（摆放见 ``frontend/src/lib/feedCard.js``）。
+    """
+    if not is_feed_card(cj):
+        return "", ""
+    layout = _fire_layout(cj) or {}
+    ui = _whole_card_ui(layout)
+    background = (
+        _image_url(ui.get("background_image@light"))
+        or _image_url(ui.get("background_image@dark"))
+        or _image_url(ui.get("background_image"))
+    )
+    top = layout.get("top")
+    food = _image_url(top.get("content")) if isinstance(top, dict) else ""
+    return background, food
+
+
+def card_icon_urls(cj) -> list[str]:
+    """这张卡要存下来的**所有**图（大多数卡只有一张，喂食卡有两张）。"""
+    if isinstance(cj, dict) and is_feed_card(cj):
+        return [url for url in feed_card_image_urls(cj) if url]
+    single = card_icon_url(cj)
+    return [single] if single else []
+
+
 def card_icon_url(cj) -> str:
     """卡片上那张图的原始链接；不是认识的卡片则返回空串。
 
     群邀请卡用 ``icon``（``aweme_invite_card.group_icon`` 是同一张），
-    豆包卡用 ``icon``（没有时退回 ``cover_url``）。
+    豆包卡用 ``icon``（没有时退回 ``cover_url``），
+    聊天火花卡用那颗火花图标（``top`` / ``top@1`` 里的图片），
+    喂食卡用它的背景图（另一张食物图见 :func:`feed_card_image_urls`）。
     """
     if not isinstance(cj, dict):
         return ""
@@ -164,6 +333,10 @@ def card_icon_url(cj) -> str:
         return _image_url(cj.get("icon")) or _image_url(card.get("group_icon"))
     if is_music_card(cj):
         return _image_url(cj.get("icon")) or _image_url(cj.get("cover_url"))
+    if is_fire_card(cj):
+        return _fire_icon_url(cj)
+    if is_feed_card(cj):
+        return feed_card_image_urls(cj)[0]
     return ""
 
 
@@ -171,10 +344,17 @@ def find_card_icon(url: object) -> str | None:
     """本地已有这份图时返回相对 media 的路径（``card_icons/<文件>``）。"""
     if not is_allowed_icon_url(url):
         return None
-    base = fnv1a_32(url)
     directory = card_icon_dir()
     if not os.path.isdir(directory):
         return None
+    # 精灵素材按官方原名找；别的按哈希前缀找（存的时候也可能带了响应头猜出来的扩展名）。
+    official = official_asset_name(url)
+    if official:
+        target = os.path.join(directory, official)
+        if os.path.isfile(target) and os.path.getsize(target) > 0:
+            return f"{CARD_ICON_DIR_NAME}/{official}"
+        return None
+    base = fnv1a_32(url)
     for name in os.listdir(directory):
         if name.startswith(base) and os.path.getsize(os.path.join(directory, name)) > 0:
             return f"{CARD_ICON_DIR_NAME}/{name}"
@@ -194,11 +374,33 @@ def save_card_icon(url: object) -> str | None:
         return None
     directory = card_icon_dir()
     os.makedirs(directory, exist_ok=True)
-    # 链接里看不出格式（没有扩展名 / 是 .image 这类）时按响应头猜。
-    rel = f"{CARD_ICON_DIR_NAME}/{fnv1a_32(url)}{icon_extension(url, content_type)}"
-    with open(os.path.join(MEDIA_DIR, rel), "wb") as handle:
+    # 精灵素材沿用官方原名；链接里看不出格式（没有扩展名 / 是 .image 这类）时按响应头猜。
+    name = official_asset_name(url) or f"{fnv1a_32(url)}{icon_extension(url, content_type)}"
+    rel = f"{CARD_ICON_DIR_NAME}/{name}"
+    target = os.path.join(MEDIA_DIR, rel)
+    # 重名不再覆盖：同一个官方文件名就意味着同一份素材，直接用它下载好的那份。
+    if os.path.isfile(target) and os.path.getsize(target) > 0:
+        return rel
+    with open(target, "wb") as handle:
         handle.write(data)
     return rel
+
+
+def save_card_icons(cj) -> list[str]:
+    """把这张卡要存的图**全部**下载存好，返回相对路径（失败的那些跳过）。
+
+    大多数卡只有一张图，喂食卡有两张（背景 + 食物）—— 两张都是带签名的临时链接，
+    所以两张都得落地，少存一张就等着过期变碎图。
+    """
+    saved = []
+    for url in card_icon_urls(cj):
+        try:
+            rel = save_card_icon(url)
+        except OSError:
+            rel = None
+        if rel:
+            saved.append(rel)
+    return saved
 
 
 def _fetch_icon(url: str) -> tuple[bytes | None, str]:

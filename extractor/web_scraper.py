@@ -98,13 +98,10 @@ _VIDEO_SHARE_AWE_TYPES = (11054, 11055, 11063, 11066, 11067, 11069, 11070)
 _OTHER_SHARE_AWE_TYPES = (11029, 10500, 10401, 800, 801, 803)
 
 # aweType → 表情包/贴纸：落库 msg_type=2，图在 url.url_list[0]（明文 CDN）。
-# 519 是「小火人」（monster emoji），display_name 是「笑死」「续火花」「打招呼」
-# 这类文字，卡片形状和别的表情一样 —— 以前不在名单里，于是被当成普通消息存成
-# msg_type=0，阅读端只剩那几个字。
-# aweType → 表情包/贴纸：落库 msg_type=2，图在 url.url_list[0]（明文 CDN）。
-# 519 是「小火人」（monster emoji），display_name 是「笑死」「续火花」「打招呼」
-# 这类文字，卡片形状和别的表情一样 —— 以前不在名单里，于是被当成普通消息存成
-# msg_type=0，阅读端只剩那几个字。名单放在 common/card_icons.py 里共用。
+# 519 是「小火人」（monster emoji）、520 是精灵自己发的表情，display_name 是
+# 「笑死」「续火花」这类文字，卡片形状和别的表情一样 —— 以前不在名单里，于是被
+# 当成普通消息存成 msg_type=0，图也不会下载，阅读端只剩那几个字（520 用户
+# 2026-10-11 反馈）。名单放在 common/card_icons.py 里共用。
 from common.card_icons import EMOJI_AWE_TYPES as _EMOJI_AWE_TYPES
 
 
@@ -117,21 +114,21 @@ def _emoji_payload(cj):
 
 
 def _download_card_icon(cj):
-    """卡片自带的图（群邀请卡的群头像、豆包卡的封面）顺手存一份到本地。
+    """卡片自带的图（群邀请卡的群头像、豆包卡的封面、喂食卡的两张图）顺手存一份。
 
     抖音给的是带签名的临时链接（180 天左右过期），存晚了就只剩碎图，
     所以采集时就落盘（见 common/card_icons.py）。
-    """
-    from common.card_icons import card_icon_url, save_card_icon
 
-    url = card_icon_url(cj)
-    if not url:
-        return None
+    喂食卡要存**两张**（封面背景 + 那根辣条），所以返回的是路径列表
+    （别家卡片只有一张）。保存失败的那张会被跳过，不打断整轮抓取。
+    """
+    from common.card_icons import save_card_icons
+
     try:
-        return save_card_icon(url)
+        return save_card_icons(cj)
     except OSError as exc:
         print(f"  [media] 卡片图保存失败: {exc}")
-        return None
+        return []
 
 
 def _share_cover(cj):
@@ -282,15 +279,18 @@ class WebChatScraper:
         print("[-] 登录超时")
         return False
 
-    async def _wait_chat_page_settled(self):
+    async def _wait_chat_page_settled(self, indent: str = ""):
         """打开（或重载）私信页后先静等几秒，让会话列表自己加载完整。
 
         页面刚出来时列表只渲染了一部分，立刻滚动/读取会少拿会话（表现为"只有原来
         一半的会话"），立刻找会话则会报"未找到会话"。两个入口都要等：进页面时
         （navigate_to_chat）和采集时为了偷 short_id 重载页面之后。
         等多久见 CHAT_PAGE_SETTLE_SECONDS。
+
+        ``indent`` 是这行日志的前缀：进页面时直接打（不缩进），采集途中重载是往
+        一个会话的缩进块里插日志，传 "  " 跟同块其它行对齐。
         """
-        print(f"[*] 等待会话列表加载（{CHAT_PAGE_SETTLE_SECONDS} 秒）...")
+        print(f"{indent}[*] 等待会话列表加载（{CHAT_PAGE_SETTLE_SECONDS} 秒）...")
         await asyncio.sleep(CHAT_PAGE_SETTLE_SECONDS)
 
     async def navigate_to_chat(self):
@@ -1489,7 +1489,7 @@ class WebChatScraper:
             await self.page.goto(CHAT_URL, wait_until="domcontentloaded")
             # 重载完也要先等几秒：列表只画出一部分时，马上找会话会找不到
             # （表现为「重新加载后未找到会话」）。等列表补齐再找，代价是这个会话慢几秒。
-            await self._wait_chat_page_settled()
+            await self._wait_chat_page_settled(indent="  ")
             await self._ensure_conv_list_loaded()
 
             # 4. 重新点击目标会话（触发 SDK 从 API 加载消息）
@@ -2177,8 +2177,12 @@ class WebChatScraper:
                                 break
                     else:
                         text, msg_type, image_src = _classify_json_message(cj)
-                    # 卡片自带的图（群头像 / 豆包卡封面）顺手存下来，链接过期就没得救了
-                    card_icon_dir = _download_card_icon(cj)
+                    # 卡片自带的图（群头像 / 豆包卡封面 / 喂食卡的两张）顺手存下来，
+                    # 链接过期就没得救了。返回的是路径列表：多数卡片一张，喂食卡两张
+                    # （封面背景 + 那根辣条）；这里只需记下第一张当本地媒体，
+                    # 另一张阅读端会按 ?url= 找到本地那份（见 common/card_icons.py）。
+                    saved_icons = _download_card_icon(cj)
+                    card_icon_dir = saved_icons[0] if saved_icons else None
                 except (json.JSONDecodeError, AttributeError):
                     text = content_json
                     msg_type = "text"

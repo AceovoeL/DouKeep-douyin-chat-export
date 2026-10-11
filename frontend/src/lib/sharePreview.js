@@ -1,4 +1,7 @@
 import { getContentJson, getShareInfo, isViewOnce, getViewOnceText, relationNoticeText } from './douyinMessage'
+import { getFireInviteCard } from './fireInviteCard'
+import { getFireBabyCard } from './fireBabyCard'
+import { getFeedCard } from './feedCard'
 
 export function sharePreview(item) {
   let cj = getContentJson(item)
@@ -15,6 +18,16 @@ export function sharePreview(item) {
   // 搜索结果里直接显示这句话，别把整段 JSON 当预览吐出来。
   const notice = relationNoticeText(item)
   if (notice) return notice
+  // 姐妹火花卡（邀请 / 接受纪念）也不是分享卡，搜到它时用卡片上那句话当预览。
+  const fire = getFireInviteCard(item)
+  if (fire) return fire.preview || fire.title || ''
+  // 「合养小火人」卡同理：把它当卡片预览，别吐整段 JSON。
+  const baby = getFireBabyCard(item)
+  if (baby) return baby.preview || baby.title || ''
+  // 「喂精灵」卡（feeding）也一样：预览用卡片自己那句话（没有就用固定标题）。
+  // 老版卡片（载荷没有背景图）连标题都是载荷里的原文，见 lib/feedCard.js。
+  const feed = getFeedCard(item)
+  if (feed) return feed.preview || feed.title || ''
   const info = getShareInfo(item)
   const title = info.title
   const comment = typeof cj.comment === 'string' ? cj.comment : ''

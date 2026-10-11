@@ -198,7 +198,11 @@
               <span v-else :style="{ background: isSelf(msg) ? 'var(--accent)' : 'var(--bg-tertiary)', color: isSelf(msg) ? '#fff' : 'var(--text-secondary)' }">{{ displayName(msg)[0] }}</span>
             </div>
             <div class="msg-body" @contextmenu="selectMsgContent">
-              <div class="msg-sender">{{ displayName(msg) }}</div>
+              <div class="msg-sender">
+                <span>{{ displayName(msg) }}</span>
+                <!-- 小火人（精灵 AI）后面挂一枚灰底小签，写它的性格设定（如「腹黑傲娇」） -->
+                <span v-if="spiritStyle(msg)" class="msg-spirit-style">{{ spiritStyle(msg) }}</span>
+              </div>
               <!-- 引用/回复消息 -->
               <div v-if="getRefMsg(msg)" class="msg-ref-quote" @click="jumpToRefMsg(getRefMsg(msg))">
                 <span v-if="getRefNickname(getRefMsg(msg))" class="msg-ref-name">{{ getRefNickname(getRefMsg(msg)) }}：</span>
@@ -255,6 +259,166 @@
               </div>
               <!-- 仅看一次消息（aweType=10401 + 正文，非分享卡片） -->
               <div v-else-if="isViewOnce(msg)" class="msg-bubble msg-view-once-bubble" v-html="renderText(getViewOnceText(msg))"></div>
+              <!-- 「聊天火花」关系卡（card_key=msg_fire_invitation 的邀请 / 接受纪念两种）：
+                   不居中，跟着发送者分左右（对方发的在左、我发的在右），和别的卡片一致。
+                   卡片外观是 assets/request.png、assets/accept.png（抖音客户端里那张卡的
+                   底纹 + 底部「聊天火花」条），头像、那颗火花和「接受邀请」按钮叠在上面 ——
+                   按钮只做展示、点不动；位置按抖音客户端量出来的摆（见 lib/fireInviteCard.js）。
+                   姐妹 / 兄弟 / 伴侣 / 死党火花共用这两个 card_type，**只有那颗火花图标不同**，
+                   所以图标一律用载荷里那张（采集时就存下来了）。
+                   ⚠️ 必须排在商品卡 / 分享卡前面：那两支的兜底判据很宽（只要有 top +
+                   content_top + content_content 就算商品卡），会先把这张卡截走、画成
+                   一个「[商品]」空壳。 -->
+              <div
+                v-else-if="fireInvite(msg)"
+                class="msg-fire-card"
+                :style="fireCardStyle(msg)"
+              >
+                <!-- 接受纪念卡：两个头像夹一颗火花（左=发卡的人、右=对方） -->
+                <template v-if="fireInvite(msg).kind === 'accept'">
+                  <div class="msg-fire-avatar msg-fire-avatar-left">
+                    <img
+                      v-if="fireAvatar(msg, 'left')"
+                      :src="fireAvatar(msg, 'left')"
+                      :alt="fireAvatarAlt(msg, 'left')"
+                      :loading="imgLoading"
+                      @error="onImgError"
+                    />
+                  </div>
+                  <img
+                    v-if="fireSpark(msg)"
+                    class="msg-fire-spark"
+                    :src="fireSpark(msg)"
+                    alt=""
+                    @error="onFireSparkError"
+                  />
+                  <div class="msg-fire-avatar msg-fire-avatar-right">
+                    <img
+                      v-if="fireAvatar(msg, 'right')"
+                      :src="fireAvatar(msg, 'right')"
+                      :alt="fireAvatarAlt(msg, 'right')"
+                      :loading="imgLoading"
+                      @error="onImgError"
+                    />
+                  </div>
+                </template>
+                <!-- 邀请卡：上面只有一颗火花 -->
+                <img
+                  v-else-if="fireSpark(msg)"
+                  class="msg-fire-spark msg-fire-spark-invite"
+                  :src="fireSpark(msg)"
+                  alt=""
+                  @error="onFireSparkError"
+                />
+                <!-- 主标题 + 副标题：文字压在背景图左侧，右边留给那颗按钮 -->
+                <div class="msg-fire-title">{{ fireInvite(msg).title }}</div>
+                <div class="msg-fire-sub">
+                  <span>{{ fireInvite(msg).subtitle }}</span>
+                  <!-- 这个「›」是用 CSS 的两条边画出来的（见 .msg-fire-arrow），
+                       所以里面不要再放一个「›」文字 —— 那会被一起旋转 45°，
+                       看起来就是一支歪着的小箭头。 -->
+                  <span
+                    v-if="fireInvite(msg).arrow"
+                    class="msg-fire-arrow"
+                    aria-hidden="true"
+                  ></span>
+                </div>
+                <!-- 「接受邀请」：背景图是干净的，按钮由这里画；接受纪念卡的背景图上
+                     已经画好了那颗「纪念一下」，不再叠一个。 -->
+                <div
+                  v-if="!fireInvite(msg).buttonBakedIn"
+                  class="msg-fire-btn"
+                  :class="{ 'msg-fire-btn-primary': fireInvite(msg).buttonPrimary }"
+                  aria-disabled="true"
+                >{{ fireInvite(msg).button }}</div>
+              </div>
+              <!-- 「合养小火人」卡片（card_key=msg_fire_invitation 的 joint_* 三种）：
+                   和「聊天火花」一样不居中，跟着发送者分左右（对方发的在左、我发的在右）。
+                   卡片外观是 assets/request-firebaby.png 与 assets/accept-firebaby.png
+                   （顶上那颗小火人和底部「合养精灵」那一条都印在图里），文字和那颗按钮
+                   叠在上面 —— 按钮只做展示、点不动，位置按抖音客户端量出来的摆
+                   （见 lib/fireBabyCard.js）。
+                   标题/副标题**不省略**：抖音客户端会把「对方邀请你一起养小火人」截成
+                   「对方邀请你一起养小…」，这里让它在左侧那点宽度里换行显示完整。
+                   收到的那张图（accept）自带「我们开始养小火人啦／连续聊天让精灵快快长大」，
+                   文案正好对得上就只补一颗按钮；对不上（比如 AI 精灵那款）就换回空白底纹
+                   自己画，免得两层字叠在一起（见 fireBabyBackground）。
+                   ⚠️ 必须排在商品卡 / 分享卡前面：那两支的兜底判据很宽（只要有 top +
+                   content_top + content_content 就算商品卡），会先把这张卡截走、画成
+                   一个「[商品]」空壳。 -->
+              <div
+                v-else-if="fireBaby(msg)"
+                class="msg-fire-baby-card"
+                :style="fireBabyStyle(msg)"
+              >
+                <!-- 文字：锚在内容区底部、往上长，标题换行也不会挤掉副标题 -->
+                <div v-if="!fireBaby(msg).textBakedIn" class="msg-fire-baby-body">
+                  <div class="msg-fire-baby-title">{{ fireBaby(msg).title }}</div>
+                  <div class="msg-fire-baby-sub">
+                    <span>{{ fireBaby(msg).subtitle }}</span>
+                    <!-- 这个「›」是 CSS 两条边画的，不要再放「›」文字（会被一起转 45°） -->
+                    <span
+                      v-if="fireBaby(msg).arrow"
+                      class="msg-fire-baby-arrow"
+                      aria-hidden="true"
+                    ></span>
+                  </div>
+                </div>
+                <!-- 那颗按钮：三款卡都有，只做展示、点不动 -->
+                <div
+                  class="msg-fire-baby-btn"
+                  :class="{ 'msg-fire-baby-btn-primary': fireBaby(msg).buttonPrimary }"
+                  aria-disabled="true"
+                >{{ fireBaby(msg).button }}</div>
+              </div>
+              <!-- 「喂精灵」卡（card_key=msg_fire_invitation 的 feeding 一种）：
+                    和别的卡片一样不居中，跟着发送者分左右。这族卡片有**两版版式**，
+                    靠载荷里有没有背景图区分（见 lib/feedCard.js）：
+                    ① 老版（7 月那批，载荷没背景图）：整张卡用项目自带的
+                       assets/invite-feed.png（浅色渐变底 + 底部「合养精灵」条，尺寸和
+                       抖音那张一模一样），上面叠精灵图（载荷里的 top.content，就是那根
+                       辣条）和载荷里的标题、副标题。
+                    ② 新版（8 月起）：封面由背景图 + 食物图叠出来，下半部分是
+                       assets/feed-card.png，两行文字固定。
+                    两版都只有一颗「去喂食」按钮，点不动 —— 喂食卡不等人接受，接受后
+                    会另外发一条消息，所以按钮只有这一种文案。
+                    ⚠️ 必须排在商品卡 / 分享卡前面：那两支的兜底判据很宽（只要有 top +
+                    content_top + content_content 就算商品卡），会先把这张卡截走、画成
+                    一个「[商品]」空壳。 -->
+              <div
+                v-else-if="feedCard(msg)"
+                class="msg-feed-card"
+                :class="{ 'msg-feed-card--old': !feedCard(msg).background }"
+                :style="feedCardStyle(msg)"
+              >
+                <!-- 老版卡片上的精灵图：载荷里那张（原图 252×252，四周各留了 5px 透明边），
+                     位置和大小是按抖音参考图量的。同样走 iconSrc() 取本地缓存。 -->
+                <img
+                  v-if="!feedCard(msg).background && feedCard(msg).spirit"
+                  class="msg-feed-spirit"
+                  :src="feedSpiritSrc(msg)"
+                  alt=""
+                  :loading="imgLoading"
+                  @error="onFeedFoodError"
+                />
+                <!-- 新版封面：背景图 + 居中叠上去的食物图。两张都是抖音的临时链接，
+                     走 iconSrc() 取本地缓存（采集时已存下来，沿用官方原名）。 -->
+                <div v-if="feedCard(msg).background" class="msg-feed-cover">
+                  <img
+                    v-if="feedCard(msg).food"
+                    class="msg-feed-food"
+                    :src="feedFoodSrc(msg)"
+                    alt=""
+                    :loading="imgLoading"
+                    @error="onFeedFoodError"
+                  />
+                </div>
+                <!-- 主标题 + 副标题：固定两句话，压在素材图左侧，右边留给那颗按钮 -->
+                <div class="msg-feed-title">{{ feedCard(msg).title }}</div>
+                <div class="msg-feed-sub">{{ feedCard(msg).subtitle }}</div>
+                <!-- 「去喂食」：只做展示、点不动 -->
+                <div class="msg-feed-btn" aria-disabled="true">{{ feedCard(msg).button }}</div>
+              </div>
               <!-- 商品分享卡片：上图 + 描述（最多 3 行）+ 原价/券后价 -->
               <div v-else-if="getGoodsCard(msg)" class="msg-goods-card" @click="openShare(msg)">
                 <div class="msg-goods-cover-wrap">
@@ -503,14 +667,28 @@ import {
 import { getGoodsCard, clearGoodsCardCache } from '@/lib/goodsCard'
 import { getFlameGiftCard, isFlameGiftCard, pickFlameAvatar, clearFlameCardCache } from '@/lib/flameCard'
 import { getCallShopCard, isCallShopCard, clearCallShopCardCache } from '@/lib/callShopCard'
+import { getFireInviteCard, isFireInviteCard, clearFireInviteCardCache } from '@/lib/fireInviteCard'
+import { getFireBabyCard, isFireBabyCard, clearFireBabyCardCache } from '@/lib/fireBabyCard'
+import { getFeedCard, isFeedCard, clearFeedCardCache } from '@/lib/feedCard'
 import { getInviteCard, isInviteCard, getMusicCard, clearSystemCardCache } from '@/lib/cardKinds'
 import { retryVideoWithTranscode, retryVideoIfUndecodable } from '@/lib/mediaPlayback'
 import { senderDisplayName, selfPickerOptions, pickerOptionLabel } from '@/lib/selfIdentity'
+import { getSpiritAi } from '@/lib/spiritAi'
+import { readStoredSelfUid, writeStoredSelfUid, clearLegacyGlobalSelfUid } from '@/lib/selfView'
 
-// 卡片要用的图（项目 assets 里的原图）：火花卡背景 + 火花图标 + 联系门店卡外观。
+// 卡片要用的图（项目 assets 里的原图）：火花卡背景 + 火花图标 + 联系门店卡外观 +
+// 「聊天火花」关系卡的两张外观（邀请 / 接受纪念）。
+// 注意：关系卡上那颗火花**不在**这里 —— 姐妹 / 兄弟 / 伴侣 / 死党各有各的图，
+// 一律用载荷里那张（见 fireSpark）。
 import flameCardBackground from '@/assets/background.png'
 import flameCardFire from '@/assets/fire.png'
 import callShopBackground from '@/assets/call-to-shop.png'
+import fireRequestBackground from '@/assets/request.png'
+import fireAcceptBackground from '@/assets/accept.png'
+import fireBabyRequestBackground from '@/assets/request-firebaby.png'
+import fireBabyAcceptBackground from '@/assets/accept-firebaby.png'
+import feedCardHalf from '@/assets/feed-card.png'
+import feedCardInvite from '@/assets/invite-feed.png'
 
 import ForwardRecords from './ForwardRecords.vue'
 
@@ -533,7 +711,13 @@ const hasOlder = ref(false)
 const hasNewer = ref(false)
 const listRef = ref(null)
 const senders = ref([])
-const selfUid = ref(props.selfUidOverride || localStorage.getItem('selfUid') || '')
+// 「我是谁」的选择**按会话各记一份**（见 lib/selfView.js）：以前只存一个全局键，
+// 在某个会话里切过视角之后，点开另一个会话还沿用上一次的选择（用户 2026-10-11 反馈）。
+const selfUid = ref(
+  props.selfUidOverride || readStoredSelfUid(props.conversation?.conv_id) || ''
+)
+// 老版本那个会串会话的全局键，升级后清掉一次。
+clearLegacyGlobalSelfUid()
 const showPicker = ref(false)
 // 后端从聊天记录里认出来的本机账号（见 common/owner.py）。用户没手工选过「我」时
 // 就拿它当默认值：单聊里自己发的消息才不会被当成对方、也不用每次手动选一遍。
@@ -774,6 +958,16 @@ function _isSystem(msg) {
   // 群邀请卡（type_desc=群聊邀请）虽然解析上算"卡片"，但位置跟普通消息一样：
   // 对方拉的你在左边、自己在右边，自带头像和昵称（见下面的 invite 卡片模板）。
   if (isInviteCard(msg)) return false
+  // 姐妹火花卡（card_key=msg_fire_invitation 的邀请 / 接受纪念两种）同理：它在抖音里
+  // 是**跟着发送者走**的一条消息（对方发的在左、我发的在右），不是居中的系统提示，
+  // 所以也不能走系统提示那一套（见下面的 fire 卡片模板）。
+  if (isFireInviteCard(msg)) return false
+  // 「合养小火人」卡（同一个 card_key 的 joint_* 三种）也是跟着发送者走的卡片，
+  // 同样不能居中（见下面的 fire-baby 卡片模板）。
+  if (isFireBabyCard(msg)) return false
+  // 「喂精灵」卡（card_key=msg_fire_invitation 的 feeding 一种）同理：抖音里它就是
+  // 一条跟着发送者走的卡片消息（见下面的 feed 卡片模板），不是居中的系统提示。
+  if (isFeedCard(msg)) return false
   // 「获得火花见面礼」卡（aweType=110408）解析上算分享卡，但排版是系统提示样式，
   // 也要居中、不要头像和昵称，所以跟系统提示一起走。
   // 「联系门店」引导卡（aweType=110284）同理：抖音里就是会话中间的一条系统卡片。
@@ -785,6 +979,7 @@ function _isSystem(msg) {
 // douyinMessage.js 的 shouldShow 再认一遍（那边只认"正文是不是空的"）。
 function _shouldShow(msg) {
   return shouldShow(msg) || isInviteCard(msg) || !!musicCard(msg)
+    || isFireInviteCard(msg) || isFireBabyCard(msg) || isFeedCard(msg)
 }
 
 // 群公告卡片：返回 { title, body } 或 null（见 lib/douyinMessage.js）。
@@ -845,6 +1040,10 @@ function noticePeerAvatar() {
 
 // 一条消息该显示谁的名字：规则在 lib/selfIdentity.js 里（那里能单测），
 // 这里只把当前会话、当前「我是谁」、用户缓存喂进去。
+//
+// localUid 是「这台电脑的账号」，和当前选中的视角无关：会话名（= 对方的备注名）
+// 只能套在本机账号对面那个人身上，视角切到对方之后本机账号那条不能再用会话名，
+// 否则两边会显示成同一个名字（见 lib/selfIdentity.js 的说明）。
 function displayName(msg) {
   if (peerNotice(msg)) return noticePeerName()
   return senderDisplayName(msg, {
@@ -852,8 +1051,14 @@ function displayName(msg) {
     isGroup: isGroupConv.value,
     embedded: !!props.embeddedMessages,
     selfUid: effectiveSelfUid.value,
+    localUid: detectedSelf.uid,
     users: userCache,
   })
+}
+
+// 小火人（精灵 AI）消息上要挂的性格小签；不是精灵消息时是空串。
+function spiritStyle(msg) {
+  return getSpiritAi(msg)?.style || ''
 }
 
 function getAvatarUrl(msg) {
@@ -876,6 +1081,124 @@ function flameAvatar(msg, which) {
 
 // 卡片背景是项目 assets/background.png（构建时打进 dist/assets）。
 const flameCardStyle = { backgroundImage: `url("${flameCardBackground}")` }
+
+// 「聊天火花」关系卡（card_key=msg_fire_invitation）：卡片外观是抖音客户端里那张卡的截图
+// （assets/request.png 邀请 / assets/accept.png 接受纪念），文字、那颗火花和按钮由界面按
+// 量出来的位置叠上去（见 lib/fireInviteCard.js）。
+function fireInvite(msg) {
+  return getFireInviteCard(msg, effectiveSelfUid.value)
+}
+
+// 卡片背景图：邀请卡一张、接受纪念卡一张，图上已经带好了底部的「聊天火花」条。
+function fireBackground(msg) {
+  const card = fireInvite(msg)
+  return card?.kind === 'accept' ? fireAcceptBackground : fireRequestBackground
+}
+
+function fireCardStyle(msg) {
+  return { backgroundImage: `url("${fireBackground(msg)}")` }
+}
+
+// 卡片上那颗火花（姐妹 / 兄弟 / 伴侣 / 死党各有各的图，都在载荷里）。抖音给的是带签名
+// 的临时链接，所以一律走 iconSrc()：采集时已经存进 data/media/card_icons/，本地没有
+// 且链接还没过期时后端会补拉一次（见 common/card_icons.py 的 is_fire_card）。
+function fireSpark(msg) {
+  const card = fireInvite(msg)
+  if (!card || !card.icon) return ''
+  return iconSrc(card.icon)
+}
+
+// 这颗火花拉不到时（载荷里没有图标、或那张图的链接已经过期且本地也没存下）就把 <img>
+// 摘掉，卡片其余部分照常显示 —— 总比在卡片上留一个碎图标好。
+function onFireSparkError(event) {
+  const img = event?.target
+  if (img) img.style.display = 'none'
+}
+
+// 卡片上的两个头像和见面礼卡一个道理：库里存的是**发消息那天**的快照，
+// users 表里的是每次抓取都会刷新的最新头像，能用新的就用新的。
+function fireAvatar(msg, which) {
+  const card = fireInvite(msg)
+  if (!card) return ''
+  const uid = which === 'left' ? card.leftUid : card.rightUid
+  const latest = resolveAvatarUrl(userCache[uid]?.avatar_url)
+  return latest || (which === 'left' ? card.leftAvatar : card.rightAvatar)
+}
+
+function fireAvatarName(msg, which) {
+  const card = fireInvite(msg)
+  if (!card) return '对方'
+  const uid = which === 'left' ? card.leftUid : card.rightUid
+  if (uid && String(uid) === String(effectiveSelfUid.value)) return '我'
+  return userCache[uid]?.nickname || '对方'
+}
+
+function fireAvatarAlt(msg, which) {
+  return fireAvatarName(msg, which) + '的头像'
+}
+
+// 「合养小火人」卡（card_key=msg_fire_invitation 的 joint_* 三种）：卡片外观是
+// assets/request-firebaby.png（空白底纹，只有那颗小火人）和 assets/accept-firebaby.png
+// （已经印好「我们开始养小火人啦／连续聊天让精灵快快长大」）。见 lib/fireBabyCard.js。
+function fireBaby(msg) {
+  return getFireBabyCard(msg, effectiveSelfUid.value)
+}
+
+// 用哪张底纹：
+//   * 邀请 / 纪念两种 → 空白那张，文字和按钮都由界面画；
+//   * 开始合养且文案和图上印的一模一样 → 直接用它（图上的字就是对的）；
+//   * 开始合养但文案对不上（比如 AI 精灵那款）→ 退回空白那张，免得图上印着不相干的话。
+function fireBabyBackground(msg) {
+  const card = fireBaby(msg)
+  if (!card) return fireBabyRequestBackground
+  return card.textBakedIn ? fireBabyAcceptBackground : fireBabyRequestBackground
+}
+
+function fireBabyStyle(msg) {
+  return { backgroundImage: `url("${fireBabyBackground(msg)}")` }
+}
+
+// 「喂精灵」卡（card_key=msg_fire_invitation 的 feeding 一种）有**两版版式**：
+// ① 新版（载荷带背景图）= assets/feed-card.png（下半部分，标题/副标题/底部「合养精灵」
+//    条印在图里）+ 上面补一截封面（背景图 + 那根辣条叠上去）；
+// ② 老版（7 月那批载荷没有背景图）= 整张卡就是 assets/invite-feed.png（浅色渐变底 +
+//    底部「合养精灵」条，787×509，和抖音那张一模一样），上面叠精灵图和载荷里的文字。
+// 见 lib/feedCard.js。
+function feedCard(msg) {
+  return getFeedCard(msg)
+}
+
+// 新版封面：背景图由卡片自己给（whole_card.ui_info.background_image@light），
+// 走 iconSrc() 交给后端缓存 —— 抖音给的是带签名的临时链接，过期就只剩碎图。
+// 采集时已经把它存进 data/media/card_icons/ 了（沿用官方文件名）。
+// 下半部分那张图（标题 / 副标题 / 底部「合养精灵」条）用项目自带的 assets/feed-card.png，
+// 贴在卡片底部；卡片给的那张只当封面。两张分开画，封面那截才能自己补上方圆角。
+// 老版没有背景图，整张卡改用 assets/invite-feed.png 打底。
+function feedCardStyle(msg) {
+  const card = feedCard(msg)
+  const style = {
+    backgroundImage: `url("${card?.background ? feedCardHalf : feedCardInvite}")`,
+  }
+  if (card?.background) style['--feed-cover'] = `url("${iconSrc(card.background)}")`
+  return style
+}
+
+// 把那根辣条叠到背景上。拉不到就只留背景（总比留个碎图标好）。
+function feedFoodSrc(msg) {
+  const card = feedCard(msg)
+  return card?.food ? iconSrc(card.food) : ''
+}
+
+// 老版卡片上那张精灵图（载荷里的 top.content）。
+function feedSpiritSrc(msg) {
+  const card = feedCard(msg)
+  return card?.spirit ? iconSrc(card.spirit) : ''
+}
+
+function onFeedFoodError(event) {
+  const img = event?.target
+  if (img) img.style.display = 'none'
+}
 
 // 联系门店引导卡片（aweType=110284）：卡片外观用 assets/call-to-shop.png，
 // 卡片自己带的主标题/副标题只当图片说明（alt）用，文字已经画在图片里了。
@@ -1012,11 +1335,8 @@ async function fetchDetectedSelf() {
 
 function pickSelf(uid) {
   selfUid.value = uid || ''
-  if (uid) {
-    localStorage.setItem('selfUid', uid)
-  } else {
-    localStorage.removeItem('selfUid')
-  }
+  // 记在**当前会话**名下；清除选择 = 回到「自动认出来的那个」。
+  writeStoredSelfUid(props.conversation?.conv_id, uid || '')
   showPicker.value = false
 }
 
@@ -1400,6 +1720,9 @@ function resetParseCaches() {
   clearGoodsCardCache()
   clearFlameCardCache()
   clearCallShopCardCache()
+  clearFireInviteCardCache()
+  clearFireBabyCardCache()
+  clearFeedCardCache()
   clearSystemCardCache()
   for (const key of Object.keys(groupCache)) delete groupCache[key]
   for (const key of Object.keys(brokenCardIcons)) delete brokenCardIcons[key]
@@ -1410,6 +1733,11 @@ watch(() => props.conversation, (conv) => {
   loadError.value = ''
   messageRequestId++
   stopFollowBottom()
+  // 换会话就把视角换回这个会话自己记的（没记过 = 自动认出来的那个）。截图等场景
+  // 已经指定了人（selfUidOverride），那种情况不跟着会话走。
+  if (!props.selfUidOverride) {
+    selfUid.value = readStoredSelfUid(conv?.conv_id)
+  }
   if (props.embeddedMessages) return
   if (conv) {
     messages.value = []
@@ -1936,6 +2264,394 @@ watch(() => props.jumpToSeq, async (seq) => {
   background: #e4e7ea;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
+/* 「聊天火花」关系卡（card_key=msg_fire_invitation）：整张卡就是 assets/request.png /
+   assets/accept.png 那张抖音客户端的截图（787×509，连底部「聊天火花」条一起带上了），
+   文字、按钮、头像按量出来的相对位置叠在上面。那颗火花不在图里，是载荷给的图片
+   （姐妹/兄弟/伴侣/死党各不相同），由 <img> 铺在这个位置。
+   坐标与字号统一按「原图 787×509 → 卡片 278×180」换算（比例 0.353），
+   百分比负责位置、px 负责字号，这样改宽度时位置跟着走、字号仍然清晰。
+   卡片不居中：它跟着发送者分左右（见 _isSystem / 模板里的注释）。 */
+.msg-fire-card {
+  position: relative;
+  /* 787 : 509 ≈ 278 : 180 */
+  width: 278px;
+  max-width: 100%;
+  height: 180px;
+  border-radius: 13px;
+  background-color: #fff;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+/* 顶上那颗火花。原图取的是整张 450×450 的图标（画面上只有中间一块是实心的），
+   所以这里的框比看得见的那颗大一圈。 */
+.msg-fire-spark {
+  position: absolute;
+  left: 41.64%;
+  top: 9.14%;
+  width: 17.72%;
+  height: auto;
+  pointer-events: none;
+  user-select: none;
+}
+/* 邀请卡上那颗大一号（原图 x280-506 y4-232） */
+.msg-fire-spark-invite {
+  left: 35.55%;
+  top: 0.84%;
+  width: 28.78%;
+}
+/* 接受纪念卡的两个头像：原图两个圆各 174px，左圈 x156、右圈 x459，都在 y27 起 */
+.msg-fire-avatar {
+  position: absolute;
+  top: 5.30%;
+  width: 22.11%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #fff;
+}
+.msg-fire-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.msg-fire-avatar-left {
+  left: 19.82%;
+}
+.msg-fire-avatar-right {
+  left: 58.32%;
+}
+/* 主标题：原图左边距 38、字高一 14.7（换算到卡片就是 15.6px 的字） */
+.msg-fire-title {
+  position: absolute;
+  left: 4.83%;
+  right: 4.83%;
+  top: 52.6%;
+  font-size: 15.6px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #16181c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 副标题：原图字高 12.7，后面常跟一个 › */
+.msg-fire-sub {
+  position: absolute;
+  left: 4.83%;
+  right: 4.83%;
+  top: 67.4%;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 13.6px;
+  line-height: 1.2;
+  color: #73767d;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.msg-fire-sub > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.msg-fire-arrow {
+  flex: none;
+  /* 方块边长为 7.6px：两条边转 45° 后正好是参考图里那个「›」（约 5.4 宽、10.8 高） */
+  width: 7.6px;
+  height: 7.6px;
+  border-right: 1.7px solid currentColor;
+  border-bottom: 1.7px solid currentColor;
+  transform: rotate(-45deg) translate(-1px, -1px);
+  margin: 0 1px 0 2px;
+}
+/* 「接受邀请」只做展示，点不动；只保留鼠标悬停的阴影反馈。
+   按钮压在原图那颗钮的位置：x521-750 y282-377（230×96）。 */
+.msg-fire-btn {
+  position: absolute;
+  left: 66.2%;
+  top: 55.4%;
+  width: 29.22%;
+  height: 18.86%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: #f0f1f5;
+  color: #a4a7ad;
+  font-size: 13.6px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+  transition: background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+/* 灰按钮（待接受 / 已接受 / 已失效）之上，这一档是「给我的邀请」：抖音用主色配红字 */
+.msg-fire-btn-primary {
+  background: #fdeef1;
+  color: #f0476a;
+}
+.msg-fire-btn:hover {
+  background: #e4e7ea;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+.msg-fire-btn-primary:hover {
+  background: #fbdfe5;
+}
+/* 「合养小火人」卡片（card_key=msg_fire_invitation 的 joint_* 三种）：整张卡就是
+   assets/request-firebaby.png / assets/accept-firebaby.png 那张客户端截图
+   （787×509，顶上那颗小火人和底部「合养精灵」条都印在图里）。文字和按钮叠在上面。
+   布局锚在「内容区底部往上长」：标题换行时往上吃空白，不会把副标题挤出卡片。
+   坐标与字号统一按「原图 787×509 → 卡片 278×180」换算（比例 0.3532，原图 787px 就是
+   客户端在 2.8325 倍缩放下那张卡的宽度），百分比负责位置、px 负责字号。 */
+.msg-fire-baby-card {
+  position: relative;
+  /* 787 : 509 ≈ 278 : 180 */
+  width: 278px;
+  max-width: 100%;
+  height: 180px;
+  border-radius: 13px;
+  background-color: #fff;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+/* 文字块：宽度让到按钮左边（按钮从 66.2% 起），底部贴着内容区下沿。
+   用 bottom 定位 + 由下往上堆，标题折行时向上长（小火人上方那片是空的）。 */
+.msg-fire-baby-body {
+  position: absolute;
+  left: 4.83%;
+  right: 34%;
+  bottom: 22.4%;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+/* 主标题：原图字距 45px（÷2.8325 ≈ 16px），但抖音在客户端里会把长标题截成
+   「对方邀请你一起养小…」。这里要**把话说完**：字号收到 15px，让最常见的
+   11 个字「对方邀请你一起养小火人」正好排得下一行；万一更长就换行，绝不省略。 */
+.msg-fire-baby-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+  color: #161823;
+  /* 抖音把长标题截成「对方邀请你一起养小…」，这里要求把话说完 */
+  overflow-wrap: anywhere;
+}
+/* 副标题：原图字距 39.5px（≈14px），后面常跟一个 ›。同样不省略：
+   一行排不下就换行（左下方那片是空的，往上长不会压到小火人）。 */
+.msg-fire-baby-sub {
+  display: flex;
+  align-items: flex-start;
+  gap: 1px;
+  font-size: 14px;
+  line-height: 1.15;
+  color: #737679;
+}
+.msg-fire-baby-sub > span:first-child {
+  overflow-wrap: anywhere;
+}
+.msg-fire-baby-arrow {
+  flex: none;
+  /* 方块边长 7.6px：两条边转 45° 后正好是参考图里那个「›」。
+     跟第一行文字对齐（margin-top 把方块压到字高的中间）。 */
+  width: 7.6px;
+  height: 7.6px;
+  border-right: 1.7px solid currentColor;
+  border-bottom: 1.7px solid currentColor;
+  transform: rotate(-45deg) translate(-1px, -1px);
+  margin: 4px 1px 0 2px;
+}
+/* 按钮：压在客户端那颗钮的位置（原图 x521-750 y282-377，230×96），只做展示、点不动。 */
+.msg-fire-baby-btn {
+  position: absolute;
+  left: 66.2%;
+  top: 55.4%;
+  width: 29.22%;
+  height: 18.86%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: #f4f4f4;
+  color: #a9aaae;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+  transition: background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+/* 主色按钮（等对方接受的邀请 / 合养成功那两张）：抖音用淡粉底配红字 */
+.msg-fire-baby-btn-primary {
+  background: #fbebf0;
+  color: #e1395a;
+}
+.msg-fire-baby-btn:hover {
+  background: #e7e7e7;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+.msg-fire-baby-btn-primary:hover {
+  background: #f7dfe6;
+}
+/* 「喂精灵」卡（card_key=msg_fire_invitation 的 feeding 一种）有**两版版式**：
+   ① 新版（载荷带背景图）= 上面一截封面 + 下面 assets/feed-card.png。参考图量出来是
+      788×511（封面 233 + 下半 278），按 278px 宽等比换算正好是 180px 高，和别的卡片一致。
+      封面是**拼的**：背景图（小火人 + 爱心光晕）垫底，那根辣条居中偏左叠上去。
+      下半那张图（由内联样式挂在卡片底部）只有下方两个圆角，所以封面这截必须自己补
+      左上/右上圆角，否则卡片顶部是方角、和底部对不上。
+   ② 老版（7 月那批载荷没有背景图：whole_card.ui_info 是空的）= 整张卡就是
+      assets/invite-feed.png（787×509，浅色渐变底 + 底部「合养精灵」条，和抖音那张
+      1:1 一样），卡片自己不用再拼封面；上面只叠精灵图和载荷里的标题 / 副标题 / 按钮。
+      尺寸按 278px 宽等比换算 = 179.8px 高，和 assets 里的原图比例完全对齐。 */
+.msg-feed-card {
+  position: relative;
+  /* 788 : 511 ≈ 278 : 180 */
+  width: 278px;
+  max-width: 100%;
+  height: 180px;
+  border-radius: 13px;
+  background-color: #fff;
+  /* 下半部分那张图贴在卡片底部（278×98，只带下方两个圆角） */
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 100% auto;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+/* 老版：整张卡就是 invite-feed.png，铺满卡片（背景是渐变 + 底部那条页脚）。 */
+.msg-feed-card--old {
+  /* 787 : 509 ≈ 278 : 179.8 */
+  height: 179.8px;
+  background-position: 0 0;
+  background-size: 100% 100%;
+}
+/* 老版卡片上的精灵图（载荷里那张 252×252 的图，四周各留 5px 透明边）：
+   位置 / 大小按抖音参考图量的 —— 拿小火人两只眼睛的距离反推缩放（约 0.906），
+   图片框左上落在原图 (289.5, 51.7) 处，框宽 228 / 787 = 28.98%。 */
+.msg-feed-spirit {
+  position: absolute;
+  left: 31.2%;
+  top: 5.85%;
+  width: 26.7%;
+  height: auto;
+  pointer-events: none;
+}
+/* 封面那截：占卡片高度的 45.67%（233 / 511）。下半部分那张图没有上方圆角，
+   所以这里自己补两个，拼起来才是一张四周都有圆角的卡。 */
+.msg-feed-cover {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 45.67%;
+  border-radius: 13px 13px 0 0;
+  overflow: hidden;
+  background-color: #fff;
+  /* 卡片给的背景图（whole_card.ui_info.background_image@light）。铺满整截：
+     它和封面区的比例几乎一样，拉满不会有明显变形。 */
+  background-image: var(--feed-cover, none);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+/* 那根辣条：按参考图量出来的位置叠上去 —— 原图 788 宽下 228px、左起 35.66%，
+   垂直上沿在封面里占 2.58%。食物图自带透明通道，直接压在小火人左侧。 */
+.msg-feed-food {
+  position: absolute;
+  left: 35.66%;
+  top: 2.58%;
+  width: 28.93%;
+  height: auto;
+  pointer-events: none;
+}
+/* 主标题：固定「邀请你一起喂精灵」，压在素材图左侧（原图字高 41px ≈ 14.5px）。
+   top 用「字的**墨迹**上沿」换算：参考图里那行字的墨迹在卡片高的 53.6% 处，
+   而 CSS 的 top 定的是行盒上沿（比墨迹高约 1.5%），所以这里减去这个差值。 */
+.msg-feed-title {
+  position: absolute;
+  left: 4.95%;
+  top: 52.1%;
+  font-size: 15.6px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #1d1c21;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 副标题：固定「精灵爱吃这个，你也来喂」（原图字高 36px ≈ 12.7px）。同理按墨迹上沿换算。 */
+.msg-feed-sub {
+  position: absolute;
+  left: 4.82%;
+  top: 67.2%;
+  font-size: 13.6px;
+  line-height: 1.2;
+  color: #7a7a7a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 「去喂食」：压在参考图那颗钮的位置（原图 230×96，左起 522），淡粉底配红字，
+   只做展示、点不动。喂食卡不等人接受（接受后会另外发一条消息），所以**只有这一种
+   文案**，没有待接受 / 已失效那些状态，也没有主色和灰色的区分。 */
+.msg-feed-btn {
+  position: absolute;
+  left: 66.24%;
+  top: 55.7%;
+  width: 29.19%;
+  height: 18.8%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: #ffeff2;
+  color: #d1435d;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+  transition: background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.msg-feed-btn:hover {
+  background: #fbe0e6;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+/* 老版卡片（载荷没有背景图）：上面的坐标全是按 787×509 那张参考图量的，换算成
+   278px 卡宽后字号 / 位置都和新版不一样，所以这里整体覆盖一遍。
+   标题和副标题的字取自载荷原文（见 lib/feedCard.js），颜色也是从参考图上取的。 */
+.msg-feed-card--old .msg-feed-title {
+  left: 4.83%;
+  top: 52.4%;
+  font-size: 15.7px;
+  font-weight: 600;
+  color: #0d0e12;
+}
+.msg-feed-card--old .msg-feed-sub {
+  left: 4.83%;
+  top: 67.8%;
+  font-size: 13.7px;
+  color: #686868;
+}
+/* 老版的按钮比新版略高一点（93 / 509 = 18.27%），底色 / 红色也照参考图取。 */
+.msg-feed-card--old .msg-feed-btn {
+  left: 66.17%;
+  top: 55.58%;
+  width: 28.92%;
+  height: 18.46%;
+  border-radius: 7px;
+  background: #fbebf1;
+  color: #ce3c60;
+  font-size: 15.7px;
+}
+.msg-feed-card--old .msg-feed-btn:hover {
+  background: #f7dde5;
+}
 /* 联系门店引导卡片（aweType=110284）：卡片外观是 assets/call-to-shop.png
    （原图 824×212，左边电话图标 + 两行文案，右边一片空白），
    「联系」按钮就叠在那片空白里，靠右、垂直居中。 */
@@ -2119,9 +2835,22 @@ watch(() => props.jumpToSeq, async (seq) => {
   font-size: var(--msg-sender-size);
   color: var(--text-muted);
   margin-bottom: 3px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 小火人（精灵 AI）的性格小签：灰底、方角、比名字小一号 */
+.msg-spirit-style {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: calc(var(--msg-sender-size) - 2px);
+  line-height: 1.5;
 }
 .msg-item.msg-self > .msg-body > .msg-sender {
   text-align: right;
+  justify-content: flex-end;
 }
 
 .msg-bubble {

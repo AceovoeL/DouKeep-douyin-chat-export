@@ -44,6 +44,26 @@ def test_serves_the_archived_file(media_dir):
     assert os.path.basename(response.path) == "e5e49455.webp"
 
 
+def test_windows_style_backslash_path_is_recognised(media_dir):
+    """Starlette 传进来的 path 在 Windows 上是 ``card_icons\\x.webp``（反斜杠）。
+
+    以前这里只认正斜杠，于是 Windows 上「本地没有就补拉一次」这条分支**从来没执行过** ——
+    采集时没存下的卡片图直接 404。用户 2026-10-11 报的火花图标取不到就是这个原因。
+    """
+    target = media_dir / card_icons.CARD_ICON_DIR_NAME / "e5e49455.webp"
+    target.write_bytes(b"RIFF....WEBP" + b"x" * 100)
+
+    files = MediaStaticFiles(directory=str(media_dir))
+    scope = _scope("card_icons/whatever.webp", INVITE_ICON)
+    # 名字对不上也没关系：按 ?url= 的哈希去找本地那份
+    response = _run(files._card_icon_response("card_icons\\whatever.webp", scope))
+    assert response is not None
+    assert os.path.basename(response.path) == "e5e49455.webp"
+    # 反斜杠路径走「已存好」这条路，不该触发下载
+    assert _run(files._card_icon_response("card_icons\\nope.webp",
+                                         _scope("card_icons/nope.webp", DOUBAO_COVER))) is None
+
+
 def test_fetches_once_when_missing_then_serves_it(media_dir, monkeypatch):
     calls = []
 
@@ -71,6 +91,7 @@ def test_gives_up_when_the_link_expired(media_dir, monkeypatch):
 def test_other_paths_are_left_to_static_files(media_dir):
     files = MediaStaticFiles(directory=str(media_dir))
     assert _run(files._card_icon_response("images/1.jpg", _scope("images/1.jpg", INVITE_ICON))) is None
+    assert _run(files._card_icon_response("images\\1.jpg", _scope("images/1.jpg", INVITE_ICON))) is None
 
 
 def test_rejects_urls_that_are_not_douyin_images():
@@ -78,6 +99,35 @@ def test_rejects_urls_that_are_not_douyin_images():
     assert _card_icon_source(_scope("card_icons/x.webp", "http://evil.example.com/x.webp")) == ""
     assert _card_icon_source(_scope("card_icons/x.webp")) == ""
     assert _card_icon_source(_scope("card_icons/x.webp", INVITE_ICON)) == INVITE_ICON
+
+
+# 精灵那套素材（喂食卡的封面背景 / 食物）走 *.dailygn.com 这个图床，
+# 文件名沿用官方原名（like2.png / hotstick_icon.png），所以这里两种都钉一下。
+FEED_BACKGROUND = (
+    "https://lf3-creative.dailygn.com/obj/dino/pet_elf/images/feed_card/like2.png")
+
+
+def test_petelf_asset_host_is_allowed():
+    """dailygn.com 是抖音精灵素材的图床，得放行，否则喂食卡封面永远补不回来。"""
+    assert _card_icon_source(_scope("card_icons/x.png", FEED_BACKGROUND)) == FEED_BACKGROUND
+    assert card_icons.is_allowed_icon_url(FEED_BACKGROUND) is True
+    # 伪装域名不能过（后缀必须是真域名，不是拿它拼出来的假域名）
+    assert card_icons.is_allowed_icon_url("https://dailygn.com.evil.com/x.png") is False
+    assert card_icons.is_allowed_icon_url("http://127.0.0.1/x.png") is False
+
+
+def test_petelf_asset_is_served_under_its_official_name(media_dir):
+    """存盘时沿用官方文件名；前端还是按哈希名请求，后端靠 ?url= 找到那一份。"""
+    target = media_dir / card_icons.CARD_ICON_DIR_NAME / "like2.png"
+    target.write_bytes(b"\x89PNG" + b"x" * 100)
+
+    files = MediaStaticFiles(directory=str(media_dir))
+    # 前端算出来的请求路径是哈希名（见 frontend/src/lib/media.js 的 iconSrc），
+    # 本地存的却是官方名 —— 这条 ?url= 兜底路径就是让两边对上的地方。
+    request_path = f"{card_icons.CARD_ICON_DIR_NAME}/{card_icons.fnv1a_32(FEED_BACKGROUND)}.png"
+    response = _run(files._card_icon_response(request_path, _scope(request_path, FEED_BACKGROUND)))
+    assert response is not None
+    assert os.path.basename(response.path) == "like2.png"
 
 
 def _run(coro):

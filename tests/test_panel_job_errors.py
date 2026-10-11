@@ -12,6 +12,7 @@ extractor/video_downloader.py):
 """
 import asyncio
 import json
+import os
 import sys
 
 import pytest
@@ -645,3 +646,63 @@ def test_status_endpoint_exposes_job_error_and_alerts(temp_db, job_state, monkey
     assert status["job_error"]["active"]["running"] is True
     assert status["job_error"]["alerts"] == []
     assert "error" not in status["scrape"]      # moved to job_error
+
+
+# ── 「面板还在跑旧代码」的提示 ─────────────────────────────────────────────
+# 面板 import 进内存的代码比磁盘旧时，报错会莫名其妙（例如新模块找不到旧模块里的新属性）。
+# 这种时候弹窗里要顺带说一句「重启服务」，不然用户只看得到 AttributeError。
+
+def test_code_changed_since_start_sees_a_newer_source_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(cp.paths, "REPO_ROOT", str(tmp_path))
+    stale = tmp_path / "common" / "card_icons.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("# 改过\n", encoding="utf-8")
+    os.utime(stale, (cp._RUNNING_CODE_AT + 5, cp._RUNNING_CODE_AT + 5))
+    assert cp.code_changed_since_start() is True
+
+
+def test_code_changed_since_start_ignores_runtime_artifacts(tmp_path, monkeypatch):
+    """data/、config/ 下写日志不算改代码；源码没动就是 False。"""
+    monkeypatch.setattr(cp.paths, "REPO_ROOT", str(tmp_path))
+    (tmp_path / "backend").mkdir()
+    source = tmp_path / "backend" / "main.py"
+    source.write_text("# 老的\n", encoding="utf-8")
+    (tmp_path / "backend" / "__pycache__").mkdir()
+    compiled = tmp_path / "backend" / "__pycache__" / "main.cpython-312.pyc"
+    compiled.write_bytes(b"x")
+    (tmp_path / "data").mkdir()
+    database = tmp_path / "data" / "chat.db"
+    database.write_bytes(b"x")
+    old = cp._RUNNING_CODE_AT - 100
+    os.utime(source, (old, old))
+    future = cp._RUNNING_CODE_AT + 5
+    for path in (compiled, database):
+        os.utime(path, (future, future))
+    assert cp.code_changed_since_start() is False
+
+
+def test_job_error_tells_the_user_to_restart_when_code_is_stale(job_state, monkeypatch):
+    monkeypatch.setattr(cp, "stale_code_note", lambda: "（重启服务）")
+    error = cp.register_job_error(
+        cp.JOB_MEDIA_IMAGES,
+        "[-] 下载历史图片失败: module 'common.card_icons' has no attribute 'LOOSE'",
+        "错误: module 'common.card_icons' has no attribute 'LOOSE'",
+    )
+    assert error["message"].endswith("（重启服务）")
+    assert error["detail"].splitlines()[-1] == "（重启服务）"
+
+
+def test_job_error_no_note_when_code_is_current(job_state, monkeypatch):
+    monkeypatch.setattr(cp, "stale_code_note", lambda: "")
+    error = cp.register_job_error(cp.JOB_MEDIA_IMAGES, "[media] image 失败: 403", "403")
+    assert error["message"] == "[media] image 失败: 403"
+    assert error["detail"] == "403"
+
+
+def test_update_errors_never_get_the_note(job_state, monkeypatch):
+    """「更新」自己就会改源码，别在它的报错后面加「重启服务再试一次」。"""
+    monkeypatch.setattr(cp, "stale_code_note", lambda: "（重启服务）")
+    error = cp.register_job_error(cp.JOB_UPDATE, "更新失败: 网络断了")
+    assert error["message"] == "更新失败: 网络断了"
+    assert error["detail"] == "更新失败: 网络断了"
+

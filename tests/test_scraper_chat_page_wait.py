@@ -58,6 +58,23 @@ def test_the_wait_helper_really_sleeps(monkeypatch):
     assert slept == [web_scraper.CHAT_PAGE_SETTLE_SECONDS]
 
 
+def test_the_wait_log_line_follows_the_caller_indent(monkeypatch, capsys):
+    """采集途中重载页面时，这行日志要和同块其它行一样缩进两格。
+
+    进页面时打的日志不缩进，重载时打的以前也不缩进，夹在一堆缩进行中间很突兀。
+    """
+    async def fake_sleep(seconds):
+        pass
+
+    monkeypatch.setattr(web_scraper.asyncio, "sleep", fake_sleep)
+
+    asyncio.run(WebChatScraper()._wait_chat_page_settled())
+    assert capsys.readouterr().out.startswith("[*] 等待会话列表加载")
+
+    asyncio.run(WebChatScraper()._wait_chat_page_settled(indent="  "))
+    assert capsys.readouterr().out.startswith("  [*] 等待会话列表加载")
+
+
 class _RecordingPage:
     """只要 goto / on / remove_listener 三个方法，事件按发生顺序记下来。"""
 

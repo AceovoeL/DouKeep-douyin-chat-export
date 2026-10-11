@@ -407,6 +407,22 @@ describe('仅看一次 / 撤回 / 编辑 / 表情快捷回复 标注', () => {
     expect(getModifyKinds(m)).toEqual(['edit'])
     expect(isRecalled(m)).toBe(false)
   })
+  // 小火人 AI 的每条消息都带一段 edit_info，但里面 content_is_edited 是 false：
+  // 抓取端已按这个字段判定，这里再兜一层，修好之前落库的老数据不用重抓也不再误标。
+  it('edited=false 的编辑结论不算编辑（AI 消息的假标记）', () => {
+    const m = modifyRow({
+      kinds: ['edit'], edited: false, editor: 'uid-spirit-1', time: 1750000017000,
+    })
+    expect(getModifyKinds(m)).toEqual([])
+  })
+  it('edited 字段缺失时仍按老样子算编辑', () => {
+    const m = modifyRow({ kinds: ['edit'], editor: 'me', time: 1750000017000 })
+    expect(getModifyKinds(m)).toEqual(['edit'])
+  })
+  it('edited=false 但同时还撤回了，只去掉编辑、撤回照旧', () => {
+    const m = modifyRow({ kinds: ['edit', 'recall'], edited: false, time: 1750000017000 })
+    expect(getModifyKinds(m)).toEqual(['recall'])
+  })
   it('表情快捷回复 → 带出表情文字与回应者', () => {
     const m = modifyRow({
       kinds: ['reaction'],
@@ -414,6 +430,42 @@ describe('仅看一次 / 撤回 / 编辑 / 表情快捷回复 标注', () => {
     })
     expect(getModifyKinds(m)).toEqual(['reaction'])
     expect(getModifyReactions(m)).toEqual([{ emoji: '[爱心]', uid: '100000000036', time: 1771820351 }])
+  })
+  // 卡片消息上抖音会顺手记一条 bulb/bullet 这类裸英文记号（回应者就是发送者本人），
+  // 它不是用户发的表情，界面上只会显示成一个看不懂的英文单词（实测 12 条）。
+  it('只有裸英文记号（bullet）的回应 → 不显示「表情快捷回复」标签', () => {
+    const m = modifyRow({
+      kinds: ['reaction'],
+      reactions: [{ emoji: 'bullet', uid: 'me', time: 1771820351 }],
+    })
+    expect(getModifyKinds(m)).toEqual([])
+    expect(getModifyReactions(m)).toEqual([])
+  })
+  it('真表情与裸记号混在一起时，只留下真表情', () => {
+    const m = modifyRow({
+      kinds: ['reaction'],
+      reactions: [
+        { emoji: 'bullet', uid: 'me', time: 1771820351 },
+        { emoji: '[赞]', uid: '100000000036', time: 1771820352 },
+      ],
+    })
+    expect(getModifyKinds(m)).toEqual(['reaction'])
+    expect(getModifyReactions(m)).toEqual([{ emoji: '[赞]', uid: '100000000036', time: 1771820352 }])
+  })
+  it('读不出名字的空占位仍算一次回应（显示成 [表情]）', () => {
+    const m = modifyRow({
+      kinds: ['reaction'],
+      reactions: [{ emoji: '', uid: 'me', time: 0 }],
+    })
+    expect(getModifyKinds(m)).toEqual(['reaction'])
+    expect(getModifyReactions(m)).toEqual([{ emoji: '', uid: 'me', time: 0 }])
+  })
+  it('撤回与裸记号同时存在时，只去掉反应、撤回照旧', () => {
+    const m = modifyRow({
+      kinds: ['recall', 'reaction'],
+      reactions: [{ emoji: 'bullet', uid: 'me', time: 1771820351 }],
+    })
+    expect(getModifyKinds(m)).toEqual(['recall'])
   })
   it('仅看一次 → 仅看一次，不算撤回', () => {
     const m = modifyRow({ kinds: ['view_once'], time: 1750000017000 })

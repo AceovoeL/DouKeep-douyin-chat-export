@@ -1,12 +1,13 @@
-"""卡片自带的图（群头像 / 豆包卡封面）的落地缓存。
+"""卡片自带的图（群头像 / 豆包卡封面 / 火花图标）的落地缓存。
 
 抖音给这些图的是一条带签名的临时链接（约 180 天过期）。用户 2026-10-04 报的豆包卡
 封面就是这样碎的：图没存下来、链接过期后再也拉不到。这里锁住三件事：
 
 1. 存档文件名和前端 ``iconSrc()``（frontend/src/lib/media.js）算得一模一样；
 2. 只允许抖音图床的 http(s) 链接（这个地址会被后端拿去请求）；
-3. 卡片识别（哪张卡的图要存）和前端 ``cardKinds.js`` 对齐。
+3. 卡片识别（哪张卡的图要存）和前端 ``cardKinds.js`` / ``fireInviteCard.js`` 对齐。
 """
+import json
 import os
 
 import pytest
@@ -109,3 +110,164 @@ def test_card_icon_url_picks_the_right_field():
     assert card_icons.card_icon_url({"type_desc": "群公告",
                                      "icon": {"url_list": [INVITE_ICON]}}) == ""
     assert card_icons.card_icon_url(None) == ""
+
+
+# 「聊天火花」关系卡（更改为姐妹 / 兄弟 / 伴侣 / 死党火花）上的那颗火花图标。
+# 姐妹 / 兄弟 / 伴侣 / 死党**共用同一套 card_type**，图标才是区分它们的唯一东西，
+# 所以采集时必须把这张图存下来（否则阅读端只能画个空壳，或者认成别的火花）。
+_SPARK = "https://p11.douyinpic.com/obj/im-resource/1734337175292-ts-626f736f6d313231362e706e67?biz_tag=aweme_im"
+
+
+def _fire_payload(card_type, layout):
+    return {
+        "aweType": 110170,
+        "im_dynamic_patch": {
+            "card_key": "msg_fire_invitation",
+            "card_type": card_type,
+            "raw_data": json.dumps(layout, ensure_ascii=False),
+        },
+    }
+
+
+def test_fire_card_icon_comes_from_the_payload():
+    """邀请卡在 top.content，接受纪念卡在 top@1.content.flame_icon。"""
+    invite = _fire_payload("im_msg_fire_invitation_send",
+                           {"top": {"content": _SPARK, "type": "im-image"}})
+    assert card_icons.is_fire_card(invite) is True
+    assert card_icons.card_icon_url(invite) == _SPARK
+
+    accept = _fire_payload("im_msg_fire_invitation_accept_memory", {
+        "top": {"content": ["https://p3.douyinpic.com/a.webp"], "type": "im-avatar"},
+        "top@1": {"content": {"flame_icon": _SPARK}, "type": "im-avatar-animax"},
+    })
+    assert card_icons.card_icon_url(accept) == _SPARK
+
+
+def test_fire_card_icon_rejects_other_card_families():
+    """合养小火人 / 别家的卡不在这里 —— 它们的图标字段形状都不一样。"""
+    joint = _fire_payload("im_msg_fire_invitation_joint_send",
+                          {"top": {"content": _SPARK, "type": "im-image"}})
+    assert card_icons.is_fire_card(joint) is False
+    assert card_icons.card_icon_url(joint) == ""
+    # card_key 不对（别的分享卡）也不算
+    assert card_icons.is_fire_card({
+        "im_dynamic_patch": {"card_key": "video_share",
+                             "card_type": "im_msg_fire_invitation_send",
+                             "raw_data": "{}"}}) is False
+
+
+def test_fire_card_icon_missing_is_not_an_error():
+    """载荷里没有图标（或排版坏掉）时返回空串，不抛异常。"""
+    no_icon = _fire_payload("im_msg_fire_invitation_send", {"top": {"type": "im-image"}})
+    assert card_icons.card_icon_url(no_icon) == ""
+    broken = {"im_dynamic_patch": {"card_key": "msg_fire_invitation",
+                                   "card_type": "im_msg_fire_invitation_send",
+                                   "raw_data": "{不是 JSON"}}
+    assert card_icons.card_icon_url(broken) == ""
+
+
+# 「喂精灵」卡（card_type=im_msg_fire_invitation_feeding）：封面是**两张图**拼的 ——
+# 背景（小火人 + 爱心光晕）在 whole_card.ui_info，那根辣条在 top.content。
+# 两张都是带签名的临时链接，缺一张卡片就残了，所以两张都要存。
+_FEED_BACKGROUND = (
+    "https://lf3-creative.dailygn.com/obj/dino/pet_elf/images/feed_card/like2.png")
+_FEED_FOOD = (
+    "https://lf6-creative.dailygn.com/obj/dino/pet_elf/images/food/hotstick_icon.png")
+
+
+def _feed_payload(layout):
+    return {
+        "aweType": 110274,
+        "im_dynamic_patch": {
+            "card_key": "msg_fire_invitation",
+            "card_type": "im_msg_fire_invitation_feeding",
+            "raw_data": json.dumps(layout, ensure_ascii=False),
+        },
+    }
+
+
+def _feed_layout():
+    return {
+        "top": {"content": _FEED_FOOD, "type": "im-image"},
+        "whole_card": {"ui_info": {
+            "background_image@light": _FEED_BACKGROUND,
+            "background_image@dark": _FEED_BACKGROUND.replace("like2", "dark"),
+        }},
+    }
+
+
+def test_feed_card_has_two_images():
+    """喂食卡要存两张图：背景（@light 那张）+ 食物。"""
+    feed = _feed_payload(_feed_layout())
+    assert card_icons.is_feed_card(feed) is True
+    assert card_icons.feed_card_image_urls(feed) == (_FEED_BACKGROUND, _FEED_FOOD)
+    assert card_icons.card_icon_urls(feed) == [_FEED_BACKGROUND, _FEED_FOOD]
+    # card_icon_url 是「单张」那个老接口，给喂食卡返回背景图
+    assert card_icons.card_icon_url(feed) == _FEED_BACKGROUND
+
+
+def test_feed_card_prefers_light_background():
+    """深色模式那张只在没有 @light 时才用。"""
+    layout = _feed_layout()
+    ui = layout["whole_card"]["ui_info"]
+    ui["background_image@light"] = ""
+    feed = _feed_payload(layout)
+    assert card_icons.feed_card_image_urls(feed)[0] == _FEED_BACKGROUND.replace("like2", "dark")
+
+
+def test_feed_card_rejects_other_card_families():
+    """同族的姐妹火花卡 / 合养小火人卡都不是喂食卡。"""
+    for card_type in ("im_msg_fire_invitation_send",
+                      "im_msg_fire_invitation_joint_send"):
+        other = {
+            "im_dynamic_patch": {"card_key": "msg_fire_invitation", "card_type": card_type,
+                                 "raw_data": json.dumps(_feed_layout(), ensure_ascii=False)},
+        }
+        assert card_icons.is_feed_card(other) is False
+        assert card_icons.feed_card_image_urls(other) == ("", "")
+    # 排版坏掉 / 卡片本身不完整时也不炸
+    broken = {"im_dynamic_patch": {"card_key": "msg_fire_invitation",
+                                   "card_type": "im_msg_fire_invitation_feeding",
+                                   "raw_data": "{不是 JSON"}}
+    assert card_icons.feed_card_image_urls(broken) == ("", "")
+    assert card_icons.card_icon_urls(broken) == []
+
+
+# 老版版式（2026 年 7 月那批真实样本）：载荷里**没有**背景图 —— whole_card 里只有一段
+# 日志信息，ui_info 是空的；卡片上那张精灵图在 top.content（文件名 hotstick_card.png）。
+# 前端改用项目自带的 assets/invite-feed.png 打底，所以采集端只需要存 top.content 这一张。
+_OLD_FEED_SPIRIT = (
+    "https://lf6-creative.dailygn.com/obj/dino/pet_elf/images/food/hotstick_card.png")
+
+
+def _old_feed_layout():
+    return {
+        "content_top": {"content": "你还没有喂精灵~", "type": "im-text"},
+        "content_content": {"content": "一起喂解锁彩蛋效果", "type": "im-text"},
+        "top": {"content": _OLD_FEED_SPIRIT, "type": "im-image"},
+        "whole_card": {"extra_info": {"log_info": {
+            "card_type": "im_msg_fire_invitation_feeding"}}},
+    }
+
+
+def test_old_feed_card_still_saves_its_spirit_image():
+    """老版喂食卡（载荷没有背景图）也要存图，而且就存 top.content 那一张。"""
+    feed = _feed_payload(_old_feed_layout())
+    assert card_icons.is_feed_card(feed) is True
+    assert card_icons.feed_card_image_urls(feed) == ("", _OLD_FEED_SPIRIT)
+    assert card_icons.card_icon_urls(feed) == [_OLD_FEED_SPIRIT]
+    # 文件名沿用抖音的官方原名，和前端 assets 里那张对得上
+    assert card_icons.icon_filename(_OLD_FEED_SPIRIT) == "hotstick_card.png"
+
+
+def test_feed_card_images_use_the_official_names():
+    """精灵那套素材沿用抖音自己的文件名（用户 2026-10-11 要求）。"""
+    assert card_icons.icon_filename(_FEED_BACKGROUND) == "like2.png"
+    assert card_icons.icon_filename(_FEED_FOOD) == "hotstick_icon.png"
+    # 别的图床照旧按哈希命名，不会被这套规则影响
+    assert card_icons.icon_filename(INVITE_ICON) == "e5e49455.webp"
+    # 不是这套图床的链接（哪怕文件名一样）也走哈希，别把名字借给别家
+    assert card_icons.official_asset_name("https://p3.douyinpic.com/like2.png") == ""
+    # 路径里带奇怪字符的不要当文件名写进磁盘
+    assert card_icons.official_asset_name(
+        "https://lf3-creative.dailygn.com/obj/dino/x/..%2Fbad.png") == ""

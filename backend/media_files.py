@@ -45,7 +45,11 @@ class MediaStaticFiles(StaticFiles):
 
     async def _card_icon_response(self, path, scope):
         """卡片图：本地有就发本地那份，没有就补拉一次再发；失败返回 None（照旧 404）。"""
-        if not str(path).startswith(card_icons.CARD_ICON_DIR_NAME + "/"):
+        # Starlette 给过来的 path 是**按操作系统**拼的：Windows 上是反斜杠
+        # （``card_icons\\x.webp``），Linux/macOS 上才是 ``card_icons/x.webp``。
+        # 只认正斜杠的话，Windows 上这条分支永远命中不了 —— 采集时没存下的卡片图
+        # 就再也补不回来（本地没文件 → 直接 404），实测就是这样。
+        if not _as_posix_path(path).startswith(card_icons.CARD_ICON_DIR_NAME + "/"):
             return None
         source = _card_icon_source(scope)
         if not source:
@@ -60,6 +64,11 @@ class MediaStaticFiles(StaticFiles):
             return None
         # 同一个链接对应的文件是固定的，交给浏览器缓存一天；文件本身不会变。
         return FileResponse(target, headers={"Cache-Control": "public, max-age=86400"})
+
+
+def _as_posix_path(path) -> str:
+    """把 Starlette 给的路径统一成用 ``/`` 分隔，好和常量比较（Windows 上是 ``\\``）。"""
+    return str(path).replace("\\", "/")
 
 
 def _card_icon_source(scope) -> str:

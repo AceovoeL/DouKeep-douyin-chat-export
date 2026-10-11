@@ -104,6 +104,7 @@ import { renderRichText } from '@/lib/highlight'
 import { getImageSrc, getVideoPoster, getVideoDuration, isVideoMsg, isJsonVideo, getProfileCard, getForwardInfo, renderSystemMsg } from '@/lib/douyinMessage'
 import { sharePreview } from '@/lib/sharePreview'
 import { calendarMonths, dateBounds, groupMediaByDate, sortMediaChronologically } from '@/lib/search'
+import { readStoredSelfUid } from '@/lib/selfView'
 
 const props = defineProps({ convId: String, convName: String })
 const emit = defineEmits(['navigate', 'close'])
@@ -278,8 +279,9 @@ function preview(item) {
   if (item.voice_transcription) return item.voice_transcription
   // 系统消息（群通知等）的正文是占位符，显示渲染后的句子：既看得懂，
   // 搜索关键词的高亮也能落在对的地方（跟聊天窗口里显示的一致）。
+  // 「我是谁」按会话各存一份（见 lib/selfView.js），这里读当前会话那份。
   if (item.msg_type === 0) {
-    return renderSystemMsg(item, localStorage.getItem('selfUid') || '') || item.content || '[消息]'
+    return renderSystemMsg(item, readStoredSelfUid(props.convId)) || item.content || '[消息]'
   }
   return item.content || '[消息]'
 }

@@ -11,6 +11,13 @@ protobuf 第 11 号字段上（沿用旧字段名 ``is_recalled``）。所以只
   ``content_is_edited``）与 ``s:edit_count``。
 * **表情快捷回复**：第 15 号字段，记录了表情名、回应者 uid 和回应时间。
 
+  ⚠️ 第 15 号字段并不总是「人发的表情」：实测（2026-10-11，库里 213 条带这段的消息）
+  真正的表情名字都带 ``se:`` 前缀（如 ``se:[爱心]``，另有 ``e:`` 是引擎名），解析后
+  是「[爱心]」这类「[中文]」形式；另有 12 条名字是 ``bullet`` 这种裸英文记号，没有
+  任何前缀，回应者又恰好是消息发送者本人、只出现在卡片消息上 —— 那是卡片互动状态，
+  不是用户发的表情。这里照原样记录下来，**由阅读端决定显不显示**（见
+  ``frontend/src/lib/douyinMessage.js`` 的 ``displayableReactions``）。
+
 这里产出的 ``modify`` 结构会被写进 ``messages.raw_data``，阅读端（前端
 查看器）只认它，不再靠「有时间戳就猜是编辑」。
 """
@@ -151,21 +158,31 @@ def _from_fields(type_code, ext, reactions, modify_time):
         except (TypeError, ValueError):
             pass
     if "s:edit_info" in ext:
-        kinds.append("edit")
         try:
             info = json.loads(ext["s:edit_info"])
         except (TypeError, ValueError):
             info = {}
-        if isinstance(info, dict):
+        if not isinstance(info, dict):
+            info = {}
+        # ``content_is_edited`` 是抖音自己给的「内容到底改没改过」的结论，只有它为
+        # 真才算编辑。⚠️ 实测（2026-10-11，库里 517 条带 edit_info 的消息）：人类发的
+        # 168 条全是 true，小火人 AI 发的 349 条**全是 false** —— AI 每条都带这段
+        # （疑似生成消息时借用了编辑通道），照「有 edit_info 就是编辑」硬认，会让
+        # 每组 AI 消息的最后一条都挂上一个假的「已编辑」。字段缺失时按老样子算 edit。
+        #
+        # 不是真编辑时**连明细都不写**：那段的 editor / edit_time 记的是「消息生成」
+        # 而不是「谁改过」，留在库里只会让后来人再被误导一次。
+        if info.get("content_is_edited") is not False:
+            kinds.append("edit")
             detail["edited"] = bool(info.get("content_is_edited"))
             if info.get("content_editor"):
                 detail["editor"] = str(info["content_editor"])
             if info.get("content_edit_time"):
                 detail["edit_time"] = int(info["content_edit_time"])
-        try:
-            detail["edit_count"] = int(ext.get("s:edit_count") or 1)
-        except (TypeError, ValueError):
-            detail["edit_count"] = 1
+            try:
+                detail["edit_count"] = int(ext.get("s:edit_count") or 1)
+            except (TypeError, ValueError):
+                detail["edit_count"] = 1
     if reactions:
         kinds.append("reaction")
         detail["reactions"] = reactions

@@ -539,6 +539,101 @@ def get_music_card(row):
     return {"title": title, "cover": cover, "source": _str(cj.get("source_title"))}
 
 
+# 「聊天火花」关系卡（card_key=msg_fire_invitation 里的邀请 / 接受纪念两种）在前端会画成
+# 一张有背景图的卡片，卡片上的文字来自 raw_data，跟 content 那行文本关系不大。
+# 所以只要正文是空白的，就要认出它、别当成"空系统提示"藏掉。
+# 对应前端 ``frontend/src/lib/fireInviteCard.js`` 的 ``getFireInviteCard``。
+#
+# 姐妹 / 兄弟 / 伴侣 / 死党火花**共用下面这两个 card_type**，区分它们的只是卡片上那颗
+# 图标；所以这里认卡片只看类型号，不看图标是什么花（曾经按图标认，会把别的火花漏掉）。
+FIRE_CARD_TYPES = frozenset([
+    "im_msg_fire_invitation_send",
+    "im_msg_fire_invitation_accept_memory",
+])
+
+
+def get_fire_invite_card(row):
+    """「聊天火花」关系卡（邀请 / 接受纪念）；不是则 None（这里只关心"认不认得出来"）。"""
+    row = _as_row(row)
+    cj = row.content_json()
+    if not isinstance(cj, dict):
+        return None
+    patch = cj.get("im_dynamic_patch")
+    if not isinstance(patch, dict):
+        return None
+    if _str(patch.get("card_key")) != "msg_fire_invitation":
+        return None
+    raw = patch.get("raw_data")
+    layout = _loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(layout, dict):
+        return None
+    card_type = _str(patch.get("card_type"))
+    if card_type not in FIRE_CARD_TYPES:
+        return None
+    return {"card_type": card_type}
+
+
+# 「合养小火人」卡（同一个 card_key 里的 joint_* 三种）在前端也会画成有背景图的卡片，
+# 文字同样来自 raw_data，跟 content 那行文本关系不大 —— 所以只要正文是空白的，
+# 也要认出它、别当成"空系统提示"藏掉。
+# 对应前端 ``frontend/src/lib/fireBabyCard.js`` 的 ``getFireBabyCard``。
+FIRE_BABY_CARD_TYPES = frozenset([
+    "im_msg_fire_invitation_joint_send",          # 邀请你一起养小火人
+    "im_msg_fire_invitation_joint_accept",        # 我们开始养小火人啦（去看看）
+    "im_msg_fire_invitation_joint_accept_memory",  # 纪念卡（纪念一下）
+])
+
+
+def get_fire_baby_card(row):
+    """「合养小火人」卡（joint_* 三种）；不是则 None（这里只关心"认不认得出来"）。"""
+    row = _as_row(row)
+    cj = row.content_json()
+    if not isinstance(cj, dict):
+        return None
+    patch = cj.get("im_dynamic_patch")
+    if not isinstance(patch, dict):
+        return None
+    if _str(patch.get("card_key")) != "msg_fire_invitation":
+        return None
+    raw = patch.get("raw_data")
+    layout = _loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(layout, dict):
+        return None
+    card_type = _str(patch.get("card_type"))
+    if card_type not in FIRE_BABY_CARD_TYPES:
+        return None
+    return {"card_type": card_type}
+
+
+# 「喂精灵」卡（同一个 card_key 里的 feeding 一种）在前端也是一张有背景图的卡片：
+# 封面由「背景图 + 食物图」拼出来，下半部分是项目自带的素材，两行文字固定不变。
+# 对应前端 ``frontend/src/lib/feedCard.js`` 的 ``getFeedCard``。
+FEED_CARD_TYPES = frozenset([
+    "im_msg_fire_invitation_feeding",             # 邀请你一起喂精灵（去喂食）
+])
+
+
+def get_feed_card(row):
+    """「喂精灵」卡（feeding 一种）；不是则 None（这里只关心"认不认得出来"）。"""
+    row = _as_row(row)
+    cj = row.content_json()
+    if not isinstance(cj, dict):
+        return None
+    patch = cj.get("im_dynamic_patch")
+    if not isinstance(patch, dict):
+        return None
+    if _str(patch.get("card_key")) != "msg_fire_invitation":
+        return None
+    raw = patch.get("raw_data")
+    layout = _loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(layout, dict):
+        return None
+    card_type = _str(patch.get("card_type"))
+    if card_type not in FEED_CARD_TYPES:
+        return None
+    return {"card_type": card_type}
+
+
 def should_show(row):
     """对应前端 ``shouldShow``：这条记录在聊天窗口里会不会被画出来。"""
     row = _as_row(row)
@@ -548,6 +643,15 @@ def should_show(row):
         return True
     # 群邀请卡 / 豆包卡画成卡片，哪怕正文是空的（卡片数据本身就有内容）。
     if get_invite_card(row) or get_music_card(row):
+        return True
+    # 「聊天火花」关系卡同理：文字在卡片载荷里，界面按卡片画，不受 content 有无影响。
+    if get_fire_invite_card(row):
+        return True
+    # 「合养小火人」卡（joint_* 三种）同理。
+    if get_fire_baby_card(row):
+        return True
+    # 「喂精灵」卡（feeding）同理。
+    if get_feed_card(row):
         return True
     if is_loose_emoji(row) or is_loose_share(row) or is_loose_image(row):
         return True

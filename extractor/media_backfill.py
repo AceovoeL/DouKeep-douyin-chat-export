@@ -47,11 +47,24 @@ def _json_like_patterns(key: str, value: str) -> tuple[str, ...]:
     )
 
 
+#: 「落成普通消息」的表情（515 / 517 / 519 / 520）：当年不在名单里，落库时 msg_type 是 0，
+#: 上面那条「msg_type=2」捞不到它们，只能靠载荷里的 aweType 粗筛。名单从 card_icons 取，
+#: 以后再加类型不用改这里（520 就是用户 2026-10-11 反馈漏掉的那种）。
+_LOOSE_EMOJI_HINTS = tuple(
+    hint
+    for awe in sorted(card_icons.LOOSE_EMOJI_AWE_TYPES, key=int)
+    for hint in _json_like_patterns("aweType", awe)
+)
+
 _ROW_HINTS = (
-    _json_like_patterns("aweType", "519")
+    _LOOSE_EMOJI_HINTS
     + _json_like_patterns("aweType", "6001")
     + _json_like_patterns("type_desc", '"群聊邀请"')
     + _json_like_patterns("type_desc", '\\"群聊邀请\\"')
+    # 「聊天火花」关系卡：卡片上那颗火花（姐妹 / 兄弟 / 伴侣 / 死党各不相同）也得存下来。
+    # 认的是 card_key + card_type（见 common/card_icons.py 的 is_fire_card）。
+    + _json_like_patterns("card_key", f'"{card_icons.FIRE_CARD_KEY}"')
+    + _json_like_patterns("card_key", f'\\"{card_icons.FIRE_CARD_KEY}\\"')
 )
 _MEDIA_ROW_WHERE = (
     "(("
@@ -67,7 +80,7 @@ _MEDIA_ROW_COLUMNS = "msg_id, msg_type, media_url, media_local_path, raw_data, c
 
 
 def is_media_payload(cj: dict, msg_type=None) -> bool:
-    """这条载荷是不是「该补图」的那几种：卡片，或表情（含小火人 519）。"""
+    """这条载荷是不是「该补图」的那几种：卡片，或表情（含落成普通消息的 515/517/519/520）。"""
     if card_icons.card_icon_url(cj):
         return True
     if str(cj.get("aweType")) in card_icons.EMOJI_AWE_TYPES:
@@ -174,9 +187,18 @@ def backfill_row_media(row: dict) -> tuple[str | None, str | None]:
     """
     cj = content_json(row)
     if cj and is_media_payload(cj, row.get("msg_type")):
-        icon = card_icons.card_icon_url(cj)
-        if icon:
-            return card_icons.save_card_icon(icon), icon
+        # 喂食卡的封面是两张图（背景 + 食物），**两张都要补**（少一张就是残缺的封面）。
+        # media_local_path 只能记一个，就记存下来的第一张；另一张阅读端照样按 ?url=
+        # 找得到本地那份（见 backend/media_files.py 的补拉路径）。
+        icons = card_icons.card_icon_urls(cj)
+        if icons:
+            first = None
+            for url in icons:
+                rel = card_icons.save_card_icon(url)
+                if rel and first is None:
+                    first = (rel, url)
+            if first:
+                return first
         url = emoji_media_url(cj, row.get("media_url"))
         return save_emoji_media(cj, row.get("media_url")), url
     # 连载荷都没有的老表情：数据库里记着的地址就是唯一线索

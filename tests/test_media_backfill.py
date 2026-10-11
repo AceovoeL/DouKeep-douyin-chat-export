@@ -21,6 +21,9 @@ from tests.conftest import insert_conversation, insert_message
 EMOJI_URL = "https://cdn.example.com/emoji/monster.webp"
 COVER_URL = "https://p3-sign.douyinpic.com/obj/tos-cn-i-example/doubao-cover.jpeg"
 GROUP_ICON = "https://p3-aweme-im-img.byteimg.com/tos-cn-i-example/group-icon.webp"
+# 喂食卡封面的两张图（精灵素材走 dailygn.com 这个图床）
+FEED_BACKGROUND = "https://lf3-creative.dailygn.com/obj/dino/pet_elf/images/feed_card/like2.png"
+FEED_FOOD = "https://lf6-creative.dailygn.com/obj/dino/pet_elf/images/food/hotstick_icon.png"
 
 
 @pytest.fixture()
@@ -128,6 +131,67 @@ def test_expired_link_counts_as_failed(temp_db, media_dirs, monkeypatch):
     conn.close()
 
 
+def _feed_row():
+    """「喂精灵」卡：封面是两张图（背景 + 食物），两张都得补下来。"""
+    return _raw({
+        "aweType": 110274, "description": "邀请你一起喂精灵",
+        "im_dynamic_patch": {
+            "card_key": "msg_fire_invitation",
+            "card_type": "im_msg_fire_invitation_feeding",
+            "raw_data": json.dumps({
+                "top": {"content": FEED_FOOD, "type": "im-image"},
+                "whole_card": {"ui_info": {"background_image@light": FEED_BACKGROUND}},
+            }, ensure_ascii=False),
+        },
+    })
+
+
+def test_feed_card_backfill_downloads_both_cover_images(temp_db, media_dirs, monkeypatch):
+    """喂食卡封面的两张图都要补下来，不能只补第一张就收工。
+
+    两张图都是带签名的临时链接，少存一张卡片封面就缺一块（背景在、辣条没了，
+    或者反过来）。
+    """
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_feed", "c1", 1, msg_type=0, content="", raw_data=_feed_row())
+    assert [r["msg_id"] for r in media_backfill.iter_media_rows(conn)] == ["srv_feed"]
+
+    fetched = []
+
+    def fake_fetch(url):
+        fetched.append(url)
+        return b"\x89PNG" + b"x" * 200, "image/png"
+
+    monkeypatch.setattr(card_icons, "_fetch_icon", fake_fetch)
+    stats = media_backfill.backfill_media(conn)
+    assert stats["ok"] == 1
+    # 两个地址都请求过，一个不落
+    assert fetched == [FEED_BACKGROUND, FEED_FOOD]
+    # 两张都真的存到了本地（文件名沿用抖音的官方名）
+    saved = sorted(os.listdir(media_dirs / card_icons.CARD_ICON_DIR_NAME))
+    assert saved == ["hotstick_icon.png", "like2.png"]
+    # media_local_path 只记得下一个（背景图），另一张靠 ?url= 兜底
+    path = conn.execute("SELECT media_local_path FROM messages WHERE msg_id='srv_feed'").fetchone()[0]
+    assert path == "card_icons/like2.png"
+    conn.close()
+
+
+def test_feed_card_partial_download_still_records_what_it_got(temp_db, media_dirs, monkeypatch):
+    """两张里只有一张下得下来时，补到的那张照样记上，别整条算失败。"""
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_feed", "c1", 1, msg_type=0, content="", raw_data=_feed_row())
+
+    monkeypatch.setattr(card_icons, "_fetch_icon",
+                        lambda url: (None, "") if "hotstick" in url else (b"\x89PNG" + b"x" * 200, "image/png"))
+    stats = media_backfill.backfill_media(conn)
+    assert stats["ok"] == 1
+    assert conn.execute(
+        "SELECT media_local_path FROM messages WHERE msg_id='srv_feed'").fetchone()[0] == "card_icons/like2.png"
+    conn.close()
+
+
 def test_emoji_url_prefers_recorded_media_url():
     cj = {"aweType": 519, "display_name": "续火花", "url": {"url_list": [EMOJI_URL]}}
     assert media_backfill.emoji_media_url(cj) == EMOJI_URL
@@ -135,6 +199,65 @@ def test_emoji_url_prefers_recorded_media_url():
     assert media_backfill.emoji_media_url({"aweType": 519}) == ""
     # 坏掉的 media_url（空串 / 不是链接）不算数，回载荷里找
     assert media_backfill.emoji_media_url(cj, "") == EMOJI_URL
+
+
+# 精灵自己发的表情（aweType=520）：阅读端一早就当图片画，采集端却不在名单里，
+# 于是落库成了普通消息（msg_type=0）、图从没下过（用户 2026-10-11 反馈）。
+SPIRIT_EMOJI_URL = "https://p3-im-emoticon-sign.byteimg.com/obj/tos-cn-o-example/spirit.webp"
+
+
+def _spirit_emoji_row():
+    return _raw({
+        "aweType": 520, "display_name": "示例表情",
+        "ai_business_ext": {"petai_style": "示例性格"},
+        "url": {"url_list": [SPIRIT_EMOJI_URL]},
+    })
+
+
+def test_loose_emoji_list_stays_the_same_as_the_reader():
+    """「会落成普通消息」的表情就是这四个，和阅读端 LOOSE_EMOJI_AWES 对齐。
+
+    这几个的图只能靠载荷里的 aweType 粗筛出来（它们不是 msg_type=2），
+    漏掉哪一个，那种表情就会在链接过期后变成碎图。
+    """
+    assert card_icons.LOOSE_EMOJI_AWE_TYPES == frozenset({"515", "517", "519", "520"})
+    assert card_icons.LOOSE_EMOJI_AWE_TYPES <= card_icons.EMOJI_AWE_TYPES
+
+
+def test_spirit_emoji_is_a_backfill_candidate_even_as_a_plain_message(temp_db, media_dirs):
+    """精灵表情落库时是普通消息（msg_type=0），也要进待补清单。"""
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_520", "c1", 1, msg_type=0, content="示例表情",
+                   raw_data=_spirit_emoji_row())
+    assert [r["msg_id"] for r in media_backfill.iter_media_rows(conn)] == ["srv_520"]
+    conn.close()
+
+
+def test_spirit_emoji_backfill_records_the_local_copy(temp_db, media_dirs, monkeypatch):
+    """补下来之后要记上路径和地址，下次不再当成缺图。"""
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_520", "c1", 1, msg_type=0, content="示例表情",
+                   raw_data=_spirit_emoji_row())
+
+    fetched = []
+
+    def fake_save_emoji(url, directory):
+        fetched.append(url)
+        return _write_emoji(directory, url)
+
+    monkeypatch.setattr(web_scraper, "_save_emoji", fake_save_emoji)
+    stats = media_backfill.backfill_media(conn)
+    assert stats["total"] == 1 and stats["ok"] == 1
+    assert fetched == [SPIRIT_EMOJI_URL]
+    row = conn.execute(
+        "SELECT media_local_path, media_url FROM messages WHERE msg_id='srv_520'").fetchone()
+    assert row["media_local_path"].startswith("emoji/")
+    assert row["media_url"] == SPIRIT_EMOJI_URL
+    # 再跑一次不再出现
+    assert media_backfill.iter_media_rows(conn) == []
+    conn.close()
 
 
 def test_spaced_json_is_still_found(temp_db, media_dirs, monkeypatch):

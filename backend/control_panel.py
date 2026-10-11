@@ -626,6 +626,43 @@ def _append_error_detail(error: dict, text: str) -> None:
     error["detail"] = "\n".join(lines[-MAX_ERROR_DETAIL_LINES:])
 
 
+# ── 「面板还在跑旧代码」────────────────────────────────────────────────────
+# 面板是把后端整份代码 import 进内存的长驻服务。改完源码没重启，内存里就是新旧混着跑：
+# 新 import 进来的模块去旧模块里找刚加的东西，报出来的是
+# 「module 'common.card_icons' has no attribute 'LOOSE_EMOJI_AWE_TYPES'」这种看不懂的话
+# （2026-10-11「下载历史图片」就这么失败过一次）。这里记下本模块被载入的时刻，报错时
+# 顺带告诉用户该重启服务。
+_RUNNING_CODE_AT = time.time()
+#: 面板自己的源码目录。data/、config/ 下写的是运行产物（日志、图片、数据库），不是代码。
+_CODE_DIRS = ("backend", "common", "extractor")
+
+
+def code_changed_since_start() -> bool:
+    """启动之后源码又被改过？（是的话进程里跑的就是旧代码）"""
+    for name in _CODE_DIRS:
+        root = os.path.join(paths.REPO_ROOT, name)
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            for filename in filenames:
+                try:
+                    stamp = os.path.getmtime(os.path.join(dirpath, filename))
+                except OSError:          # 刚好被删 / 读不到：当它不存在
+                    continue
+                if stamp > _RUNNING_CODE_AT:
+                    return True
+    return False
+
+
+def stale_code_note() -> str:
+    """源码比进程新时附在报错后面的那句话（其余情况是空串）。
+
+    「更新」这条路上的报错不附：它本来就会改动源码，而且自己已经说了「重启服务后生效」。
+    """
+    if not code_changed_since_start():
+        return ""
+    return "（面板运行的还是启动时载入的旧代码：源码在那之后被改过，重启服务再试一次）"
+
+
 def register_job_error(job: str, message: str, detail: str = "",
                        *, merge: bool = False) -> dict | None:
     """Record a problem; the first one goes on screen, extra ones wait in line.
@@ -642,12 +679,18 @@ def register_job_error(job: str, message: str, detail: str = "",
             existing["count"] = int(existing.get("count", 1)) + 1
             _append_error_detail(existing, message)
             return existing
+    note = "" if job == JOB_UPDATE else stale_code_note()
+    if note:
+        message = f"{message} {note}"
+    detail = (detail or message).strip()
+    if note and note not in detail:
+        detail = f"{detail}\n{note}"
     _job_error_state["seq"] = int(_job_error_state.get("seq", 0)) + 1
     error = {
         "id": _job_error_state["seq"],
         "job": job,
         "message": message,
-        "detail": (detail or message).strip(),
+        "detail": detail,
         "at": time.time(),
         "count": 1,
         "resume_at": None,

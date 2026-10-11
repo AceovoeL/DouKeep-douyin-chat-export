@@ -11,6 +11,7 @@ describe('senderDisplayName · 单聊', () => {
     conversationName: '给对方的备注名',
     isGroup: false,
     selfUid: ME,
+    localUid: ME,
     users: { [ME]: { nickname: '本机账号昵称' }, [PEER]: { nickname: '对方的抖音昵称' } },
   }
 
@@ -28,9 +29,74 @@ describe('senderDisplayName · 单聊', () => {
 
   it('认不出「我是谁」时，两条消息都不会被当成自己', () => {
     // 这是以前的毛病：两边都显示成对方的名字。至少自己那条不能再被认成对方。
-    const blind = { ...conv, selfUid: '' }
+    // 认不出「我是谁」时本机账号也无从得知，所以 localUid 同样是空的
+    //（它和 selfUid 都来自后端的同一份推断，见 common/owner.py）。
+    const blind = { ...conv, selfUid: '', localUid: '' }
     expect(senderDisplayName({ sender_uid: ME }, blind)).toBe('给对方的备注名')
     expect(senderDisplayName({ sender_uid: 'uid-someone-3' }, blind)).toBe('给对方的备注名')
+  })
+})
+
+// 用户 2026-10-11 反馈：视角切到对方之后，双方昵称都变成了对方的名字。
+describe('senderDisplayName · 视角切到对方时不能两边同名', () => {
+  const conv = {
+    conversationName: '给对方的备注名',
+    isGroup: false,
+    selfUid: ME,
+    localUid: ME,          // 本机账号始终是 ME，视角是 PEER
+    users: { [ME]: { nickname: '本机账号昵称' }, [PEER]: { nickname: '对方的抖音昵称' } },
+  }
+
+  it('视角切到对方时，本机账号那条不再套用会话名', () => {
+    const asPeer = { ...conv, selfUid: PEER }
+    expect(senderDisplayName({ sender_uid: ME }, asPeer)).toBe('本机账号昵称')
+    expect(senderDisplayName({ sender_uid: PEER }, asPeer)).toBe('对方的抖音昵称')
+  })
+
+  it('两侧名字不会变成同一个', () => {
+    const asPeer = { ...conv, selfUid: PEER }
+    const left = senderDisplayName({ sender_uid: ME }, asPeer)
+    const right = senderDisplayName({ sender_uid: PEER }, asPeer)
+    expect(left).not.toBe(right)
+  })
+
+  it('本机账号查不到昵称时，也不该在对方视角下自称「我」', () => {
+    const asPeer = { ...conv, selfUid: PEER, users: {} }
+    const name = senderDisplayName({ sender_uid: ME }, asPeer)
+    expect(name).not.toBe('我')
+    expect(name).not.toBe('给对方的备注名')
+    expect(name).toBe('用户' + ME.slice(-6))
+  })
+})
+
+// 用户 2026-10-11 反馈：小火人 AI 的昵称显示成了对方的昵称。
+describe('senderDisplayName · 小火人（精灵 AI）', () => {
+  const spiritMsg = {
+    sender_uid: 'uid-spirit-1',
+    content: '示例正文',
+    raw_data: JSON.stringify({ content_json: JSON.stringify({
+      aweType: 716, text: '示例正文',
+      ai_business_ext: { petai_style: '示例性格' },
+    }) }),
+  }
+  const conv = {
+    conversationName: '给对方的备注名',
+    isGroup: false,
+    selfUid: ME,
+    localUid: ME,
+    users: { [ME]: { nickname: '本机账号昵称' }, [PEER]: { nickname: '对方的抖音昵称' } },
+  }
+
+  it('精灵消息显示「精灵AI」，不是会话名', () => {
+    expect(senderDisplayName(spiritMsg, conv)).toBe('精灵AI')
+  })
+
+  it('视角切到对方之后，精灵的名字仍然不变', () => {
+    expect(senderDisplayName(spiritMsg, { ...conv, selfUid: PEER })).toBe('精灵AI')
+  })
+
+  it('认不出「我是谁」时精灵也不叫对方的备注名', () => {
+    expect(senderDisplayName(spiritMsg, { ...conv, selfUid: '' })).toBe('精灵AI')
   })
 })
 
