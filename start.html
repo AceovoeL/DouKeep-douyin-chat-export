@@ -515,7 +515,7 @@
         ? (launcherBusy
             ? '启动器已经在启动后端服务了（start.ps1 只启动一次），<span class="spin"></span>正在等它就绪…'
             : '必要条件全部满足，可以启动后端服务了。' +
-              (state.phase === 'waiting' ? ' <span class="spin"></span>正在等待后端服务就绪（输出写进 config/logs/server.log）…' : ''))
+              (state.phase === 'waiting' ? ' <span class="spin"></span>正在等待后端服务就绪…' : ''))
         : '下面标红的条件必须先解决，处理完点「重新检测」。') +
         '<br><span style="color:var(--text3);font-size:12px">检测时间：' + (report.generated_at || '未知') +
         '（' + (report.source === 'powershell' ? 'PowerShell 检测器' : '后端检测') + '）' +

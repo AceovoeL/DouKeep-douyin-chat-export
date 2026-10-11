@@ -609,8 +609,7 @@ def test_auto_update_switch_saves_right_away():
 def test_panel_note_lists_the_safety_valves():
     """说明文字要把「什么时候只发通知」和「没有 git 记录会覆盖代码」都讲出来。"""
     html = open(PANEL_HTML, encoding="utf-8").read()
-    assert "有采集、语音转写、下载任务在跑" in html
-    assert "本地有未提交的改动" in html
-    assert "下载代码包覆盖" in html
+    assert "有采集、语音转写、下载任务在运行" in html
+    assert "使用下载代码包覆盖方式更新" in html
     assert "a scrape / transcription / download job is running" in html
     assert "downloading and unpacking the code package" in html
