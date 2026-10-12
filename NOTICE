@@ -13,21 +13,23 @@ TeamBreakerr/douyin-chat-export 的版权声明）。下面这些东西不是本
    请不要把下载下来的图片再分发出去。
 
 2. 界面素材 `assets/background.png`、`assets/call-to-shop.png`、`assets/fire.png`、
-   `assets/request.png`、`assets/accept.png`、`assets/request-firebaby.png`、
-   `assets/accept-firebaby.png`、`assets/feed-card.png`、`assets/invite-feed.png`
+   `assets/head_wrapper_circle.png`、`assets/request.png`、`assets/accept.png`、
+   `assets/request-firebaby.png`、`assets/accept-firebaby.png`、`assets/feed-card.png`、
+   `assets/invite-feed.png`
    以及 `frontend/src/assets/` 下的同名副本、`docs/` 里的界面截图
 
    同样来自抖音客户端界面（`request.png` / `accept.png` 是「聊天火花」邀请卡与接受纪念卡
    在客户端里的底纹；`request-firebaby.png` / `accept-firebaby.png` 是「合养小火人」的
    邀请卡与开始合养卡；`feed-card.png` 是「喂精灵」卡的下半部分，`invite-feed.png` 是
-   老版「喂精灵」卡的整张底纹），版权归北京抖音信息
-   服务有限公司所有，随代码附带只为还原界面观感。版权方如有异议，请在仓库开 issue，
-   我们会立即移除。
+   老版「喂精灵」卡的整张底纹；`fire.png` 与 `head_wrapper_circle.png` 是「陪伴天数」卡
+   上的火花图标和头像光环），版权归北京抖音信息服务有限公司所有，随代码附带只为还原
+   界面观感。版权方如有异议，请在仓库开 issue，我们会立即移除。
 
    卡片上那颗火花（姐妹 / 兄弟 / 伴侣 / 死党各不相同）和「喂精灵」卡上那张精灵图
-   （`hotstick_card.png` / `hotstick_icon.png`）**不在这里** —— 它们是抖音接口给的图片，
-   采集时下载到本机 `data/media/card_icons/`，随聊天记录一起保存，仓库里不带新素材。
-   「合养小火人」那张卡上的小火人则印在底纹图里，不单独下载。
+   （`hotstick_card.png` / `hotstick_icon.png` / `like2.png`）**不在这里** —— 它们是抖音
+   接口给的图片，采集时下载到本机 `data/media/card_icons/`，随聊天记录一起保存，仓库里
+   不带这些素材。上面列出的都是界面真正要用的图，`assets/` 与 `frontend/src/assets/` 下
+   不放没有代码引用的图片。「合养小火人」那张卡上的小火人则印在底纹图里，不单独下载。
 
 3. 浏览器标签页图标 `frontend/public/favicon.svg`
 

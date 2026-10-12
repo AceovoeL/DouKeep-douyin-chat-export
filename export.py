@@ -6,22 +6,26 @@
   python3 export.py --filter "会话名称"           # 导出指定会话
   python3 export.py --filter "会话名称" --format json  # 导出为 JSON
   python3 export.py --filter "会话名称" --format txt   # 导出为纯文本（体积最小）
+  python3 export.py --format txt --name-style number   # TXT 里用 [0]、[1]… 代替昵称
   python3 export.py --output data/my_export.jsonl      # 指定输出路径
 
 未指定 --output 时，文件名自动使用“会话昵称_YYYYMMDDHHMMSS_export”格式。
+TXT 里同一个人的连续发言只在第一条写昵称；--name-style 可选 full（默认，照原样）、
+number（[0]、[1]…）或 letter（[A]、[B]…），后两种会在文件开头附一份对照表。
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from extractor.exporter import ChatLabExporter
+from extractor.exporter import NAME_STYLE_FULL, ChatLabExporter
 
 
 def main():
     name_filter = None
     output_format = "jsonl"
     output_path = None
+    name_style = NAME_STYLE_FULL
 
     args = sys.argv[1:]
     i = 0
@@ -32,6 +36,9 @@ def main():
         elif args[i] == "--format" and i + 1 < len(args):
             output_format = args[i + 1]
             i += 2
+        elif args[i] == "--name-style" and i + 1 < len(args):
+            name_style = args[i + 1]
+            i += 2
         elif args[i] == "--output" and i + 1 < len(args):
             output_path = args[i + 1]
             i += 2
@@ -41,7 +48,9 @@ def main():
         else:
             i += 1
 
-    exporter = ChatLabExporter(conv_name=name_filter, output_format=output_format)
+    exporter = ChatLabExporter(
+        conv_name=name_filter, output_format=output_format, name_style=name_style
+    )
     exporter.export(output_path)
 
 

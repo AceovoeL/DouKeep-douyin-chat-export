@@ -1753,7 +1753,18 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
       <a class="btn btn-success" id="downloadBtn" style="display:none;text-decoration:none" href="/panel/api/export/download" data-i18n="download">下载</a>
     </div>
     <div class="meta" id="databaseExportHint" style="display:none;margin-top:6px" data-i18n="databaseExportHint">整库导出会生成一个可在本面板覆盖导入的 SQLite 文件。</div>
-    <div class="meta" id="txtExportHint" style="display:none;margin-top:6px" data-i18n="txtExportHint">删除冗余json格式字段，每条仅写成「[昵称]正文」，不含链接及跳转。</div>
+    <div class="meta" id="txtExportHint" style="display:none;margin-top:6px" data-i18n="txtExportHint">只留昵称与正文，不含链接和跳转；同一个人连着发的消息只在第一条写昵称。</div>
+    <div class="row" id="exportNameStyleRow" style="display:none;margin-top:10px">
+      <span class="meta" style="margin-top:0" data-i18n="nameStyleLabel">昵称写法:</span>
+      <div class="toggle">
+        <input type="radio" name="exportNameStyle" id="nameStyleFull" value="full" checked onchange="setExportNameStyle('full')">
+        <label for="nameStyleFull" data-i18n="nameStyleFull">不代替</label>
+        <input type="radio" name="exportNameStyle" id="nameStyleNumber" value="number" onchange="setExportNameStyle('number')">
+        <label for="nameStyleNumber" data-i18n="nameStyleNumber">以数字代替昵称</label>
+        <input type="radio" name="exportNameStyle" id="nameStyleLetter" value="letter" onchange="setExportNameStyle('letter')">
+        <label for="nameStyleLetter" data-i18n="nameStyleLetter">以字母代替昵称</label>
+      </div>
+    </div>
     <div id="exportConversationOptions">
     <div class="conv-list-toolbar" style="margin-top:10px;">
       <span data-i18n="selectConvsLabel">选择会话:</span>
@@ -2438,7 +2449,11 @@ const T = {
     exportNeedConv: '请先勾选要导出的会话（要全部记录请选「整个数据库」）',
     download: '下载',
     txtFormat: '纯文本 TXT（仅含昵称与正文）',
-    txtExportHint: '删除冗余json格式字段，每条仅写成「[昵称]正文」，不含链接及跳转。',
+    txtExportHint: '只留昵称与正文，不含链接和跳转；同一个人连着发的消息只在第一条写昵称。',
+    nameStyleLabel: '昵称写法:',
+    nameStyleFull: '不代替',
+    nameStyleNumber: '以数字代替昵称',
+    nameStyleLetter: '以字母代替昵称',
     databaseFormat: '整个数据库（SQLite，可导入）',
     databaseExportHint: '整库导出会生成一个可在本面板覆盖导入的 SQLite 文件。',
     databaseImportTitle: '数据库覆盖导入',
@@ -3040,7 +3055,11 @@ const T = {
     exportNeedConv: 'Pick at least one conversation (choose "Entire database" for everything)',
     download: 'Download',
     txtFormat: 'Plain text TXT (nickname + message only)',
-    txtExportHint: 'Redundant JSON fields are dropped; every message is just "[nickname]text", with no links or jumps.',
+    txtExportHint: 'Nicknames and text only, no links; a run of messages from one person carries the nickname only on the first line.',
+    nameStyleLabel: 'Nicknames:',
+    nameStyleFull: 'Keep as is',
+    nameStyleNumber: 'Replace with numbers',
+    nameStyleLetter: 'Replace with letters',
     databaseFormat: 'Entire database (SQLite, importable)',
     databaseExportHint: 'The full export is a SQLite file that can be imported here to replace the database.',
     databaseImportTitle: 'Replace database by import',
@@ -5142,7 +5161,7 @@ async function startExport() {
     const r = await fetch('/panel/api/export', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ format, conversations }),
+      body: JSON.stringify({ format, conversations, name_style: exportNameStyle() }),
     });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
@@ -5175,10 +5194,34 @@ function updateExportMode() {
   const options = document.getElementById('exportConversationOptions');
   const hint = document.getElementById('databaseExportHint');
   const txtHint = document.getElementById('txtExportHint');
+  const styleRow = document.getElementById('exportNameStyleRow');
   if (options) options.style.display = databaseMode ? 'none' : '';
   if (hint) hint.style.display = databaseMode ? '' : 'none';
   if (txtHint) txtHint.style.display = mode === 'txt' ? '' : 'none';
+  // 「昵称怎么写」只有纯文本 TXT 用得上，别的格式里留着只会让人以为它也生效
+  if (styleRow) styleRow.style.display = mode === 'txt' ? '' : 'none';
   updateExportGate();
+}
+
+/* ── txt 里昵称的写法（不代替 / 数字代号 / 字母代号） ── */
+
+const NAME_STYLES = ['full', 'number', 'letter'];
+
+function exportNameStyle() {
+  const picked = document.querySelector('input[name="exportNameStyle"]:checked');
+  const value = picked ? picked.value : 'full';
+  return NAME_STYLES.includes(value) ? value : 'full';
+}
+
+function applyExportNameStyle(style) {
+  const value = NAME_STYLES.includes(style) ? style : 'full';
+  const el = document.getElementById('nameStyle' + value.charAt(0).toUpperCase() + value.slice(1));
+  if (el) el.checked = true;
+}
+
+function setExportNameStyle(style) {
+  applyExportNameStyle(style);
+  try { localStorage.setItem('panel-export-name-style', exportNameStyle()); } catch (e) {}
 }
 
 async function importDatabase() {
@@ -9065,6 +9108,7 @@ try {
   applyI18n();
   buildSchedulePicks();
   updateDatabaseFileName(document.getElementById('databaseImportFile'));
+  applyExportNameStyle(readStore('panel-export-name-style', 'full'));
   updateExportMode();
   showPage(readStore('panel-page') || 'overview');
   // 上一次「日志 → 重启服务」刚走完、页面也刷新过了：在日志页上报一句「已重启完成」

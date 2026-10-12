@@ -2,6 +2,7 @@ import { getContentJson, getShareInfo, isViewOnce, getViewOnceText, relationNoti
 import { getFireInviteCard } from './fireInviteCard'
 import { getFireBabyCard } from './fireBabyCard'
 import { getFeedCard } from './feedCard'
+import { getDailyFireCard } from './dailyFireCard'
 
 export function sharePreview(item) {
   let cj = getContentJson(item)
@@ -28,6 +29,10 @@ export function sharePreview(item) {
   // 老版卡片（载荷没有背景图）连标题都是载荷里的原文，见 lib/feedCard.js。
   const feed = getFeedCard(item)
   if (feed) return feed.preview || feed.title || ''
+  // 「陪伴天数」卡（aweType=110270）同理：预览用卡片上那句话，
+  // 别把整段 5KB 的排版 JSON 吐给搜索结果。
+  const daily = getDailyFireCard(item)
+  if (daily) return daily.preview || ''
   const info = getShareInfo(item)
   const title = info.title
   const comment = typeof cj.comment === 'string' ? cj.comment : ''

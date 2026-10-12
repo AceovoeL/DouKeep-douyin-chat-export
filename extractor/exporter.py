@@ -285,6 +285,109 @@ def is_empty_system_line(line: str) -> bool:
     return str(line or "").strip() == SYSTEM_TEXT_LABEL
 
 
+def is_empty_system_message(msg) -> bool:
+    """这一条消息写出来是不是空壳通知（见 is_empty_system_line）。"""
+    return str((msg or {}).get("content") or "").strip() == SYSTEM_TEXT_LABEL
+
+
+#: txt 导出里昵称的写法，对应面板上那三个单选项。
+NAME_STYLE_FULL = "full"        #: 照原样写昵称
+NAME_STYLE_NUMBER = "number"    #: 昵称换成 [0]、[1]…
+NAME_STYLE_LETTER = "letter"    #: 昵称换成 [A]、[B]…
+
+#: 外部传进来的写法 → 内部取值。认不出来的一律按「不代替」，不报错。
+_NAME_STYLE_ALIASES = {
+    "": NAME_STYLE_FULL,
+    "full": NAME_STYLE_FULL,
+    "none": NAME_STYLE_FULL,
+    "number": NAME_STYLE_NUMBER,
+    "numeric": NAME_STYLE_NUMBER,
+    "digit": NAME_STYLE_NUMBER,
+    "letter": NAME_STYLE_LETTER,
+    "alpha": NAME_STYLE_LETTER,
+    "alphabet": NAME_STYLE_LETTER,
+}
+
+#: 用代号代替昵称时，文件开头那两行小标题（用户 2026-10-12 定的写法）。
+NAME_DEFINITION_HEADER = "定义昵称："
+MESSAGE_SECTION_HEADER = "导出消息："
+
+
+def normalize_name_style(value) -> str:
+    """把面板/命令行传来的昵称写法归一成三个常量之一（认不出＝不代替）。"""
+    return _NAME_STYLE_ALIASES.get(str(value or "").strip().lower(), NAME_STYLE_FULL)
+
+
+def _letter_alias(index: int) -> str:
+    """0 → ``A``、25 → ``Z``、26 → ``AA``（跟表格列名一样，几个人都不怕重）。"""
+    label = ""
+    position = index
+    while position >= 0:
+        label = chr(ord("A") + position % 26) + label
+        position = position // 26 - 1
+    return label
+
+
+def format_name_alias(style: str, index: int) -> str:
+    """第 ``index`` 个出现的昵称对应什么代号（数字 ``0`` 起、字母 ``A`` 起）。"""
+    if normalize_name_style(style) == NAME_STYLE_LETTER:
+        return _letter_alias(index)
+    return str(index)
+
+
+def plain_text_lines(messages, name_style: str = NAME_STYLE_FULL) -> list:
+    """整份 txt 文件的行（不含换行符）。
+
+    三件事叠在一起：
+
+    * **同一个人连着说话只写一次昵称** —— 第一条 ``[小红]今天天气怎么样``，紧跟的
+      几条直接写正文、不缩进（用户 2026-10-12 要的形态）。中间夹了别人的话或一条
+      写出来的系统消息，这串就算断了，下一条要重新写昵称。
+    * **昵称可以用代号代替** —— ``name_style`` 传 ``number``/``letter`` 时，开头先写
+      一段「定义昵称：」对照表（按第一次出现的先后编号），正文里的昵称换成
+      ``[0]``/``[A]`` 这种代号。文件因此小一截，也看不出成员的真名。
+    * **系统消息永远写成 ``[系统消息] 正文``** —— 它没有发送者，不参与省略；
+      只有标签没有正文的空壳通知整行不写。
+    """
+    style = normalize_name_style(name_style)
+    aliases: dict = {}
+    if style != NAME_STYLE_FULL:
+        for msg in messages:
+            if is_empty_system_message(msg):
+                continue
+            content = str((msg or {}).get("content") or "").strip()
+            if content.startswith(SYSTEM_TEXT_LABEL):
+                continue
+            name = str((msg or {}).get("accountName") or "")
+            if name not in aliases:
+                aliases[name] = format_name_alias(style, len(aliases))
+
+    lines = []
+    if style != NAME_STYLE_FULL:
+        lines.append(NAME_DEFINITION_HEADER)
+        lines.extend(f"[{alias}]{name}" for name, alias in aliases.items())
+        lines.append(MESSAGE_SECTION_HEADER)
+
+    previous_sender = None
+    for msg in messages:
+        content = str((msg or {}).get("content") or "").strip()
+        name = str((msg or {}).get("accountName") or "")
+        if content.startswith(SYSTEM_TEXT_LABEL):
+            if is_empty_system_message(msg):
+                continue                    # 这行根本不写，也就没有打断连着说的那串
+            previous_sender = None          # 系统消息写出来就插了一行，后面要重新写昵称
+            lines.append(plain_text_line(name, content))
+            continue
+        sender = str((msg or {}).get("sender") or "") or name
+        if sender == previous_sender:
+            lines.append(content)           # 同一个人接着说：只写正文，不缩进
+        else:
+            alias = aliases.get(name, name) if style != NAME_STYLE_FULL else name
+            lines.append(plain_text_line(alias, content))
+        previous_sender = sender
+    return lines
+
+
 def _system_text(content, cj, plain: bool) -> str:
     """系统消息的正文；纯文本导出统一写成 ``[系统消息] 正文``。"""
     text = _system_message_text(content, cj)
@@ -623,9 +726,12 @@ class ChatLabExporter:
         conv_name: str = None,
         output_format: str = "jsonl",
         output_dir: str | os.PathLike[str] | None = None,
+        name_style: str = NAME_STYLE_FULL,
     ):
         self.conv_name = conv_name
         self.output_format = output_format  # "json" / "jsonl" / "txt"（纯文字，见 _resolve_message）
+        #: txt 里昵称怎么写：原样 / 数字代号 / 字母代号（见 plain_text_lines）。
+        self.name_style = normalize_name_style(name_style)
         self.output_dir = (
             paths.DATA_DIR if output_dir is None else os.fspath(output_dir)
         )
@@ -755,14 +861,12 @@ class ChatLabExporter:
                 json.dump(output, f, ensure_ascii=False)
             print(f"[+] JSON 导出完成: {output_path}")
         elif self.output_format == "txt":
-            # 一条消息一行「[昵称]正文」；合并转发的正文本身是几行，照原样写。
-            # 只有 "[系统消息]" 标签、没有正文的空壳通知不写这一行（见 is_empty_system_line）。
+            # 一条消息一行；同一个人连着说话时只有第一条写昵称，后面几条省略、不缩进。
+            # 用代号代替昵称时，文件开头先写一份对照表（见 plain_text_lines）。
+            # 只有 "[系统消息]" 标签、没有正文的空壳通知整行不写。
+            skipped_empty = sum(1 for msg in chatlab_messages if is_empty_system_message(msg))
             with open(output_path, "w", encoding="utf-8") as f:
-                for msg in chatlab_messages:
-                    line = plain_text_line(msg["accountName"], msg["content"])
-                    if is_empty_system_line(line):
-                        skipped_empty += 1
-                        continue
+                for line in plain_text_lines(chatlab_messages, self.name_style):
                     f.write(line + "\n")
             print(f"[+] 纯文本导出完成: {output_path}")
         else:
@@ -783,6 +887,9 @@ class ChatLabExporter:
 
         print(f"  消息: {len(chatlab_messages)}")
         print(f"  成员: {len(members)}")
+        if plain and self.name_style != NAME_STYLE_FULL:
+            word = "数字" if self.name_style == NAME_STYLE_NUMBER else "字母"
+            print(f"  昵称: 用{word}代号代替（开头附对照表）")
         if image_count:
             if plain:
                 print(f"  图片: {image_count} (只写 [图片] 标签)")

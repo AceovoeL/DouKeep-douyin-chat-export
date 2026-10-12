@@ -26,8 +26,8 @@ def _record_export(monkeypatch):
     """把真正干活的那一步换成记账的：只关心「被要求导出什么」。"""
     calls = []
 
-    def fake_do_export(fmt, filter_name, conversations):
-        calls.append((fmt, filter_name, conversations))
+    def fake_do_export(fmt, filter_name, conversations, name_style="full"):
+        calls.append((fmt, filter_name, conversations, name_style))
 
     monkeypatch.setattr(cp, "_do_export", fake_do_export)
     return calls
@@ -73,7 +73,7 @@ def test_selected_conversations_are_exported(tmp_path, monkeypatch):
 
     asyncio.run(cp.start_export(cp.ExportRequest(format="txt", conversations=[" 会话A ", "会话B"])))
 
-    assert calls == [("txt", "", ["会话A", "会话B"])]   # 首尾空格顺手清掉
+    assert calls == [("txt", "", ["会话A", "会话B"], "full")]   # 首尾空格顺手清掉
 
 
 def test_database_export_ignores_the_selection(tmp_path, monkeypatch):
@@ -83,7 +83,21 @@ def test_database_export_ignores_the_selection(tmp_path, monkeypatch):
 
     asyncio.run(cp.start_export(cp.ExportRequest(format="database", conversations=[])))
 
-    assert calls == [("database", "", None)]
+    assert calls == [("database", "", None, "full")]
+
+
+def test_name_style_is_passed_through_and_bad_values_fall_back(tmp_path, monkeypatch):
+    """txt 的「昵称怎么代替」要传到导出那一层；乱传的值当「不代替」，不能带进文件。"""
+    _isolate(tmp_path, monkeypatch)
+    calls = _record_export(monkeypatch)
+
+    asyncio.run(cp.start_export(cp.ExportRequest(
+        format="txt", conversations=["会话A"], name_style="letter")))
+    _isolate(tmp_path, monkeypatch)          # 上一次还停在「进行中」，先让它闲下来
+    asyncio.run(cp.start_export(cp.ExportRequest(
+        format="txt", conversations=["会话A"], name_style="随便写的")))
+
+    assert [call[3] for call in calls] == ["letter", "full"]
 
 
 def test_selection_is_persisted(tmp_path, monkeypatch):
@@ -103,3 +117,14 @@ def test_panel_html_blocks_export_until_something_is_checked():
     assert html.count("exportNeedConv:") == 2      # 中文、英文各一份
     assert "exportBlocked" in html
     assert "updateExportGate" in html
+
+
+def test_panel_html_offers_the_three_name_styles():
+    """txt 的「不代替 / 数字代替 / 字母代替」三个单选项，中英文文案都要在。"""
+    with open(PANEL_HTML, encoding="utf-8") as handle:
+        html = handle.read()
+
+    for key in ("nameStyleFull:", "nameStyleNumber:", "nameStyleLetter:"):
+        assert html.count(key) == 2                # 中文、英文各一份
+    assert "exportNameStyleRow" in html
+    assert "name_style: exportNameStyle()" in html

@@ -7,6 +7,13 @@
   不带作者与跳转链接；
 * 系统消息 —— ``[系统消息] 内容``：这类消息没有发送者，不写昵称。
 
+2026-10-12 又加了两条（同一个用户提的，为了把文件喂给 AI 时更小）：
+
+* **同一个人连着说话只在第一条写昵称**，后面的消息直接写正文、不缩进（中间夹了别人的
+  话或一条系统消息就算断开）；
+* **昵称可以用代号代替** —— 开头先写一段「定义昵称：」对照表，正文里的昵称换成
+  ``[0]``/``[A]`` 这种代号。
+
 上万条消息的会话导成 txt 是为了直接喂给 AI 分析，所以这里除了一行行钉住写法，
 还钉住「文件里不许出现跳转链接、base64 图片和原始 JSON」。
 """
@@ -15,8 +22,11 @@ import json
 from common.message_kinds import share_kind, share_text, strip_share_label
 from extractor.exporter import (
     ChatLabExporter,
+    format_name_alias,
     is_empty_system_line,
+    normalize_name_style,
     plain_text_line,
+    plain_text_lines,
     _resolve_message,
 )
 from tests.conftest import insert_conversation, insert_message
@@ -85,6 +95,110 @@ def test_strip_share_label():
     assert strip_share_label(None) == ""
 
 
+# ── 连着说话只写一次昵称、昵称换代号 ──
+
+def _chatlab(name, content, sender=None):
+    return {"sender": sender or name, "accountName": name, "content": content}
+
+
+def test_only_the_first_message_of_a_run_keeps_the_name():
+    """用户给的例子：同一个人的第二句起只写正文，前面不加缩进。"""
+    messages = [
+        _chatlab("小红", "今天天气怎么样"),
+        _chatlab("小红", "下雨了吗"),
+        _chatlab("小明", "下雨了"),
+        _chatlab("小明", "记得带伞"),
+        _chatlab("小明", "不然会被淋湿的"),
+        _chatlab("小红", "收到"),
+        _chatlab("小红", "我会带伞的"),
+    ]
+    assert plain_text_lines(messages) == [
+        "[小红]今天天气怎么样",
+        "下雨了吗",
+        "[小明]下雨了",
+        "记得带伞",
+        "不然会被淋湿的",
+        "[小红]收到",
+        "我会带伞的",
+    ]
+
+
+def test_a_system_message_breaks_the_run():
+    """系统消息会写出来插在中间，所以它后面那条要把昵称补回来。"""
+    messages = [
+        _chatlab("小红", "你好"),
+        _chatlab("会话名", "[系统消息] 小明关注了你"),
+        _chatlab("小红", "在吗"),
+    ]
+    assert plain_text_lines(messages) == [
+        "[小红]你好",
+        "[系统消息] 小明关注了你",
+        "[小红]在吗",
+    ]
+
+
+def test_an_unwritten_notice_does_not_break_the_run():
+    """只有 [系统消息] 标签的空壳整行不写，也就没有打断连着说话的那一串。"""
+    messages = [_chatlab("小红", "你好"), _chatlab("小红", "[系统消息]"), _chatlab("小红", "在吗")]
+    assert plain_text_lines(messages) == ["[小红]你好", "在吗"]
+
+
+def test_names_replaced_by_numbers():
+    messages = [_chatlab("小红", "你好"), _chatlab("小明", "你好呀")]
+    assert plain_text_lines(messages, "number") == [
+        "定义昵称：",
+        "[0]小红",
+        "[1]小明",
+        "导出消息：",
+        "[0]你好",
+        "[1]你好呀",
+    ]
+    # 连着说话照样省略代号，文件更小
+    run = [_chatlab("小红", "你好"), _chatlab("小红", "在吗"), _chatlab("小明", "在")]
+    assert plain_text_lines(run, "number") == [
+        "定义昵称：", "[0]小红", "[1]小明", "导出消息：", "[0]你好", "在吗", "[1]在",
+    ]
+
+
+def test_names_replaced_by_letters():
+    messages = [_chatlab("小红", "你好"), _chatlab("小明", "你好呀")]
+    assert plain_text_lines(messages, "letter") == [
+        "定义昵称：",
+        "[A]小红",
+        "[B]小明",
+        "导出消息：",
+        "[A]你好",
+        "[B]你好呀",
+    ]
+
+
+def test_name_style_accepts_panel_values_and_falls_back():
+    assert normalize_name_style("") == "full"
+    assert normalize_name_style("FULL") == "full"
+    assert normalize_name_style("number") == "number"
+    assert normalize_name_style("letter") == "letter"
+    assert normalize_name_style("看不懂的值") == "full"       # 认不出来＝不代替，不报错
+    # 超过 26 个人也不会撞车
+    assert format_name_alias("letter", 0) == "A"
+    assert format_name_alias("letter", 25) == "Z"
+    assert format_name_alias("letter", 26) == "AA"
+    assert format_name_alias("number", 12) == "12"
+
+
+def test_number_style_defines_every_name_that_shows_up():
+    """对照表要按第一次出现的先后列全，正文里不许冒出没定义的昵称。"""
+    messages = [
+        _chatlab("小红", "你好"),
+        _chatlab("会话名", "[系统消息] 有人关注了你"),   # 系统消息不进对照表
+        _chatlab("小明", "在"),
+    ]
+    lines = plain_text_lines(messages, "number")
+    assert lines[:4] == ["定义昵称：", "[0]小红", "[1]小明", "导出消息："]
+    assert lines[4:] == ["[0]你好", "[系统消息] 有人关注了你", "[1]在"]
+    body = "\n".join(lines[4:])
+    assert "小红" not in body and "小明" not in body
+
+
 # ── 一行一条 ──
 
 def test_plain_text_line():
@@ -134,9 +248,9 @@ def test_plain_keeps_voice_transcription_and_labels():
 
 # ── 整份文件 ──
 
-def _export_txt(temp_db, tmp_path, conv_name="测试会话"):
+def _export_txt(temp_db, tmp_path, conv_name="测试会话", name_style="full"):
     out = str(tmp_path / "export.txt")
-    ChatLabExporter(conv_name=conv_name, output_format="txt").export(out)
+    ChatLabExporter(conv_name=conv_name, output_format="txt", name_style=name_style).export(out)
     with open(out, encoding="utf-8") as handle:
         return out, handle.read().splitlines()
 
@@ -179,6 +293,7 @@ def test_txt_export_is_one_line_per_message(temp_db, tmp_path):
 
     assert out.endswith(".txt")
     assert "[系统消息]" not in lines
+    # 最后两条都是「对方」连着发的，第二条起不写昵称
     assert lines == [
         "[我方]你好[憨笑]",
         "[对方][haha]",
@@ -189,7 +304,7 @@ def test_txt_export_is_one_line_per_message(temp_db, tmp_path):
         "[系统消息] 对方赞了你",
         "[我方][语音 3秒]",
         "[对方][视频 12秒]",
-        "[对方]这个是[分享视频]吗",
+        "这个是[分享视频]吗",
     ]
 
 
@@ -218,9 +333,31 @@ def test_txt_export_has_no_links_media_or_raw_json(temp_db, tmp_path):
     assert "http" not in text and "data:" not in text and "douyin.com" not in text
     assert "[图片]" in text and "base64" not in text
     assert not any(line.lstrip().startswith("{") for line in lines)
-    assert "[我]这条也在说事" in lines
-    # 每行都以 [ 开头（合并转发除外，那种正文本身就分几行）
-    assert all(line.startswith("[") for line in lines)
+    # 三条都是「我」一个人发的：只有第一条带昵称，其余直接写正文
+    assert lines[0] == "[我][图片]"
+    assert "这条也在说事" in lines
+    assert sum(1 for line in lines if line.startswith("[我]")) == 1
+
+
+def test_txt_export_can_hide_names_behind_aliases(temp_db, tmp_path):
+    """面板上选「以数字代替昵称」：文件开头有对照表，正文里只剩代号。"""
+    import extractor.models as models
+
+    conn = models.get_db()
+    insert_conversation(conn, "c1", "别名会话", participant_uids='["owner","other"]', last_message_time=100)
+    conn.execute("INSERT INTO users (uid, nickname) VALUES ('owner','我方')")
+    conn.execute("INSERT INTO users (uid, nickname) VALUES ('other','对方')")
+    insert_message(conn, "m1", "c1", 1, sender_uid="owner", content="你好")
+    insert_message(conn, "m2", "c1", 2, sender_uid="other", content="你好呀")
+    conn.commit()
+    conn.close()
+
+    _out, lines = _export_txt(temp_db, tmp_path, "别名会话", name_style="number")
+
+    text = "\n".join(lines)
+    assert lines == ["定义昵称：", "[0]我方", "[1]对方", "导出消息：", "[0]你好", "[1]你好呀"]
+    assert "我方" not in "\n".join(lines[4:]) and "对方" not in "\n".join(lines[4:])
+    assert "[我方]" not in text
 
 
 def test_txt_filename_and_panel_bundle(temp_db, tmp_path, monkeypatch):

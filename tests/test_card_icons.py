@@ -256,7 +256,7 @@ def test_old_feed_card_still_saves_its_spirit_image():
     assert card_icons.is_feed_card(feed) is True
     assert card_icons.feed_card_image_urls(feed) == ("", _OLD_FEED_SPIRIT)
     assert card_icons.card_icon_urls(feed) == [_OLD_FEED_SPIRIT]
-    # 文件名沿用抖音的官方原名，和前端 assets 里那张对得上
+    # 文件名沿用抖音的官方原名（存在 data/media/card_icons/ 下，前端按链接取本地这份）
     assert card_icons.icon_filename(_OLD_FEED_SPIRIT) == "hotstick_card.png"
 
 
@@ -271,3 +271,64 @@ def test_feed_card_images_use_the_official_names():
     # 路径里带奇怪字符的不要当文件名写进磁盘
     assert card_icons.official_asset_name(
         "https://lf3-creative.dailygn.com/obj/dino/x/..%2Fbad.png") == ""
+
+
+# 「陪伴天数」卡（aweType=110270 · card_key=msg_daily · card_type=im_msg_daily_fire）：
+# 整张卡由前端自己画，载荷里唯一一张图是中间那颗**火花图标**（content_top 组件列表里的
+# im-image）。项目自带 assets/fire.png，所以这张图不是非存不可，但存下来更贴近原样。
+_DAILY_FLAME = (
+    "http://p3-aweme-im-img.byteimg.com/tos-cn-i-7lppr0tkux/fire-story/normal/"
+    "efabf5f6fbef6b1d50d066190ec54698.png~tplv-7lppr0tkux-original-png.png")
+
+
+def _daily_payload(layout, awe_type=110270, card_type="im_msg_daily_fire"):
+    return {
+        "aweType": awe_type,
+        "im_dynamic_patch": {
+            "card_key": "msg_daily",
+            "card_type": card_type,
+            "raw_data": json.dumps(layout, ensure_ascii=False),
+        },
+    }
+
+
+def _daily_layout():
+    return {
+        "content_top": {
+            "type": "im-component-list",
+            "content": [
+                {"type": "im-text", "content": "一起度过了人生的"},
+                {"type": "im-image", "content": _DAILY_FLAME},
+                {"type": "im-number-roller", "content": {"start": 364, "end": 365}},
+                {"type": "im-text", "content": "天"},
+            ],
+        },
+        "bottom_right": {"content": "限时日常"},
+    }
+
+
+def test_daily_fire_card_saves_its_flame_icon():
+    """陪伴天数卡要存的是 content_top 里那颗火花图（不是别的那几张）。"""
+    card = _daily_payload(_daily_layout())
+    assert card_icons.is_daily_fire_card(card) is True
+    assert card_icons.daily_fire_icon_url(card) == _DAILY_FLAME
+    assert card_icons.card_icon_urls(card) == [_DAILY_FLAME]
+    assert card_icons.card_icon_url(card) == _DAILY_FLAME
+
+
+def test_daily_fire_card_rejects_the_gift_sibling():
+    """同一个 card_key 下的「获得火花见面礼」（aweType=110408）不是这张卡。"""
+    gift = _daily_payload(_daily_layout(), awe_type=110408, card_type="im_msg_daily_flame_gift")
+    assert card_icons.is_daily_fire_card(gift) is False
+    assert card_icons.daily_fire_icon_url(gift) == ""
+    # 反过来：别的卡片家族也不认这张卡
+    feed = _feed_payload(_feed_layout())
+    assert card_icons.is_daily_fire_card(feed) is False
+    # 排版坏掉 / 没有火花图时也不炸（前端会退回项目自带的 assets/fire.png）
+    broken = {"im_dynamic_patch": {"card_key": "msg_daily",
+                                   "card_type": "im_msg_daily_fire",
+                                   "raw_data": "{不是 JSON"}}
+    assert card_icons.daily_fire_icon_url(broken) == ""
+    no_image = _daily_payload({"content_top": {"content": [{"type": "im-text", "content": "x"}]}})
+    assert card_icons.daily_fire_icon_url(no_image) == ""
+    assert card_icons.card_icon_urls(no_image) == []

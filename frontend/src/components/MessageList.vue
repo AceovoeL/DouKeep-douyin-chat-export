@@ -88,6 +88,59 @@
                     <div v-if="getWatchTogether(msg).subtitle" class="msg-watch-sub">{{ getWatchTogether(msg).subtitle }}</div>
                   </div>
                 </div>
+                <!-- 「陪伴天数」卡 (aweType=110270 · card_key=msg_daily ·
+                     card_type=im_msg_daily_fire)：居中、整张卡由界面自己画
+                     （载荷只给文字、天数和头像的摆放，没有背景图）。
+                     上面两个叠着的头像固定是「对方在左、本机账号在右」，**不随视角变**；
+                     中间一行「一起度过了人生的 🔥 365 天」；下面一颗按钮，按钮左侧是
+                     **当前视角的人**的头像 + 一圈蓝绿渐变光环。
+                     火花图标和光环都用项目自带素材（assets/fire.png、
+                     assets/head_wrapper_circle.png）—— 载荷给的链接会过期。
+                     见 lib/dailyFireCard.js。 -->
+                <div v-else-if="dailyFire(msg)" class="msg-daily-card">
+                  <!-- 上方两个头像：右边那个后画，压住左边一点（和见面礼卡一个摆法） -->
+                  <div class="msg-daily-avatars">
+                    <div class="msg-daily-avatar msg-daily-avatar-left">
+                      <img
+                        v-if="dailyAvatar(msg, 'left')"
+                        :src="dailyAvatar(msg, 'left')"
+                        :alt="dailyAvatarAlt(msg, 'left')"
+                        :loading="imgLoading"
+                        @error="onImgError"
+                      />
+                    </div>
+                    <div class="msg-daily-avatar msg-daily-avatar-right">
+                      <img
+                        v-if="dailyAvatar(msg, 'right')"
+                        :src="dailyAvatar(msg, 'right')"
+                        :alt="dailyAvatarAlt(msg, 'right')"
+                        :loading="imgLoading"
+                        @error="onImgError"
+                      />
+                    </div>
+                  </div>
+                  <!-- 中间那行字：前文 + 火花图标 + 橙色天数 + 后文 -->
+                  <div class="msg-daily-row">
+                    <span v-if="dailyFire(msg).before" class="msg-daily-text">{{ dailyFire(msg).before }}</span>
+                    <img class="msg-daily-flame" :src="dailyFlame" alt="" />
+                    <span v-if="dailyFire(msg).days" class="msg-daily-days">{{ dailyFire(msg).days }}</span>
+                    <span v-if="dailyFire(msg).after" class="msg-daily-text">{{ dailyFire(msg).after }}</span>
+                  </div>
+                  <!-- 底下那颗按钮：左边是当前视角的人的头像 + 渐变光环，右边是文字；
+                       只做展示、点不动，只保留鼠标悬停反馈 -->
+                  <div class="msg-daily-btn" aria-disabled="true">
+                    <span class="msg-daily-ring" :style="dailyRingStyle">
+                      <img
+                        v-if="dailyRingAvatar(msg)"
+                        :src="dailyRingAvatar(msg)"
+                        :alt="dailyRingAvatarAlt(msg)"
+                        :loading="imgLoading"
+                        @error="onImgError"
+                      />
+                    </span>
+                    <span class="msg-daily-btn-label">{{ dailyFire(msg).button }}</span>
+                  </div>
+                </div>
                 <!-- 获得火花见面礼卡片 (aweType=110408)：居中、背景图、两个头像、领取按钮 -->
                 <div v-else-if="flameCard(msg)" class="msg-flame-card" :style="flameCardStyle">
                   <!-- 两个头像左右并排：对面在左、本视角的人在右，只叠一点点边 -->
@@ -670,6 +723,7 @@ import { getCallShopCard, isCallShopCard, clearCallShopCardCache } from '@/lib/c
 import { getFireInviteCard, isFireInviteCard, clearFireInviteCardCache } from '@/lib/fireInviteCard'
 import { getFireBabyCard, isFireBabyCard, clearFireBabyCardCache } from '@/lib/fireBabyCard'
 import { getFeedCard, isFeedCard, clearFeedCardCache } from '@/lib/feedCard'
+import { getDailyFireCard, isDailyFireCard, clearDailyFireCardCache } from '@/lib/dailyFireCard'
 import { getInviteCard, isInviteCard, getMusicCard, clearSystemCardCache } from '@/lib/cardKinds'
 import { retryVideoWithTranscode, retryVideoIfUndecodable } from '@/lib/mediaPlayback'
 import { senderDisplayName, selfPickerOptions, pickerOptionLabel } from '@/lib/selfIdentity'
@@ -689,6 +743,10 @@ import fireBabyRequestBackground from '@/assets/request-firebaby.png'
 import fireBabyAcceptBackground from '@/assets/accept-firebaby.png'
 import feedCardHalf from '@/assets/feed-card.png'
 import feedCardInvite from '@/assets/invite-feed.png'
+// 「陪伴天数」卡自己画：火花图标和按钮上那圈渐变光环都用项目自带的素材
+// （卡片载荷里也给这两张图的链接，但都是会过期的临时地址，自带一份更稳）。
+import dailyFireFlame from '@/assets/fire.png'
+import dailyFireRing from '@/assets/head_wrapper_circle.png'
 
 import ForwardRecords from './ForwardRecords.vue'
 
@@ -968,6 +1026,10 @@ function _isSystem(msg) {
   // 「喂精灵」卡（card_key=msg_fire_invitation 的 feeding 一种）同理：抖音里它就是
   // 一条跟着发送者走的卡片消息（见下面的 feed 卡片模板），不是居中的系统提示。
   if (isFeedCard(msg)) return false
+  // 「陪伴天数」卡（aweType=110270）虽然和见面礼卡同一个 card_key，但用户 2026-10-11
+  // 明确要求它**居中**显示，所以它跟系统提示一起走（见下面的 daily 卡片模板）——
+  // 不要因为它是"卡片"就挪到普通消息那一侧。
+  if (isDailyFireCard(msg)) return true
   // 「获得火花见面礼」卡（aweType=110408）解析上算分享卡，但排版是系统提示样式，
   // 也要居中、不要头像和昵称，所以跟系统提示一起走。
   // 「联系门店」引导卡（aweType=110284）同理：抖音里就是会话中间的一条系统卡片。
@@ -980,6 +1042,7 @@ function _isSystem(msg) {
 function _shouldShow(msg) {
   return shouldShow(msg) || isInviteCard(msg) || !!musicCard(msg)
     || isFireInviteCard(msg) || isFireBabyCard(msg) || isFeedCard(msg)
+    || isDailyFireCard(msg)
 }
 
 // 群公告卡片：返回 { title, body } 或 null（见 lib/douyinMessage.js）。
@@ -1200,6 +1263,55 @@ function onFeedFoodError(event) {
   if (img) img.style.display = 'none'
 }
 
+// ── 「陪伴天数」卡（aweType=110270，见 lib/dailyFireCard.js）──
+// 这张卡整张由界面自己画：上面两个叠着的头像 + 中间那行字 + 底下一颗带光环的按钮。
+// 卡片上的位置和大小都是照抖音客户端量的。
+function dailyFire(msg) {
+  return getDailyFireCard(msg, detectedSelf.uid)
+}
+
+// 上方两个头像（固定顺序，不随视角变）：左边是对方、右边是本机账号。
+// 头像本身取自 users 表（每次抓取都会刷新），拿不到就留空、让那个圆保持底色。
+function dailyAvatar(msg, which) {
+  const card = dailyFire(msg)
+  if (!card) return ''
+  const uid = which === 'left' ? card.leftUid : card.rightUid
+  return resolveAvatarUrl(uid ? userCache[uid]?.avatar_url : '')
+}
+
+function dailyAvatarName(msg, which) {
+  const card = dailyFire(msg)
+  const uid = card ? (which === 'left' ? card.leftUid : card.rightUid) : ''
+  if (!uid) return '对方'
+  if (String(uid) === String(effectiveSelfUid.value)) return '我'
+  return userCache[uid]?.nickname || '对方'
+}
+
+function dailyAvatarAlt(msg, which) {
+  return dailyAvatarName(msg, which) + '的头像'
+}
+
+// 按钮里那颗头像：**跟着当前视角走**（载荷的 bottom_left_content 指向 user_info）。
+// 本机账号那一侧可能没有资料，拿不到时退回上方那两个头像里的本机账号那张。
+function dailyRingAvatar(msg) {
+  const card = dailyFire(msg)
+  if (!card) return ''
+  const selfUid = effectiveSelfUid.value || detectedSelf.uid
+  return resolveAvatarUrl(selfUid ? userCache[selfUid]?.avatar_url : '')
+}
+
+function dailyRingAvatarAlt(msg) {
+  const card = dailyFire(msg)
+  const selfUid = card && (effectiveSelfUid.value || detectedSelf.uid)
+  return (selfUid ? (userCache[selfUid]?.nickname || '我') : '我') + '的头像'
+}
+
+// 卡片上的火花图标和按钮光环都用项目自带素材（载荷给的是会过期的临时链接）。
+const dailyFlame = dailyFireFlame
+// 光环那张由模板用 :style 传给 .msg-daily-ring（构建后会变成带哈希的文件名，
+// 写死在 CSS 里的话打包就找不到了）。
+const dailyRingStyle = { backgroundImage: `url("${dailyFireRing}")` }
+
 // 联系门店引导卡片（aweType=110284）：卡片外观用 assets/call-to-shop.png，
 // 卡片自己带的主标题/副标题只当图片说明（alt）用，文字已经画在图片里了。
 function callShopCard(msg) {
@@ -1304,6 +1416,13 @@ async function loadUserInfoForMessages(msgList) {
     const card = getFlameGiftCard(msg, effectiveSelfUid.value)
     if (card) {
       for (const uid of [card.selfUid, card.peerUid]) {
+        if (uid && !userCache[uid]) uids.add(uid)
+      }
+    }
+    // 「陪伴天数」卡上三个头像（上面两个 + 按钮里那个）同样要查。
+    const daily = getDailyFireCard(msg, detectedSelf.uid)
+    if (daily) {
+      for (const uid of [daily.leftUid, daily.rightUid, effectiveSelfUid.value || detectedSelf.uid]) {
         if (uid && !userCache[uid]) uids.add(uid)
       }
     }
@@ -1723,6 +1842,7 @@ function resetParseCaches() {
   clearFireInviteCardCache()
   clearFireBabyCardCache()
   clearFeedCardCache()
+  clearDailyFireCardCache()
   clearSystemCardCache()
   for (const key of Object.keys(groupCache)) delete groupCache[key]
   for (const key of Object.keys(brokenCardIcons)) delete brokenCardIcons[key]
@@ -2013,6 +2133,7 @@ watch(() => props.jumpToSeq, async (seq) => {
 }
 .msg-system-line > .msg-system-text,
 .msg-system-line > .msg-watch-card,
+.msg-system-line > .msg-daily-card,
 .msg-system-line > .msg-flame-card,
 .msg-system-line > .msg-call-shop-card,
 .msg-system-line > .msg-notice-card {
@@ -2263,6 +2384,137 @@ watch(() => props.jumpToSeq, async (seq) => {
 .msg-flame-claim:hover {
   background: #e4e7ea;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+/* 「陪伴天数」卡（aweType=110270）：居中显示（见 _isSystem），整张卡由界面自己画
+   —— 载荷只给文字、天数和头像的摆放，没有背景图。
+   宽 278px、圆角 14px，白底 + 轻投影，和见面礼卡一个观感。
+   卡片上的间距和元素大小都照抖音客户端量出来的比例摆。 */
+.msg-daily-card {
+  box-sizing: border-box;
+  width: 278px;
+  max-width: 100%;
+  padding: 14px 16px 16px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  overflow: hidden;
+}
+/* 上方两个头像：右边那个后画，压住左边一点 —— 抖音里就是左边那个被咬掉一个月牙。
+   右边那个带一圈白边，咬痕才看得出来（不然两张同色底的图粘成一块）。 */
+.msg-daily-avatars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 100%;
+  height: 62px;
+}
+.msg-daily-avatar {
+  flex: none;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #f1f2f4;
+}
+.msg-daily-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.msg-daily-avatar-left {
+  z-index: 1;
+}
+/* 右边那个压住左边一点：抖音里左边头像的右侧被咬掉一牙月牙。
+   右边这个带一圈白边，咬痕才看得出来（两张同色底的图会粘成一块）。 */
+.msg-daily-avatar-right {
+  z-index: 2;
+  margin-left: -10px;
+  border: 2px solid #fff;
+  box-sizing: content-box;
+}
+/* 中间那行字：前文 + 火花图标 + 橙色天数 + 后文，整体居中 */
+.msg-daily-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 1px;
+  width: 100%;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2023;
+  line-height: 1.3;
+}
+.msg-daily-text {
+  white-space: pre-wrap;
+}
+.msg-daily-flame {
+  width: 17px;
+  height: 21px;
+  object-fit: contain;
+  margin: 0 2px;
+}
+.msg-daily-days {
+  color: #ff9224;
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin: 0 3px;
+}
+/* 底下那颗按钮：左边是当前视角的人的头像 + 一圈蓝绿渐变光环，右边才是文字。
+   只做展示、点不动，只保留鼠标悬停反馈。 */
+.msg-daily-btn {
+  box-sizing: border-box;
+  position: relative;
+  width: 100%;
+  height: 41px;
+  border-radius: 7px;
+  background: #f4f4f4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #1f2023;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: default;
+  user-select: none;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.msg-daily-btn:hover {
+  background: #e9e9e9;
+}
+/* 光环：项目自带的 assets/head_wrapper_circle.png（蓝→绿渐变的一圈），
+   图片地址由模板用 :style 传进来（构建后会变成带哈希的文件名）。
+   图本身只有那一圈渐变，中间是透明的，头像压在它正中间。
+   抖音里这一圈比头像大一圈，中间留出白底，看起来像「照片镶在光环里」。 */
+.msg-daily-ring {
+  position: relative;
+  flex: none;
+  width: 33px;
+  height: 33px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+.msg-daily-ring img {
+  display: block;
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.msg-daily-btn-label {
+  white-space: nowrap;
 }
 /* 「聊天火花」关系卡（card_key=msg_fire_invitation）：整张卡就是 assets/request.png /
    assets/accept.png 那张抖音客户端的截图（787×509，连底部「聊天火花」条一起带上了），

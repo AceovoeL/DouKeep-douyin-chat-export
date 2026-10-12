@@ -941,6 +941,9 @@ class ExportRequest(BaseModel):
     format: str = "jsonl"
     filter: str = ""
     conversations: list[str] | None = None  # selected nicknames; overrides filter
+    #: txt 里昵称怎么写：full（照原样，默认）/ number（[0]、[1]…）/ letter（[A]、[B]…）。
+    #: 见 extractor/exporter.py 的 NAME_STYLE_*；认不出来的值一律按 full 处理。
+    name_style: str = "full"
 
 
 class ScheduleRequest(BaseModel):
@@ -4596,6 +4599,10 @@ async def start_export(req: ExportRequest):
     _export_state["file_path"] = None
     _export_state["message"] = "正在导出..."
 
+    # 昵称写法只有 txt 用得上；认不出来的值按「不代替」处理（见 normalize_name_style）
+    from extractor.exporter import normalize_name_style
+    name_style = normalize_name_style(req.name_style)
+
     # Persist selection
     if req.conversations is not None:
         cfg = _load_config()
@@ -4603,7 +4610,7 @@ async def start_export(req: ExportRequest):
         _save_config(cfg)
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _do_export, req.format, req.filter, convs or None)
+    await loop.run_in_executor(None, _do_export, req.format, req.filter, convs or None, name_style)
     return {
         "status": _export_state["status"],
         "message": _export_state["message"],
@@ -4804,11 +4811,12 @@ def _install_database(staged_path: str) -> str | None:
     return os.path.basename(backup_path) if moved_db else None
 
 
-def _do_export(fmt: str, filter_name: str, conversations: list | None):
+def _do_export(fmt: str, filter_name: str, conversations: list | None, name_style: str = "full"):
     try:
-        from extractor.exporter import ChatLabExporter, build_export_filename
+        from extractor.exporter import NAME_STYLE_FULL, ChatLabExporter, build_export_filename
         import zipfile
 
+        name_style = name_style if fmt == "txt" else NAME_STYLE_FULL
         data_dir = paths.DATA_DIR
 
         if fmt == "database":
@@ -4833,6 +4841,7 @@ def _do_export(fmt: str, filter_name: str, conversations: list | None):
                 conv_name=targets[0] or None,
                 output_format=fmt,
                 output_dir=data_dir,
+                name_style=name_style,
             )
             output_path = exporter.export()
             if not output_path or not os.path.exists(output_path):
@@ -4865,7 +4874,9 @@ def _do_export(fmt: str, filter_name: str, conversations: list | None):
                 used_filenames.add(filename)
                 path = os.path.join(tmp_dir, filename)
                 try:
-                    ChatLabExporter(conv_name=name, output_format=fmt).export(path)
+                    ChatLabExporter(
+                        conv_name=name, output_format=fmt, name_style=name_style
+                    ).export(path)
                     if os.path.exists(path):
                         produced.append((name, path))
                 except Exception as e:

@@ -634,6 +634,33 @@ def get_feed_card(row):
     return {"card_type": card_type}
 
 
+# 「陪伴天数」卡（aweType=110270 · card_key=msg_daily · card_type=im_msg_daily_fire）
+# 同样是一张"正文是空的也要画"的卡片：整张卡由前端自己画，文字和天数都在 raw_data 里。
+# 它和「获得火花见面礼」（aweType=110408）共用 card_key，所以还要看 card_type / aweType。
+# 对应前端 ``frontend/src/lib/dailyFireCard.js`` 的 ``getDailyFireCard``。
+DAILY_FIRE_AWE_TYPE = 110270
+DAILY_FIRE_CARD_TYPES = frozenset([
+    "im_msg_daily_fire",                          # 陪伴天数（限时日常）
+])
+
+
+def get_daily_fire_card(row):
+    """「陪伴天数」卡（aweType=110270）；不是则 None（这里只关心"认不认得出来"）。"""
+    row = _as_row(row)
+    cj = row.content_json()
+    if not isinstance(cj, dict):
+        return None
+    patch = cj.get("im_dynamic_patch")
+    card_type = _str(patch.get("card_type")) if isinstance(patch, dict) else ""
+    if card_type not in DAILY_FIRE_CARD_TYPES and not _num_eq(cj.get("aweType"), DAILY_FIRE_AWE_TYPE):
+        return None
+    raw = patch.get("raw_data") if isinstance(patch, dict) else None
+    layout = _loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(layout, dict):
+        return None
+    return {"card_type": card_type or "im_msg_daily_fire"}
+
+
 def should_show(row):
     """对应前端 ``shouldShow``：这条记录在聊天窗口里会不会被画出来。"""
     row = _as_row(row)
@@ -652,6 +679,9 @@ def should_show(row):
         return True
     # 「喂精灵」卡（feeding）同理。
     if get_feed_card(row):
+        return True
+    # 「陪伴天数」卡（aweType=110270）同理：文字和天数在卡片载荷里，正文可能是空的。
+    if get_daily_fire_card(row):
         return True
     if is_loose_emoji(row) or is_loose_share(row) or is_loose_image(row):
         return True

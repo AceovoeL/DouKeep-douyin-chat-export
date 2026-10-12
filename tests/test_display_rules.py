@@ -298,3 +298,58 @@ def test_feed_card_does_not_steal_sibling_cards():
                                    "card_type": "im_msg_fire_invitation_feeding",
                                    "raw_data": "{不是 JSON"}}
     assert display_rules.get_feed_card(_row("f2", broken)) is None
+
+
+# 「陪伴天数」卡：card_key=msg_daily（和「获得火花见面礼」共用），card_type 是
+# im_msg_daily_fire。整张卡由前端自己画，文字和天数都在 raw_data 里。
+_DAILY_LAYOUT = {
+    "content_top": {
+        "type": "im-component-list",
+        "content": [
+            {"type": "im-text", "content": "一起度过了人生的"},
+            {"type": "im-image", "content": "https://x/daily_fire.png"},
+            {"type": "im-number-roller", "content": {"start": 364, "end": 365}},
+            {"type": "im-text", "content": "天"},
+        ],
+    },
+    "bottom_left": {"content": "https://x/head_wrapper_circle.png"},
+    "bottom_left_content": {"content": "pattern:client_data() | get_value_by_key('user_info.avatar_thumb')"},
+    "bottom_right": {"content": "限时日常"},
+}
+
+
+def _daily_card(card_type="im_msg_daily_fire", awe_type=110270, layout=None):
+    return _row("d1", {
+        "aweType": awe_type,
+        "description": "一起度过了人生的 365 天",
+        "im_dynamic_patch": {
+            "card_key": "msg_daily",
+            "card_type": card_type,
+            "raw_data": json.dumps(_DAILY_LAYOUT if layout is None else layout, ensure_ascii=False),
+        },
+    })
+
+
+def test_daily_fire_card_is_always_displayed():
+    """「陪伴天数」卡也不该被当成空系统提示藏掉。
+
+    它落库后 content 很短（只有一句「一起度过了人生的 365 天」），文字和天数都在卡片
+    载荷里，界面按卡片画 —— 认不出来的话「N 条消息」会比实际少算几条。
+    """
+    card = _daily_card()
+    assert display_rules.get_daily_fire_card(card) == {"card_type": "im_msg_daily_fire"}
+    assert display_rules.should_show(card) is True
+    assert display_rules.display_count([card]) == 1
+
+
+def test_daily_fire_card_ignores_the_gift_sibling():
+    """同一个 card_key 下的「获得火花见面礼」（aweType=110408）是另一种卡，两边不互相认领。"""
+    gift = _daily_card(card_type="im_msg_daily_flame_gift", awe_type=110408)
+    assert display_rules.get_daily_fire_card(gift) is None
+    # 反过来：陪伴天数卡也不会被见面礼那一支认领（见面礼的判据在前端 flameCard.js）
+    assert display_rules.get_daily_fire_card(_daily_card()) is not None
+    # 排版坏掉时不认（前端同样返回 null，两边一致）
+    broken = {"im_dynamic_patch": {"card_key": "msg_daily",
+                                   "card_type": "im_msg_daily_fire",
+                                   "raw_data": "{不是 JSON"}}
+    assert display_rules.get_daily_fire_card(_row("d2", broken)) is None

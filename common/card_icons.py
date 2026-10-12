@@ -167,6 +167,14 @@ FIRE_CARD_TYPES = (
 #: 载荷里，链接过期就没了，所以两张都要存（见 :func:`feed_card_image_urls`）。
 FEED_CARD_TYPES = ("im_msg_fire_invitation_feeding",)
 
+#: 「陪伴天数」卡（aweType=110270 · card_key=msg_daily · card_type=im_msg_daily_fire）。
+#: 这张卡整张由前端自己画，它自己不带封面图；载荷里唯一那张图是中间那颗**火花图标**
+#: （``content_top`` 组件列表里的 im-image）。
+#: 项目自带一份 ``assets/fire.png``，所以这张图**不是非存不可** —— 但存下来没坏处：
+#: 万一以后自带素材要换，本地这份还是当时的原图（见 :func:`card_icon_url`）。
+DAILY_FIRE_AWE_TYPE = 110270
+DAILY_FIRE_CARD_TYPES = ("im_msg_daily_fire",)
+
 
 def image_url(value) -> str:
     """抖音各种图片字段的统一取图方式：字符串，或 ``{url_list:[...]}``。"""
@@ -309,6 +317,40 @@ def feed_card_image_urls(cj) -> tuple[str, str]:
     return background, food
 
 
+def is_daily_fire_card(cj) -> bool:
+    """「陪伴天数」卡（aweType=110270 / card_type=im_msg_daily_fire）。
+
+    和「获得火花见面礼」（aweType=110408）共用 ``card_key=msg_daily``，靠 aweType 区分；
+    两者载荷里都有 card_type，认哪个都行，但老样本偶尔缺 card_type，所以一并认 aweType。
+    """
+    if not isinstance(cj, dict):
+        return False
+    patch = cj.get("im_dynamic_patch")
+    card_type = str(patch.get("card_type")) if isinstance(patch, dict) else ""
+    return card_type in DAILY_FIRE_CARD_TYPES or str(cj.get("aweType")) == str(DAILY_FIRE_AWE_TYPE)
+
+
+def daily_fire_icon_url(cj) -> str:
+    """「陪伴天数」卡上那颗火花图（``content_top`` 组件列表里的 im-image）。
+
+    这一行固定是 ``[前文文字] [火花图] [数字滚轮 天数] [后文文字]``，所以从组件列表里
+    找第一个 im-image 就是它。找不到返回空串（前端会退回项目自带的 assets/fire.png，
+    卡片照常显示）。
+    """
+    if not is_daily_fire_card(cj):
+        return ""
+    layout = _fire_layout(cj) or {}
+    content = layout.get("content_top")
+    content = content.get("content") if isinstance(content, dict) else None
+    for item in content if isinstance(content, list) else []:
+        if not isinstance(item, dict) or str(item.get("type")) != "im-image":
+            continue
+        url = _image_url(item.get("content"))
+        if url:
+            return url
+    return ""
+
+
 def card_icon_urls(cj) -> list[str]:
     """这张卡要存下来的**所有**图（大多数卡只有一张，喂食卡有两张）。"""
     if isinstance(cj, dict) and is_feed_card(cj):
@@ -337,6 +379,8 @@ def card_icon_url(cj) -> str:
         return _fire_icon_url(cj)
     if is_feed_card(cj):
         return feed_card_image_urls(cj)[0]
+    if is_daily_fire_card(cj):
+        return daily_fire_icon_url(cj)
     return ""
 
 
