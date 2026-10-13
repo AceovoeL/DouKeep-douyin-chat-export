@@ -263,21 +263,126 @@ def get_owner():
     return {"uid": uid, "name": name}
 
 
+# 数「一共找到多少条」时最多数这些条。搜索要匹配的字段里有几个是
+# raw_data 里现拆出来的 JSON（这一列在真实库里能到几百 MB），精确数一遍
+# 要几秒钟；只要知道「比 1000 条多」就够了，于是让 SQLite 数够就停。
+#
+# 顺带说明为什么搜索本身没法再快多少：判断一行是否匹配，必须把那行的
+# raw_data 解析成 JSON 才能比较，而 raw_data 是几百 MB 的大文本。一个词
+# 越少见，要检查的行就越多（实测很少见的词要 3～4 秒，常见词 0.1 秒就够）。
+# 真正根治要把可搜索文本单独存成一列或建全文索引 —— 那要改数据库结构，
+# 不在本次改动范围内。
+SEARCH_COUNT_LIMIT = 1000
+
+#: 语音消息在库里没有专属的 msg_type：绝大多数存成 0（普通消息），少数老数据存成 1。
+#: 真正的判据是正文 JSON 里的语音字段，所以「筛选语音」要按下面这几条来认，规则和
+#: 前端 frontend/src/lib/douyinMessage.js 的 isVoiceMsg、阅读端的
+#: common/display_rules.py::is_voice_msg 保持一致（三处改动要同步）。
+#:
+#: 判断分三步，顺序不能换（前端也是这个顺序，换了结果就不一样）：
+#:   0. 正文里得有 resource_url，这是语音的前提；
+#:   1. 排除「长得像语音其实是别的」：aweType 2702/2703/2704 的卡片、带 video.vid
+#:      的视频。这两种只要没有语音标记（tkey / voice_wave / is_voice）就直接否掉 ——
+#:      注意是直接否掉，不能因为「有时长」又把它算回语音，视频也带时长；
+#:   2. 剩下的按「有地址 / 有时长 / 有语音标记」任一条认；
+#:      但如果这行的 msg_type 不是 0/空（老数据存成了 1），判据收紧成
+#:      「有时长或语音标记」，光有地址不算（图片也有地址）。
+_VOICE_MARKER = (
+    "COALESCE(json_extract({cj}, '$.tkey'), '') <> ''"
+    " OR COALESCE(json_extract({cj}, '$.voice_wave'), '') <> ''"
+    " OR COALESCE(json_extract({cj}, '$.resource_url.is_voice'), '') <> ''"
+)
+
+
+def _voice_clause(cj):
+    """「这一行是语音」的 SQL 条件（三步判据见 _VOICE_MARKER 上面的说明）。"""
+    marker = _VOICE_MARKER.format(cj=cj)
+    # duration 可能是数字也可能是字符串，两种都认；0 和空串不算。
+    dur = "$.duration"
+    res_dur = "$.resource_url.duration"
+    duration = (
+        f"((json_extract({cj}, '{dur}') IS NOT NULL"
+        f" AND json_extract({cj}, '{dur}') <> '' AND json_extract({cj}, '{dur}') <> 0)"
+        f" OR (json_extract({cj}, '{res_dur}') IS NOT NULL"
+        f" AND json_extract({cj}, '{res_dur}') <> '' AND json_extract({cj}, '{res_dur}') <> 0))"
+    )
+    # 「有下载地址」只看 resource_url 对象里的 url_list。resource_url 本身是字符串的
+    # 情况不算地址 —— 前端也只认数组形式的 url_list，两边必须一样。
+    res = "$.resource_url"
+    url = (
+        f"(json_type({cj}, '{res}') = 'object'"
+        f" AND json_array_length({cj}, '{res}.url_list') > 0)"
+    )
+    # 第 0 步：没有 resource_url 的不可能是语音。
+    has_resource = f"json_type({cj}, '{res}') IN ('object', 'text')"
+    # 第 1 步：视频卡 / 视频消息，除非带语音标记，否则一律不算。
+    # aweType 缺字段时是 NULL，而 NULL IN (...) 得到的是 NULL 不是假 —— 拿它去
+    # NOT 一下还是 NULL，整行就被判掉了。所以用 IFNULL 兜成空串再比。
+    video_like = (
+        f"IFNULL(CAST(json_extract({cj}, '$.aweType') AS TEXT), '')"
+        f" IN ('2702', '2703', '2704')"
+        f" OR COALESCE(json_extract({cj}, '$.video.vid'), '') <> ''"
+    )
+    # 第 2 步：宽松判据（msg_type 为 0/空时用）与严格判据（其余情况用）。
+    loose = f"({url} OR {duration} OR ({marker}))"
+    strict = f"({duration} OR ({marker}))"
+    stored_voice = "m.msg_type = 0 OR m.msg_type = 'other' OR m.msg_type IS NULL"
+    return (
+        "json_valid(m.raw_data) AND "
+        f"{has_resource} AND "
+        f"(NOT ({video_like}) OR ({marker})) AND "
+        f"CASE WHEN {stored_voice} THEN {loose} ELSE {strict} END"
+    )
+
+
 def search_messages(query="", page=1, page_size=50, *, conv_id=None,
-                    start_time=None, end_time=None, media_type=None):
+                    start_time=None, end_time=None, media_type=None,
+                    count_limit=None, with_total=True,
+                    with_total_capped=False):
     """Search text/transcripts with optional conversation, time and media filters.
 
     Time bounds are [start_time, end_time), so adjacent dates never overlap.
+
+    Args:
+        count_limit: 最多数到多少条就停。默认取模块级的 ``SEARCH_COUNT_LIMIT``
+            （在函数里读，这样它还能被测试或配置改写）；显式传 ``0`` 表示数到底、
+            要准确数字。
+        with_total: 为 False 时只取这一页数据、不数总数（翻页用；翻页时总数
+            本来就不会变，没必要为了一个不变的数字再等几秒）。
+        with_total_capped: 为 True 时返回值多带一个布尔值，表示上面的总数是
+            不是被 ``count_limit`` 截断过（上限本身就是那个数，两者相等时分不清）。
+
+    Returns:
+        ``([消息...], 总数)``；``with_total_capped=True`` 时是
+        ``([消息...], 总数, 是否截断)``。不传这个开关时返回值形状与以前一致。
     """
+    if count_limit is None:
+        count_limit = SEARCH_COUNT_LIMIT
+
+    def _result(rows, total, capped):
+        if with_total_capped:
+            return rows, total, capped
+        return rows, total
+
     raw = "CASE WHEN json_valid(m.raw_data) THEN m.raw_data ELSE '{}' END"
     content = f"json_extract({raw}, '$.content_json')"
     cj = f"CASE WHEN json_valid({content}) THEN {content} ELSE '{{}}' END"
     patch = f"json_extract({cj}, '$.im_dynamic_patch.raw_data')"
     layout = f"CASE WHEN json_valid({patch}) THEN {patch} ELSE '{{}}' END"
     clauses, params = [], []
+    # conv_id 写进 WHERE 最前面：它是等值条件，能把候选行缩到一个会话。
+    # （实测写前写后耗时基本一样 —— SQLite 自己会用 idx_messages_seq 定位会话，
+    # 这里放前面只是为了读起来顺，不代表它带来提速。）
+    if conv_id is not None:
+        clauses.append("m.conv_id = ?")
+        params.append(conv_id)
     if query:
         pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        fields = ["m.content", "vt.text_result", *[
+        # 普通列：读出来就能比，不花钱。
+        plain_fields = ["m.content", "vt.text_result"]
+        # JSON 字段：每一个都要先把该行整包 raw_data 解析成 JSON 才能比。
+        # raw_data 在真实库里能到几百 MB，逐行解析就是搜索卡顿的根源。
+        json_fields = [*[
             f"json_extract({cj}, '$.{key}')"
             # content_name is the share card's author; without it, searching an
             # author's name only worked by accident (their name happened to sit
@@ -291,11 +396,15 @@ def search_messages(query="", page=1, page_size=50, *, conv_id=None,
             f"json_extract({cj}, '$.locale_resources')",
             f"json_extract({cj}, '$.active_users')",
             f"json_extract({cj}, '$.passive_users')"]
+        # 便宜的列放前面只是让 SQL 好读；SQLite 不会为 OR 短路，两边都会被求值。
+        # 曾试过在 OR 前面加一条 `m.raw_data LIKE ?` 把「整包文本里没这个词」
+        # 的行提前排除掉（实测能快 5 倍），但那会漏搜：raw_data 里的中文绝大多数
+        # 是 \uXXXX 转义的，而且嵌套层数不同、转义的反斜杠个数也不一样，
+        # 没有任何一条固定模式能可靠命中（见 tests 里那两条分享卡标题的用例）。
+        # 宁可慢也不能搜不到，所以不做这层粗筛。
+        fields = plain_fields + json_fields
         clauses.append("(" + " OR ".join(f"{field} LIKE ? ESCAPE '\\'" for field in fields) + ")")
         params.extend([pattern] * len(fields))
-    if conv_id is not None:
-        clauses.append("m.conv_id = ?")
-        params.append(conv_id)
     if start_time is not None:
         clauses.append("m.timestamp >= ?")
         params.append(start_time)
@@ -319,12 +428,16 @@ def search_messages(query="", page=1, page_size=50, *, conv_id=None,
             "'$.aweType') AS TEXT)"
         )
         clauses.append(f"({awe} = '13600' OR {content_awe} = '13600')")
+    elif media_type == "voice":
+        clauses.append(_voice_clause(cj))
     elif media_type is not None:
         raise ValueError("未知媒体类型")
     where = " AND ".join(clauses) or "1=1"
+    # 语音列表要「时间从新到旧」，所以按 timestamp 排；同一秒内的多条用 seq 还原
+    # 聊天里的先后（seq 是采集顺序，比 msg_id 可靠）。
     order_by = (
         "m.timestamp DESC, m.seq DESC, m.msg_id DESC"
-        if media_type == "forward"
+        if media_type in ("forward", "voice")
         else "m.seq DESC, m.msg_id DESC"
     )
     joins = """FROM messages m
@@ -343,8 +456,20 @@ def search_messages(query="", page=1, page_size=50, *, conv_id=None,
                 ORDER BY {order_by} LIMIT ? OFFSET ?""",
             [*params, page_size, (page - 1) * page_size],
         ).fetchall()
-        total = conn.execute(f"SELECT COUNT(*) {joins} WHERE {where}", params).fetchone()[0]
-        return [dict(r) for r in rows], total
+        if not with_total:
+            # 翻页：总数在第一次搜索时就给过用户了，翻页时它不会变。
+            return _result([dict(r) for r in rows], None, False)
+        if not count_limit:
+            # 明确要求准确数字（count_limit=0）时的老路径：数到底。
+            total = conn.execute(f"SELECT COUNT(*) {joins} WHERE {where}", params).fetchone()[0]
+            return _result([dict(r) for r in rows], total, False)
+        # 数够 count_limit 条就不再往下数。用子查询 + LIMIT，SQLite 找到足够
+        # 行数就停；只有结果本来就不足上限时才会真的数到底，那时也便宜。
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM (SELECT 1 {joins} WHERE {where} LIMIT ?)",
+            [*params, count_limit],
+        ).fetchone()[0]
+        return _result([dict(r) for r in rows], total, total >= count_limit)
     finally:
         conn.close()
 

@@ -296,17 +296,26 @@ def search(
     conv_id: str | None = Query(None),
     start_time: int | None = Query(None, ge=0),
     end_time: int | None = Query(None, ge=0),
-    media_type: Literal["image", "video", "media", "forward"] | None = Query(None),
+    media_type: Literal["image", "video", "media", "forward", "voice"] | None = Query(None),
 ):
     if start_time is not None and end_time is not None and start_time >= end_time:
         raise HTTPException(422, "结束时间必须晚于开始时间")
     if not q.strip() and not conv_id and start_time is None and end_time is None and not media_type:
         raise HTTPException(422, "请指定搜索条件")
-    items, total = database.search_messages(
+    # 翻页时总数不会变，直接沿用第一页给过的数字，不必再数一遍（数一遍要几秒）。
+    items, total, total_capped = database.search_messages(
         q.strip(), page=page, page_size=page_size, conv_id=conv_id,
         start_time=start_time, end_time=end_time, media_type=media_type,
+        with_total=page == 1, with_total_capped=True,
     )
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    return {
+        "items": items,
+        "total": total,
+        # 总数被上限截断时为真，此时 total 表示「至少有这么多条」。
+        "total_capped": total_capped,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @app.get("/api/messages/{msg_id}")

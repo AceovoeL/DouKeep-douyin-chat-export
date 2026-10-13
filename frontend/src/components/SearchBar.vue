@@ -28,11 +28,11 @@
           </svg>
           图片与视频
         </button>
-        <button @click="setMode('forward')">
+        <button @click="setMode('voice')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-            <path d="M8 7h11v10H8z"/><path d="M8 9H5v10h11"/><path d="m14 11 3 1.5L14 14"/>
+            <rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/>
           </svg>
-          转发聊天记录
+          语音
         </button>
       </div>
       <p class="search-status">输入关键词开始搜索</p>
@@ -63,17 +63,35 @@
         <!-- 图片与视频按时间正序展示（旧上、新下）：更早的一页插在顶部，入口也放顶部 -->
         <!-- 加载中保持按钮占位，避免高度变化把阅读位置顶偏 -->
         <button
-          v-if="mode === 'media' && results.length < total"
+          v-if="mode === 'media' && hasMore"
           class="search-more search-more-top"
           :disabled="loading"
           @click="search(true)"
-        >{{ loading ? '加载中…' : `↑ 加载更早的图片与视频（已显示 ${results.length}/${total}）` }}</button>
-        <template v-if="mode === 'text' || mode === 'forward'">
-          <div v-if="total" class="search-results-header">找到 {{ total }} 条结果</div>
+        >{{ loading ? '加载中…' : `↑ 加载更早的图片与视频（已显示 ${results.length}/${totalText}）` }}</button>
+        <template v-if="mode === 'voice'">
+          <div v-if="results.length" class="search-results-header">共 {{ totalText }} 条语音</div>
+          <button v-for="(item, index) in results" :key="item.msg_id" class="search-result-item"
+            :style="stagger(index)" :aria-label="`${voiceSender(item)} ${formatTime(item.timestamp)} 的语音 ${getVoiceDuration(item)} 秒，定位到聊天记录`"
+            @click="navigate(item)">
+            <div class="voice-head">
+              <span class="voice-sender">{{ voiceSender(item) }}</span>
+              <time class="voice-time">{{ formatTime(item.timestamp) }}</time>
+            </div>
+            <div class="voice-body">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="voice-icon" aria-hidden="true" focusable="false">
+                <rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/>
+              </svg>
+              <span class="voice-dur">{{ getVoiceDuration(item) }}″</span>
+              <span v-if="item.voice_transcription" class="voice-text" v-html="highlight(item.voice_transcription)"></span>
+              <span v-else class="voice-text voice-muted">未转写</span>
+            </div>
+          </button>
+        </template>
+        <template v-else-if="mode === 'text'">
+          <div v-if="total" class="search-results-header">找到 {{ totalText }} 条结果</div>
           <button v-for="(item, index) in results" :key="item.msg_id" class="search-result-item" :style="stagger(index)" @click="navigate(item)">
             <div class="result-sender">{{ item.sender_display_name || item.sender_name || '' }}</div>
             <div class="result-content" v-html="highlight(preview(item))"></div>
-            <p v-if="mode === 'forward' && forwardSummary(item)" class="result-summary">{{ forwardSummary(item) }}</p>
             <time class="result-time">{{ formatTime(item.timestamp) }}</time>
           </button>
         </template>
@@ -92,7 +110,7 @@
         <p v-if="!loading && !error && !results.length" class="search-status">{{ emptyHint }}</p>
         <p v-if="loading" class="search-status">加载中...</p>
         <div v-if="error" class="search-status" role="alert">{{ error }} <button @click="search(page > 0)">重试</button></div>
-        <button v-if="mode !== 'media' && !loading && results.length < total" class="search-more" @click="search(true)">加载更多（{{ results.length }}/{{ total }}）</button>
+        <button v-if="mode !== 'media' && !loading && hasMore" class="search-more" @click="search(true)">加载更多（{{ results.length }}/{{ totalText }}）</button>
       </div>
     </template>
   </aside>
@@ -101,13 +119,15 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { renderRichText } from '@/lib/highlight'
-import { getImageSrc, getVideoPoster, getVideoDuration, isVideoMsg, isJsonVideo, getProfileCard, getForwardInfo, renderSystemMsg } from '@/lib/douyinMessage'
+import { getImageSrc, getVideoPoster, getVideoDuration, isVideoMsg, isJsonVideo, getProfileCard, getForwardInfo, getVoiceDuration, renderSystemMsg } from '@/lib/douyinMessage'
 import { sharePreview } from '@/lib/sharePreview'
 import { calendarMonths, dateBounds, groupMediaByDate, sortMediaChronologically } from '@/lib/search'
 import { readStoredSelfUid } from '@/lib/selfView'
 
 const props = defineProps({ convId: String, convName: String })
 const emit = defineEmits(['navigate', 'close'])
+// 每页取多少条。后端一次也最多给 200 条。
+const PAGE_SIZE = 50
 const mode = ref('text')
 const query = ref('')
 const includeImages = ref(true)
@@ -116,6 +136,9 @@ const selectedDate = ref('')
 const months = ref([])
 const results = ref([])
 const total = ref(0)
+// 总数超过后端上限时，total 只是「至少有这么多条」，界面上要写成 1000+，
+// 也不能拿它当「已经全部加载完」的依据（见 hasMore）。
+const totalCapped = ref(false)
 const page = ref(0)
 const loading = ref(false)
 const error = ref('')
@@ -125,13 +148,20 @@ const resultsRef = ref(null)
 // 旧消息在上、新消息在下：先按时间正序排，再按日期分组。
 const mediaGroups = computed(() => groupMediaByDate(sortMediaChronologically(results.value)))
 const headerTitle = computed(() => ({
-  date: '按日期查找', media: '图片与视频', forward: '转发聊天记录',
+  date: '按日期查找', media: '图片与视频', voice: '语音',
 }[mode.value] || '查找'))
 const emptyHint = computed(() => {
   if (mode.value === 'media' && !includeImages.value && !includeVideos.value) return '请选择图片或视频'
-  if (mode.value === 'forward') return '当前会话暂无合并转发记录'
+  if (mode.value === 'voice') return '当前会话暂无语音'
   return '无匹配结果'
 })
+// 总数被截断时显示成「1000+」；其余情况就是准确数字。
+const totalText = computed(() => totalCapped.value ? `${total.value}+` : String(total.value))
+// 还有没有下一页。总数被截断时它不再是「一共多少条」，只能看这一页有没有装满：
+// 装载满说明后面可能还有，没装满就是到底了。
+const hasMore = computed(() => totalCapped.value
+  ? results.value.length > 0 && results.value.length % PAGE_SIZE === 0
+  : results.value.length < total.value)
 let timer = null
 let controller = null
 let generation = 0
@@ -154,7 +184,7 @@ function beginRequest() {
   return { id: generation, signal: controller.signal }
 }
 function resetResults() {
-  results.value = []; total.value = 0; page.value = 0; error.value = ''
+  results.value = []; total.value = 0; totalCapped.value = false; page.value = 0; error.value = ''
   if (resultsRef.value) resultsRef.value.scrollTop = 0
 }
 function clearQuery() {
@@ -172,7 +202,7 @@ onUnmounted(cancel)
 function setMode(value) {
   cancel(); mode.value = value; resetResults()
   if (value === 'date') loadCalendar()
-  else if (value === 'media' || value === 'forward') search()
+  else if (value === 'media' || value === 'voice') search()
   else { query.value = ''; nextTick(() => inputRef.value?.focus()) }
 }
 function onInput() {
@@ -184,7 +214,7 @@ function onResultsScroll() {
   if (mode.value !== 'media' || loading.value) return
   const el = resultsRef.value
   if (!el || el.scrollTop > AUTO_LOAD_TOP_PX) return
-  if (results.value.length >= total.value) return
+  if (!hasMore.value) return
   // 内容不足一屏时滚不动，交回顶部按钮，免得反复触发。
   if (el.scrollHeight <= el.clientHeight + 4) return
   if (performance.now() - lastDataAt < 400) return
@@ -203,9 +233,9 @@ async function search(append = false) {
   const anchorTile = append && mode.value === 'media'
     ? resultsRef.value?.querySelector('.media-tile') || null : null
   const anchorTop = anchorTile ? anchorTile.getBoundingClientRect().top : null
-  const params = new URLSearchParams({ conv_id: props.convId, page_size: '50', page: String(nextPage) })
+  const params = new URLSearchParams({ conv_id: props.convId, page_size: String(PAGE_SIZE), page: String(nextPage) })
   if (mode.value === 'text') params.set('q', query.value.trim())
-  else if (mode.value === 'forward') params.set('media_type', 'forward')
+  else if (mode.value === 'voice') params.set('media_type', 'voice')
   else params.set('media_type', includeImages.value && includeVideos.value ? 'media' : includeImages.value ? 'image' : 'video')
   try {
     const res = await fetch(`/api/search?${params}`, { signal })
@@ -213,7 +243,9 @@ async function search(append = false) {
     const data = await res.json()
     if (id !== generation) return
     results.value = append ? [...results.value, ...data.items] : data.items
-    total.value = data.total; page.value = nextPage
+    // 翻页时后端不再数总数，沿用第一页的结果。
+    if (!append) { total.value = data.total; totalCapped.value = !!data.total_capped }
+    page.value = nextPage
   } catch (e) {
     if (id === generation && e.name !== 'AbortError') error.value = '搜索失败，请重试'
   } finally { if (id === generation) loading.value = false }
@@ -286,15 +318,10 @@ function preview(item) {
   return item.content || '[消息]'
 }
 function thumbnail(item) { return isVideo(item) ? getVideoPoster(item) : getImageSrc(item) }
-function forwardSummary(item) {
-  const info = getForwardInfo(item)
-  if (!info) return ''
-  const lines = (info.preview || []).slice(0, 3).map(row => {
-    const name = row.nick_name ? `${row.nick_name}：` : ''
-    return `${name}${row.text || ''}`.trim()
-  }).filter(Boolean)
-  const extra = info.count != null && info.count > lines.length ? `等 ${info.count} 条` : ''
-  return [...lines, extra].filter(Boolean).join('\n')
+// 语音列表里的发送者：优先用后端联表查到的昵称（跟聊天窗口一致），
+// 查不到就退回落库时记的名字，再没有就写「未知」。
+function voiceSender(item) {
+  return item.sender_display_name || item.sender_name || '未知'
 }
 function highlight(text) { return renderRichText(text, query.value.trim()) }
 // 列表项错位浮现：只给前 10 项递增延迟，长列表不会整体被推迟
@@ -343,6 +370,16 @@ function formatTime(ts) {
 .result-content { font-size: 13px; line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere; }
 .result-time { display: block; margin-top: 6px; font-size: 11px; color: var(--text-muted); text-align: left; }
 .result-summary { margin: 6px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-secondary); white-space: pre-line; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+/* 语音列表：第一行是「谁、什么时候发的」，第二行是时长和转写文字。
+   时间靠右对齐，扫一眼就能看出是从新到旧的。 */
+.voice-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+.voice-sender { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-time { margin-left: auto; flex-shrink: 0; font-size: 11px; color: var(--text-muted); }
+.voice-body { display: flex; align-items: center; gap: 6px; font-size: 13px; line-height: 1.5; }
+.voice-icon { width: 14px; height: 14px; flex-shrink: 0; color: var(--accent); }
+.voice-dur { flex-shrink: 0; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.voice-text { min-width: 0; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-muted { color: var(--text-muted); }
 .search-more { display: block; width: 100%; padding: 18px 10px; background: none; border: 0; color: var(--accent); cursor: pointer; font-size: 12px; }
 .search-more-top { border-bottom: 1px solid var(--border-color); }
 .search-more:disabled { color: var(--text-muted); cursor: default; }

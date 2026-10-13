@@ -1,0 +1,119 @@
+{
+  "_comment": "「这行算不算语音」的判定用例。前端 frontend/src/lib/douyinMessage.js 的 isVoiceMsg、阅读端 common/display_rules.py::is_voice_msg、搜索后端 backend/database.py 的 _voice_clause 三处必须给出同样结果，所以用同一份数据一起测（frontend/src/lib/voiceCases.test.js 与 tests/test_search_filters.py）。改判定规则时先改这里。",
+  "_shape": {
+    "name": "用例名",
+    "msg_type": "这一行存在 messages.msg_type 里的值",
+    "content_json": "存在 raw_data 里的 content_json（已解成对象）",
+    "voice": "按规则应当算不算语音"
+  },
+  "cases": [
+    {
+      "name": "带下载地址和时长的正常语音",
+      "msg_type": 0,
+      "content_json": { "resource_url": { "url_list": ["http://x/1"], "duration": "3000" } },
+      "voice": true
+    },
+    {
+      "name": "只有地址、没有时长的语音",
+      "msg_type": 0,
+      "content_json": { "resource_url": { "url_list": ["http://x/1"] } },
+      "voice": true
+    },
+    {
+      "name": "resource_url 是字符串（没有别的线索，不算语音 —— 光有地址不够）",
+      "msg_type": 0,
+      "content_json": { "resource_url": "http://x/voice" },
+      "voice": false
+    },
+    {
+      "name": "resource_url 是字符串但带 voice_wave 标记（算语音）",
+      "msg_type": 0,
+      "content_json": { "resource_url": "http://x/voice", "voice_wave": [1, 2] },
+      "voice": true
+    },
+    {
+      "name": "只有时长、resource_url 是空对象",
+      "msg_type": 0,
+      "content_json": { "resource_url": {}, "duration": 5000 },
+      "voice": true
+    },
+    {
+      "name": "靠 tkey 标记认出来的老语音",
+      "msg_type": 0,
+      "content_json": { "tkey": "abc", "resource_url": { "uri": "u" } },
+      "voice": true
+    },
+    {
+      "name": "靠 voice_wave 标记认出来的老语音",
+      "msg_type": 0,
+      "content_json": { "voice_wave": [1, 2, 3], "resource_url": { "uri": "u" } },
+      "voice": true
+    },
+    {
+      "name": "resource_url.is_voice 为真的语音",
+      "msg_type": 0,
+      "content_json": { "resource_url": { "uri": "u", "is_voice": true } },
+      "voice": true
+    },
+    {
+      "name": "老数据存成 msg_type=1、但带着时长",
+      "msg_type": 1,
+      "content_json": { "duration": 1000, "resource_url": { "uri": "u" } },
+      "voice": true
+    },
+    {
+      "name": "老数据存成 msg_type=1、只带地址（判据收紧，不算语音）",
+      "msg_type": 1,
+      "content_json": { "resource_url": { "url_list": ["http://x/1"] } },
+      "voice": false
+    },
+    {
+      "name": "纯文字",
+      "msg_type": 0,
+      "content_json": { "text": "普通文字" },
+      "voice": false
+    },
+    {
+      "name": "图片（带地址，别当语音）",
+      "msg_type": 3,
+      "content_json": { "resource_url": { "url_list": ["http://x/2"], "is_image": true } },
+      "voice": false
+    },
+    {
+      "name": "带 vid 的视频（也带时长和地址，必须排除）",
+      "msg_type": 1,
+      "content_json": { "resource_url": { "url_list": ["http://x/3"], "duration": "4000" }, "video": { "vid": "vid-1" } },
+      "voice": false
+    },
+    {
+      "name": "aweType 2702 的卡片（带地址，必须排除）",
+      "msg_type": 0,
+      "content_json": { "aweType": 2702, "resource_url": { "url_list": ["http://x/4"] } },
+      "voice": false
+    },
+    {
+      "name": "aweType 2704 且带语音标记（算语音）",
+      "msg_type": 0,
+      "content_json": { "aweType": 2704, "resource_url": { "uri": "u", "is_voice": true } },
+      "voice": true
+    },
+    {
+      "name": "带 vid 的视频但带语音标记（算语音）",
+      "msg_type": 1,
+      "content_json": { "resource_url": { "uri": "u" }, "tkey": "k", "video": { "vid": "v" } },
+      "voice": true
+    },
+    {
+      "name": "只有时长、完全没有 resource_url（不算语音）",
+      "msg_type": 0,
+      "content_json": { "duration": 7000 },
+      "voice": false
+    },
+    {
+      "name": "空正文",
+      "msg_type": 0,
+      "content_json": {},
+      "voice": false
+    }
+  ]
+}

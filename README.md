@@ -40,7 +40,7 @@
 - **语音转文字** — 新消息自动转写，也可一键补充历史语音，支持浏览、搜索和导出
 
 **浏览**（Vue 3 + FastAPI 内置界面）
-- 无限滚动、右侧面板内搜索当前会话，连续月份日历定位当天首条消息、图片／视频按日期分组展示，搜索结果支持「加载更多」及一键跳转
+- 无限滚动、右侧面板内搜索当前会话，连续月份日历定位当天首条消息、图片／视频按日期分组展示、语音按时间从新到旧列成清单（每条显示时间、发送者和时长，点一下跳到聊天记录里的原文位置），搜索结果支持「加载更多」及一键跳转
 - 消息分组、按发送者分左右（自己发的贴右、对方发的贴左；没选过时按聊天记录自动认出本机账号，聊天窗口右上角点「设置我」随时改，群聊里也能选；这个选择按会话各记一份，换会话就回到自动认出来的那个）、引用回复区块、图片点击放大、语音/视频在线播放与转写内容展示
 - **小火人（精灵 AI）单独署名** — 机器人发的消息不跟着会话名走，昵称固定显示「精灵AI」，后面挂一枚灰底小签写它的性格设定（如「腹黑傲娇」）；它发的表情图也跟别的表情一样存到本地，链接过期不会变碎图
 - **实况图点小标就动** — 带「实况」的图片：点一下小标就从头播一次，播完自动淡回封面；电脑上鼠标悬停也会播、移开淡回封面。放大查看时同样有效
@@ -675,7 +675,7 @@ API token 只授权 **GET** 端点——删除操作和控制面板仍需面板�
 | `GET /api/conversations/{conv_id}/screenshot?...` | **消息区间渲染成聊天长图（PNG）**，见下 |
 | `GET /api/v1/sessions` | ChatLab 远程数据源：会话发现（见[自动同步](#4-chatlab-自动同步远程数据源)） |
 | `GET /api/v1/sessions/{conv_id}/messages?format=chatlab&since=&limit=` | ChatLab 远程数据源：分页拉取 ChatLab 格式消息 |
-| `GET /api/search?q=关键词` | 搜索；可加 `conv_id`、`start_time`、`end_time`、`media_type=image/video/media`、`page`、`page_size`，日期／媒体筛选时可省略 q |
+| `GET /api/search?q=关键词` | 搜索；可加 `conv_id`、`start_time`、`end_time`、`media_type=image/video/media/forward/voice`、`page`、`page_size`，日期／媒体筛选时可省略 q。返回的 `total_capped` 为真时，`total` 表示「至少有这么多条」（上限 1000），界面显示成「1000+」 |
 | `GET /api/messages/{msg_id}/forward` | 合并转发详情；返回 `items`、`total`、`available`、`missing`、`complete` |
 | `GET /api/owner` | 本机账号（`uid` + 昵称）：网页端判断「我」的默认值，认不出来时两项都是空串 |
 | `GET /api/users/{uid}` | 用户信息（昵称 / 头像） |
