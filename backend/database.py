@@ -415,10 +415,18 @@ def search_messages(query="", page=1, page_size=50, *, conv_id=None,
     # as well as the local file; malformed/truncated JSON must not break search.
     video = f"""(m.msg_type = 5 OR COALESCE(lower(m.media_local_path) LIKE '%.mp4', 0)
                 OR (m.msg_type IN (1, 3) AND json_extract({cj}, '$.video.vid') IS NOT NULL))"""
+    # 实况图（会动的图）= 一张静态封面 + 一段两三秒的小视频。封面存在
+    # media_local_path 里、小视频存在 live_video_path 里，只有小视频真的下到
+    # 本地了这一列才有值（见 extractor/video_downloader.py），所以它就是
+    # 「这张图是实况图」的唯一可靠依据 —— 前端 getLivePhotoVideo 看的也是它。
+    # 小视频没下下来时这张图退化成普通图片，跟图片筛选里一起出现。
+    live = "COALESCE(m.live_video_path, '') <> ''"
     if media_type == "image":
-        clauses.append(f"m.msg_type = 3 AND NOT {video}")
+        clauses.append(f"m.msg_type = 3 AND NOT {video} AND NOT {live}")
     elif media_type == "video":
-        clauses.append(video)
+        clauses.append(f"{video} AND NOT {live}")
+    elif media_type == "live":
+        clauses.append(live)
     elif media_type == "media":
         clauses.append(f"(m.msg_type = 3 OR {video})")
     elif media_type == "forward":

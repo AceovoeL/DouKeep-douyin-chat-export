@@ -58,6 +58,7 @@
       <div v-if="mode === 'media'" class="media-filters">
         <label><input v-model="includeVideos" type="checkbox" @change="search()" />视频</label>
         <label><input v-model="includeImages" type="checkbox" @change="search()" />图片</label>
+        <label><input v-model="includeLive" type="checkbox" @change="search()" />实况图</label>
       </div>
       <div ref="resultsRef" class="search-scroll" @scroll="onResultsScroll">
         <!-- 图片与视频按时间正序展示（旧上、新下）：更早的一页插在顶部，入口也放顶部 -->
@@ -103,6 +104,16 @@
                 <img v-if="thumbnail(item)" :src="thumbnail(item)" alt="" loading="lazy" @error="e => e.target.style.display = 'none'" />
                 <span v-else class="media-placeholder">{{ isVideo(item) ? '视频' : '图片' }}</span>
                 <span v-if="isVideo(item)" class="media-video-badge">▶ <span>{{ getVideoDuration(item) }}</span></span>
+                <!-- 实况图的「实况」标。这里**故意只画一个静态小标、不放 video 元素**：
+                     鼠标悬停到搜索列表里不会自动播放，只有点了这张图、左侧聊天窗口跳到
+                     那条原文之后，鼠标悬停到那里的实况图上才会播（那边用的是
+                     LivePhoto.vue）。想改成"列表里也能悬停预览"必须先想清楚这一点。 -->
+                <span v-else-if="isLivePhoto(item)" class="media-live-badge">
+                  <svg class="media-live-badge-icon" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+                    <path d="M3.3 1.7 10 6l-6.7 4.3z" />
+                  </svg>
+                  实况
+                </span>
               </button>
             </div>
           </section>
@@ -119,7 +130,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { renderRichText } from '@/lib/highlight'
-import { getImageSrc, getVideoPoster, getVideoDuration, isVideoMsg, isJsonVideo, getProfileCard, getForwardInfo, getVoiceDuration, renderSystemMsg } from '@/lib/douyinMessage'
+import { getImageSrc, getVideoPoster, getVideoDuration, isVideoMsg, isJsonVideo, getProfileCard, getForwardInfo, getVoiceDuration, renderSystemMsg, getLivePhotoVideo } from '@/lib/douyinMessage'
 import { sharePreview } from '@/lib/sharePreview'
 import { calendarMonths, dateBounds, groupMediaByDate, sortMediaChronologically } from '@/lib/search'
 import { readStoredSelfUid } from '@/lib/selfView'
@@ -132,6 +143,9 @@ const mode = ref('text')
 const query = ref('')
 const includeImages = ref(true)
 const includeVideos = ref(true)
+// 实况图（会动的图）是「图片」的一个子集：小视频已下到本地的那些图片。
+// 三个框各自独立，勾哪些就显示哪些（用户 2026-10-13 的选择）。
+const includeLive = ref(true)
 const selectedDate = ref('')
 const months = ref([])
 const results = ref([])
@@ -140,6 +154,9 @@ const total = ref(0)
 // 也不能拿它当「已经全部加载完」的依据（见 hasMore）。
 const totalCapped = ref(false)
 const page = ref(0)
+// 这一页后端实际给了多少条（本地过滤之前）。混合勾选时 results 会比它少，
+// 「还有没有下一页」得看它才准。
+const rawCount = ref(0)
 const loading = ref(false)
 const error = ref('')
 const inputRef = ref(null)
@@ -151,16 +168,52 @@ const headerTitle = computed(() => ({
   date: '按日期查找', media: '图片与视频', voice: '语音',
 }[mode.value] || '查找'))
 const emptyHint = computed(() => {
-  if (mode.value === 'media' && !includeImages.value && !includeVideos.value) return '请选择图片或视频'
+  if (mode.value === 'media' && !includeImages.value && !includeVideos.value && !includeLive.value) {
+    return '请选择图片、视频或实况图'
+  }
   if (mode.value === 'voice') return '当前会话暂无语音'
   return '无匹配结果'
+})
+
+// 「图片与视频」的三个勾选框 → 后端 media_type。
+//
+// 事情比看上去绕一点：实况图在库里**也是一张图片**（封面存在 media_local_path），
+// 后端只会认「小视频已下到本地」（live_video_path 非空）。于是三种勾法各有归属：
+//   * 只勾实况图        → live（后端直接筛）
+//   * 只勾图片          → image（后端已把实况图排除在外）
+//   * 只勾视频          → video
+// 但「图片 + 实况图」「视频 + 实况图」这种混合勾选后端没有对应的一档，就先按
+// 最宽的那一档取回来（media/img+video 一起），再在 mediaFilter 里按勾选项本地过滤。
+const backendMediaType = computed(() => {
+  if (includeLive.value && !includeImages.value && !includeVideos.value) return 'live'
+  if (includeImages.value && !includeVideos.value && !includeLive.value) return 'image'
+  if (includeVideos.value && !includeImages.value && !includeLive.value) return 'video'
+  return 'media'
+})
+// 后端那一档比勾选项宽的时候，用它把多出来的条目滤掉（只勾了实况图就不可能走到
+// 这里 —— 那种情况后端就是准的，滤镜是空操作）。
+const mediaFilter = computed(() => {
+  const img = includeImages.value
+  const video = includeVideos.value
+  const live = includeLive.value
+  // 三档全勾 = media_type=media，后端给的就是想要的。
+  if (img && video && live) return () => true
+  // 只勾了实况图：后端那档已经是 live。
+  if (live && !img && !video) return () => true
+  return item => {
+    if (isLivePhoto(item)) return live
+    if (isVideo(item)) return video
+    return img
+  }
 })
 // 总数被截断时显示成「1000+」；其余情况就是准确数字。
 const totalText = computed(() => totalCapped.value ? `${total.value}+` : String(total.value))
 // 还有没有下一页。总数被截断时它不再是「一共多少条」，只能看这一页有没有装满：
 // 装载满说明后面可能还有，没装满就是到底了。
+// 还有没有下一页。总数被截断时它不再是「一共多少条」，只能看后端这一页有没有
+// 装满 —— 注意看的是 rawCount（过滤前），不是 results.length（见上面的说明）。
 const hasMore = computed(() => totalCapped.value
-  ? results.value.length > 0 && results.value.length % PAGE_SIZE === 0
+  ? rawCount.value > 0 && rawCount.value % PAGE_SIZE === 0
   : results.value.length < total.value)
 let timer = null
 let controller = null
@@ -185,6 +238,7 @@ function beginRequest() {
 }
 function resetResults() {
   results.value = []; total.value = 0; totalCapped.value = false; page.value = 0; error.value = ''
+  rawCount.value = 0
   if (resultsRef.value) resultsRef.value.scrollTop = 0
 }
 function clearQuery() {
@@ -192,7 +246,7 @@ function clearQuery() {
 }
 function reset() {
   cancel(); mode.value = 'text'; query.value = ''; months.value = []; selectedDate.value = ''
-  includeImages.value = true; includeVideos.value = true; resetResults()
+  includeImages.value = true; includeVideos.value = true; includeLive.value = true; resetResults()
   nextTick(() => inputRef.value?.focus())
 }
 watch(() => props.convId, reset)
@@ -223,7 +277,11 @@ function onResultsScroll() {
 async function search(append = false) {
   if (!props.convId) return
   if (mode.value === 'text' && !query.value.trim()) { clearQuery(); return }
-  if (mode.value === 'media' && !includeImages.value && !includeVideos.value) { cancel(); resetResults(); return }
+  if (mode.value === 'media' && !includeImages.value && !includeVideos.value && !includeLive.value) {
+    cancel(); resetResults(); return
+  }
+  // 三个框都不勾时搜不了；只勾一个时后端直接筛，没有任何本地过滤。
+  const filter = mode.value === 'media' ? mediaFilter.value : null
   const { id, signal } = beginRequest()
   const nextPage = append ? page.value + 1 : 1
   if (!append) resetResults()
@@ -236,16 +294,21 @@ async function search(append = false) {
   const params = new URLSearchParams({ conv_id: props.convId, page_size: String(PAGE_SIZE), page: String(nextPage) })
   if (mode.value === 'text') params.set('q', query.value.trim())
   else if (mode.value === 'voice') params.set('media_type', 'voice')
-  else params.set('media_type', includeImages.value && includeVideos.value ? 'media' : includeImages.value ? 'image' : 'video')
+  else params.set('media_type', backendMediaType.value)
   try {
     const res = await fetch(`/api/search?${params}`, { signal })
     if (!res.ok) throw new Error()
     const data = await res.json()
     if (id !== generation) return
-    results.value = append ? [...results.value, ...data.items] : data.items
+    // 混合勾选（比如「图片 + 实况图」）时后端那一档比勾选项宽，这里补一刀。
+    const items = filter ? data.items.filter(filter) : data.items
+    results.value = append ? [...results.value, ...items] : items
     // 翻页时后端不再数总数，沿用第一页的结果。
     if (!append) { total.value = data.total; totalCapped.value = !!data.total_capped }
     page.value = nextPage
+    // 这一页后端给了多少条（过滤前）。判断「还有没有下一页」只能看它：
+    // 本地过滤过的 results 会比这少，拿它去比 PAGE_SIZE 会误判成「到底了」。
+    rawCount.value = data.items.length
   } catch (e) {
     if (id === generation && e.name !== 'AbortError') error.value = '搜索失败，请重试'
   } finally { if (id === generation) loading.value = false }
@@ -301,12 +364,16 @@ function navigate(item) {
   emit('navigate', { ...item, conv_id: props.convId, conv_name: props.convName, search_query: mode.value === 'text' ? query.value.trim() : '' })
 }
 function isVideo(item) { return isVideoMsg(item) || isJsonVideo(item) }
+// 是不是实况图：那要是「图片 + 小视频已经下到本地」两样都成立，跟聊天窗口里的
+// 判断一致（见 lib/douyinMessage.js 的 getLivePhotoVideo）。
+function isLivePhoto(item) { return !isVideo(item) && !!getLivePhotoVideo(item) }
 function preview(item) {
   if (getProfileCard(item)) return `[用户名片] ${getProfileCard(item).name}`
   if (getForwardInfo(item)) return `[聊天记录] ${getForwardInfo(item).title}`
   const share = sharePreview(item)
   if (share) return share
   if (isVideo(item)) return '[视频]'
+  if (isLivePhoto(item)) return '[实况图]'
   if (item.msg_type === 3) return '[图片]'
   if (item.voice_transcription) return item.voice_transcription
   // 系统消息（群通知等）的正文是占位符，显示渲染后的句子：既看得懂，
@@ -394,6 +461,26 @@ function formatTime(ts) {
 .media-tile:hover { transform: scale(1.03); z-index: 1; outline: 2px solid var(--accent); outline-offset: -2px; }
 .media-tile:hover img { transform: scale(1.06); }
 .media-placeholder { font-size: 12px; }
+/* 实况图的「实况」小标：跟聊天窗口里 LivePhoto.vue 那个长得一样（左上角、小三角 +
+   两个字），但它只是块静态文字，不绑任何播放逻辑 —— 悬停不该让它动起来（见模板注释）。 */
+.media-live-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px 2px 5px;
+  font-size: 10px;
+  line-height: 1.35;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 999px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+.media-live-badge-icon { width: 8px; height: 8px; flex-shrink: 0; }
 .media-video-badge { position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: space-between; padding: 4px; color: #fff; background: linear-gradient(transparent, #0009); font-size: 10px; }
 .calendar-scroll { padding: 0 12px 20px; }
 .calendar-month { margin: 18px 0; }

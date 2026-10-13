@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 from tests.conftest import insert_conversation, insert_message
 from backend import database, main
@@ -17,6 +18,12 @@ def seed(temp_db):
     insert_message(conn, 'legacy-video', 'c1', 72, msg_type=3, media_local_path='videos/test.MP4', timestamp=120)
     insert_message(conn, 'json-video', 'c1', 73, msg_type=1, timestamp=120,
                    raw_data=json.dumps({'content_json': json.dumps({'video': {'vid': 'abc'}})}))
+    # 实况图：封面是一张普通图片，小视频已经下到本地（live_video_path 非空）。
+    insert_message(conn, 'live', 'c1', 76, msg_type=3, timestamp=130,
+                   media_local_path='images/live.webp', live_video_path='videos/live.mp4')
+    # 实况图但小视频还没下：这张退化成普通图片，不该出现在实况图里。
+    insert_message(conn, 'live-pending', 'c1', 77, msg_type=3, timestamp=131,
+                   media_local_path='images/pending.webp')
     insert_message(conn, 'forward-new', 'c1', 80, timestamp=200, sender_uid='me',
                    raw_data=json.dumps({'content_json': json.dumps({'aweType': 13600, 'title': '新记录'})}))
     insert_message(conn, 'forward-peer', 'c1', 90, timestamp=180, sender_uid='other',
@@ -95,12 +102,46 @@ def test_search_http_reports_a_capped_total(temp_db, monkeypatch):
 def test_media_search_legacy_and_bad_json(temp_db):
     seed(temp_db)
     rows, total = database.search_messages(conv_id='c1', media_type='image')
-    assert total == 1 and rows[0]['msg_id'] == 'image'
+    # 图片档不含实况图（'live' 那张是小视频下好了的实况图，'live-pending' 那种
+    # 小视频没下好的退化成普通图片，仍然算图片）。
+    assert {m['msg_id'] for m in rows} == {'image', 'live-pending'}
+    assert total == 2
     rows, total = database.search_messages(conv_id='c1', media_type='video')
     assert {m['msg_id'] for m in rows} == {'video', 'legacy-video', 'json-video'}
     assert total == 3
-    assert database.search_messages(conv_id='c1', media_type='media')[1] == 4
+    assert database.search_messages(conv_id='c1', media_type='media')[1] == 6
     assert database.search_messages('%_\\', conv_id='c1')[1] == 1
+
+
+def test_live_photo_search_filters(temp_db):
+    """实况图档只认「小视频已经下到本地」的那些（live_video_path 非空）。
+
+    「实况图」= 一张静态封面 + 一段两三秒的小视频，两段都在本地才算数；小视频
+    还没下好的那张图会退化成普通图片（出现在图片档里），不能混进实况图档。
+    """
+    seed(temp_db)
+    rows, total = database.search_messages(conv_id='c1', media_type='live')
+    assert total == 1
+    assert [m['msg_id'] for m in rows] == ['live']
+    # 列表里要拿到小视频地址才能跳到聊天窗口后播放，这一列不能缺。
+    assert rows[0]['live_video_path'] == 'videos/live.mp4'
+    # 实况图不会同时出现在图片档或视频档里（三个勾选框各自独立）。
+    for media_type in ('image', 'video'):
+        ids = {m['msg_id'] for m in database.search_messages(conv_id='c1', media_type=media_type)[0]}
+        assert 'live' not in ids
+    # 未知类型仍然报错，别把打错的参数当成"没有筛选"。
+    with pytest.raises(ValueError):
+        database.search_messages(conv_id='c1', media_type='livephoto')
+
+
+def test_live_photo_search_over_http(temp_db, monkeypatch):
+    """接口白名单里要有 live，否则前端勾了「实况图」只会收到 422。"""
+    seed(temp_db)
+    monkeypatch.setattr(main, '_get_password_hash', lambda: None)
+    client = TestClient(main.app)
+    body = client.get('/api/search', params={'conv_id': 'c1', 'media_type': 'live'}).json()
+    assert body['total'] == 1
+    assert [m['msg_id'] for m in body['items']] == ['live']
 
 
 def test_forward_search_newest_first(temp_db):
@@ -141,7 +182,8 @@ def test_search_http_validation(temp_db, monkeypatch):
     seed(temp_db)
     monkeypatch.setattr(main, '_get_password_hash', lambda: None)
     client = TestClient(main.app)
-    assert client.get('/api/search', params={'conv_id': 'c1', 'media_type': 'image'}).json()['total'] == 1
+    assert client.get('/api/search', params={'conv_id': 'c1', 'media_type': 'image'}).json()['total'] == 2
+    assert client.get('/api/search', params={'conv_id': 'c1', 'media_type': 'live'}).json()['total'] == 1
     assert client.get('/api/search', params={'conv_id': 'c1', 'media_type': 'forward'}).json()['total'] == 3
     assert client.get('/api/search', params={'start_time': 20, 'end_time': 10}).status_code == 422
     assert client.get('/api/search', params={'media_type': 'invalid'}).status_code == 422

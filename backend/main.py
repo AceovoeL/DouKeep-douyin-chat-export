@@ -296,7 +296,7 @@ def search(
     conv_id: str | None = Query(None),
     start_time: int | None = Query(None, ge=0),
     end_time: int | None = Query(None, ge=0),
-    media_type: Literal["image", "video", "media", "forward", "voice"] | None = Query(None),
+    media_type: Literal["image", "video", "live", "media", "forward", "voice"] | None = Query(None),
 ):
     if start_time is not None and end_time is not None and start_time >= end_time:
         raise HTTPException(422, "结束时间必须晚于开始时间")
