@@ -63,6 +63,18 @@
           ⬆ 加载更早消息
         </div>
         <template v-for="(msg, index) in messages" :key="msg.msg_id">
+        <!-- 时间分隔条：和上一条隔了 5 分钟以上时，在两条消息中间居中补一个
+             完整时间（年月日时分），布局跟系统通知一样。
+             消息本身不画（镜像通知、空载荷）时也不插 —— 没有内容却挂一颗时间
+             会让人以为漏了消息。 -->
+        <div
+          v-if="needsTimeDivider(index) && _shouldShow(msg) && !duplicateSystemIds.has(msg.msg_id)"
+          class="msg-time-divider"
+          role="separator"
+          aria-label="发送时间"
+        >
+          <span>{{ formatFullTime(msg.timestamp) }}</span>
+        </div>
         <div
           v-if="_shouldShow(msg) && !duplicateSystemIds.has(msg.msg_id)"
           class="msg-item"
@@ -729,6 +741,9 @@ import { retryVideoWithTranscode, retryVideoIfUndecodable } from '@/lib/mediaPla
 import { senderDisplayName, selfPickerOptions, pickerOptionLabel } from '@/lib/selfIdentity'
 import { getSpiritAi } from '@/lib/spiritAi'
 import { readStoredSelfUid, writeStoredSelfUid, clearLegacyGlobalSelfUid } from '@/lib/selfView'
+// 消息时间的两处写法（消息下方带年份、时间分隔条带年份）和「隔多久算断开」
+// 都放在 lib/messageTime.js 里，那边能单测。
+import { formatFullTime, exceedsGap } from '@/lib/messageTime'
 
 // 卡片要用的图（项目 assets 里的原图）：火花卡背景 + 火花图标 + 联系门店卡外观 +
 // 「聊天火花」关系卡的两张外观（邀请 / 接受纪念）。
@@ -1064,7 +1079,35 @@ function isGroupStart(index) {
   const prev = messages.value[index - 1]
   if (!prev || _isSystem(cur) || _isSystem(prev)) return true
   if (prev.sender_uid !== cur.sender_uid) return true
-  return Math.abs((cur.timestamp || 0) - (prev.timestamp || 0)) > 300  // >5 min
+  return exceedsGap(prev, cur)  // 隔了 5 分钟以上
+}
+
+// 这条消息前面要不要插一颗居中的完整时间（年月日时分）。
+//
+// 判据和「另起一组」是同一个（exceedsGap），这样「断开」这件事在视觉上只有一种
+// 解释：多出的空隙、重新出现的头像昵称、正中间的时间，三者总是一起出现。
+// 某些消息（镜像通知、空载荷）压根不画，拿它们当基准会算出假的间隔，所以往前找
+// **上一条真正画出来的**消息来比。
+function needsTimeDivider(index) {
+  if (index <= 0) return false
+  const cur = messages.value[index]
+  if (!cur) return false
+  const prev = previousDisplayed(index)
+  if (!prev) return false
+  return exceedsGap(prev, cur)
+}
+
+// 往前找上一条会画出来的消息；找不到（列表开头全是隐藏消息）时返回 null。
+// 隐藏判定必须和模板上的 v-if 保持同一套（duplicateSystemIds + _shouldShow）。
+function previousDisplayed(index) {
+  for (let i = index - 1; i >= 0; i--) {
+    const msg = messages.value[i]
+    if (!msg) continue
+    if (duplicateSystemIds.value.has(msg.msg_id)) continue
+    if (!_shouldShow(msg)) continue
+    return msg
+  }
+  return null
 }
 
 // 单聊的 conv_id 形如 "0:1:uidA:uidB"，群聊是纯数字雪花 ID。
@@ -1800,14 +1843,11 @@ onUnmounted(() => {
   playingVoiceId.value = null
 })
 
+// 每条消息下方的时间。以前只写「时分」和「10月14日 时分」，翻跨年的记录时
+// 分不清是哪年；用户 2026-10-14 要求带上年份，所以一律写完整时间
+// （年月日时分），和两颗消息中间那颗时间分隔条用同一个格式。
 function formatTime(ts) {
-  if (!ts) return ''
-  const d = new Date(ts * 1000)
-  const now = new Date()
-  const isToday = d.toDateString() === now.toDateString()
-  const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  if (isToday) return time
-  return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) + ' ' + time
+  return formatFullTime(ts)
 }
 
 // 渲染一段消息正文：搜索词高亮 + 本地有图的文字式表情换成图片。
@@ -2121,6 +2161,30 @@ watch(() => props.jumpToSeq, async (seq) => {
 .msg-item.msg-system {
   display: block;
   max-width: 100%;
+}
+/* 时间分隔条：两条消息隔了 5 分钟以上时，把下面那条消息的完整时间（年月日时分）
+   摆在正中间，外观和系统通知一样（浅底圆角小胶囊），一眼能看出「这里断开了」。
+   下面那条消息若是另起一组（group-start）会带上 16px 上边距，这里把它吃回来，
+   否则分隔条 + 头像昵称两段空隙叠在一起，断开会显得过分夸张。
+   用 :has(+ ...) 而不是只吃空隙：没有 group-start 时还要保留一点上下呼吸。 */
+.msg-time-divider {
+  text-align: center;
+  margin: var(--msg-group-gap) 0;
+  user-select: none;
+}
+.msg-time-divider:has(+ .msg-item.group-start) {
+  margin-top: 6px;
+  margin-bottom: calc(var(--msg-group-gap) * -1 + var(--msg-gap));
+}
+.msg-time-divider > span {
+  display: inline-block;
+  max-width: 100%;
+  padding: 4px 14px;
+  border-radius: 999px;
+  background: var(--system-bg);
+  color: var(--system-text-color);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 /* 提示行：左槽位 / 居中的提示 / 右槽位（或下方按钮）。两侧等宽，所以提示永远是正中间。 */
 .msg-system-line {
