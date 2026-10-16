@@ -6,6 +6,7 @@ the Playwright scraper so it can be tested without a logged-in browser.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import defaultdict
 from dataclasses import dataclass
@@ -21,6 +22,11 @@ AUDIO_RECOGNITION_API = (
 # return status_code=5/"参数不合法").
 VOICE_RECOGNITION_BATCH_SIZE = 10
 VOICE_MESSAGE_TYPE = 7
+
+#: 本机 uuid（识别接口的必填字段）最多试几次、每次间隔多久秒。
+#: 这个值是从页面的 React fiber 里翻出来的，页面刚加载完时可能还没有，所以短重试。
+SELF_UUID_ATTEMPTS = 3
+SELF_UUID_RETRY_DELAY = 1.5
 
 
 class VoiceRequestError(ValueError):
@@ -805,6 +811,29 @@ class VoiceTranscriber:
             )
         return _text(value)
 
+    async def _lookup_self_uuid(self) -> tuple[str, str]:
+        """本机 uuid，拿不到时重试几次；返回 ``(uuid, 拿不到时的原因)``。
+
+        这个值是从页面里的 React fiber 里翻出来的（见 ``SELF_UUID_EVAL_SCRIPT``），
+        而 fiber 要等页面把组件树挂起来才有 —— 刚进 /chat 那一下很可能还没就位。
+        以前只试一次：拿不到就把这一轮所有语音都记成 ``skipped``、一条请求都不发，
+        白跑一趟，要等下一轮采集才补。所以这里短重试几次（每次间隔一小会儿），
+        页面正常的话几十毫秒内就能拿到。
+        """
+        last_error = "missing self uuid"
+        for attempt in range(SELF_UUID_ATTEMPTS):
+            try:
+                found = await self._get_self_uuid()
+            except Exception as exc:               # 页面崩了 / evaluate 超时
+                last_error = f"self uuid lookup failed: {exc}"
+            else:
+                if found:
+                    return found, ""
+                last_error = "missing self uuid"
+            if attempt + 1 < SELF_UUID_ATTEMPTS:
+                await asyncio.sleep(SELF_UUID_RETRY_DELAY)
+        return "", last_error
+
     @staticmethod
     def _fallback_message_id(row: Any) -> str:
         value = _text(_value(row, "msg_id"))
@@ -892,12 +921,7 @@ class VoiceTranscriber:
 
         self_uuid = _text(self_uuid)
         if not self_uuid:
-            try:
-                self_uuid = await self._get_self_uuid()
-            except Exception as exc:
-                missing_uuid_error = f"self uuid lookup failed: {exc}"
-            else:
-                missing_uuid_error = "missing self uuid"
+            self_uuid, missing_uuid_error = await self._lookup_self_uuid()
         else:
             missing_uuid_error = "missing self uuid"
         requests: list[VoiceRecognitionRequest] = []

@@ -150,3 +150,34 @@ def test_api_token_authorizes_pull_endpoints(temp_db, monkeypatch):
                       headers={"Authorization": "Bearer tok123"}).status_code == 200
     assert client.get(f"/api/v1/sessions/{CONV}/messages",
                       headers={"Authorization": "Bearer tok123"}).status_code == 200
+
+
+def test_members_take_the_first_seen_nickname(temp_db, monkeypatch):
+    """成员名取每个发送者 seq 最小的那条消息，与文件导出的「第一次出现」一致。
+
+    这里用显式子查询取那一行；以前的 ``SELECT sender_name, MIN(seq) ... GROUP BY``
+    靠 SQLite 对 bare column 的未定义行为，换个查询计划就可能换成后面那条的昵称。
+
+    用没有 users 表记录的 sender_uid：``sender_display_name`` 的优先级是
+    users 表 → owner → 消息里的 sender_name，只有前者都空着才会走到要测的那一格。
+    """
+    import extractor.models as models
+    client = _seed(temp_db, n=1, monkeypatch=monkeypatch)
+    conn = models.get_db()
+    # 333 的第一条消息没有昵称，第二条才补上 —— 不能因为首条为空就显示空名字
+    insert_message(conn, "srv_a", CONV, 2, sender_uid="333", sender_name=None,
+                  content="先无昵称", msg_type=1, timestamp=T0 + 2)
+    insert_message(conn, "srv_b", CONV, 3, sender_uid="333", sender_name="后来改名",
+                  content="再有昵称", msg_type=1, timestamp=T0 + 3)
+    # 444 的昵称在第一条和最后一条之间变了：应该认第一条那个
+    insert_message(conn, "srv_c", CONV, 4, sender_uid="444", sender_name="旧昵称",
+                  content="第一次", msg_type=1, timestamp=T0 + 1)
+    insert_message(conn, "srv_d", CONV, 5, sender_uid="444", sender_name="新昵称",
+                  content="最后一次", msg_type=1, timestamp=T0 + 4)
+    conn.commit()
+    conn.close()
+    body = client.get(f"/api/v1/sessions/{CONV}/messages",
+                      params={"since": 0, "limit": 100}).json()
+    names = {m["platformId"]: m["accountName"] for m in body["members"]}
+    assert names.get("333") == "后来改名"
+    assert names.get("444") == "旧昵称"

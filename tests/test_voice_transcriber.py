@@ -148,6 +148,94 @@ def test_build_request_keeps_missing_skey_as_an_empty_payload_field():
     assert request.as_payload()["skey"] == ""
 
 
+# ── 本机 uuid 的短重试 ────────────────────────────────────────────────────
+#
+# uuid 是从页面的 React fiber 里翻出来的，页面刚加载完时可能还没有。以前只试一次：
+# 拿不到就把这一轮所有语音记成 skipped、一条请求都不发，白跑一趟。现在短重试几次，
+# 页面正常的话很快就能拿到。
+
+class FlakyUuidPage(FakePage):
+    """前 ``empty_times`` 次 uuid 查询返回空，之后给出真值。"""
+
+    def __init__(self, empty_times, response_factory=None):
+        super().__init__(response_factory or (lambda payload: {"status": 200, "body": {}}))
+        self.empty_times = empty_times
+        self.uuid_lookups = 0
+
+    async def evaluate(self, script, arg=None):
+        if "mainOptions" in script:
+            self.uuid_lookups += 1
+            return "" if self.uuid_lookups <= self.empty_times else "self-uid"
+        return await super().evaluate(script, arg)
+
+
+def _voice_row():
+    return {
+        "msg_id": "srv_1001",
+        "conv_id": "c1",
+        "seq": 1,
+        "msg_type": 0,
+        "sender_uid": "222",
+        "raw_data": _voice_raw("1001"),
+    }
+
+
+class FakeConn:
+    """转写结果只会写进数据库；这几个用例只关心「发了几次请求」，用假的即可。"""
+
+    def execute(self, *args, **kwargs):
+        return self
+
+    def commit(self):
+        pass
+
+
+def test_self_uuid_lookup_retries_before_giving_up(monkeypatch):
+    from extractor import voice_transcriber as vt
+    # 别让测试真的睡 1.5 秒
+    monkeypatch.setattr(vt, "SELF_UUID_RETRY_DELAY", 0)
+
+    page = FlakyUuidPage(empty_times=2)
+    transcriber = VoiceTranscriber(page, FakeConn())
+    stats = asyncio.run(transcriber.transcribe_rows([_voice_row()], "123456"))
+
+    assert page.uuid_lookups == 3          # 试满三次，第三次拿到
+    assert stats["skipped"] == 0
+    assert stats["requested"] == 1         # 恢复过来了，没有整批放弃
+    assert page.calls                      # 真的发出了识别请求
+
+
+def test_self_uuid_lookup_gives_up_and_marks_rows_skipped(monkeypatch):
+    from extractor import voice_transcriber as vt
+    monkeypatch.setattr(vt, "SELF_UUID_RETRY_DELAY", 0)
+
+    class AlwaysEmpty(FlakyUuidPage):
+        async def evaluate(self, script, arg=None):
+            if "mainOptions" in script:
+                self.uuid_lookups += 1
+                return ""
+            return await super().evaluate(script, arg)
+
+    page = AlwaysEmpty(empty_times=0)
+    transcriber = VoiceTranscriber(page, FakeConn())
+    stats = asyncio.run(transcriber.transcribe_rows([_voice_row()], "123456"))
+
+    assert page.uuid_lookups == vt.SELF_UUID_ATTEMPTS
+    assert stats["requested"] == 0 and stats["skipped"] == 1
+    assert not page.calls                  # 拿不到 uuid 就不浪费请求
+
+
+def test_self_uuid_first_try_is_not_retried(monkeypatch):
+    """一次就拿到时不要多打两次页面（正常路径不能变慢）。"""
+    from extractor import voice_transcriber as vt
+    monkeypatch.setattr(vt, "SELF_UUID_RETRY_DELAY", 0)
+
+    page = FlakyUuidPage(empty_times=0)
+    transcriber = VoiceTranscriber(page, FakeConn())
+    asyncio.run(transcriber.transcribe_rows([_voice_row()], "123456"))
+    assert page.uuid_lookups == 1
+
+
 def test_build_request_always_uses_recognition_message_type_seven():
     message = {
         "msg_id": "m1",

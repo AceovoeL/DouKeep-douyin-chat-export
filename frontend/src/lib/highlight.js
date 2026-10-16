@@ -13,14 +13,32 @@ export function escapeHtml(text) {
   return String(text ?? '').replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch])
 }
 
+const MARK = (inner) => `<mark style="${MARK_STYLE}">${inner}</mark>`
+
 // Return `text` as HTML with case-insensitive matches of `query` wrapped in a
-// <mark>. HTML is escaped first, then the query is regex-escaped. When there is
-// no query (or no text) the escaped text is returned unchanged.
+// <mark>. When there is no query (or no text) the escaped text is returned
+// unchanged.
+//
+// ⚠️ 必须**先在原文上定位、再逐段转义**，不能先转义再搜索：转义会把 `&` 变成
+// `&amp;`、`<` 变成 `&lt;`，之后拿用户原样输入的 query 去搜转义后的字符串，就会
+// 命中这些实体的内部 —— 实测搜 `&` 会在 `&amp;` 里也包一个 <mark>（一个真 `&` 出
+// 三个黄条），搜 `amp` 会把 `&amp;` 的实体名高亮出来，搜 `<` 则一个都命中不了。
+// 这里是搜索高亮，命中位置必须落在用户真正看到的字符上。
 export function highlightText(text, query) {
-  const safe = escapeHtml(text || '')
-  if (!text || !query) return safe
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return safe.replace(new RegExp(`(${escaped})`, 'gi'), `<mark style="${MARK_STYLE}">$1</mark>`)
+  const source = text === null || text === undefined ? '' : String(text)
+  if (!source || !query) return escapeHtml(source)
+
+  // query 也要转义成正则可用的形式；它本身不含要展示的 HTML，所以单独 re-escape。
+  const pattern = new RegExp(String(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+  let out = ''
+  let last = 0
+  for (const match of source.matchAll(pattern)) {
+    out += escapeHtml(source.slice(last, match.index))
+    out += MARK(escapeHtml(match[0]))
+    last = match.index + match[0].length
+  }
+  if (last < source.length) out += escapeHtml(source.slice(last))
+  return out
 }
 
 // 文字式表情：[钱]、[憨笑] 这种记号（抖音把表情存成文字），长度有限，不会跨行。

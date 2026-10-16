@@ -74,19 +74,31 @@ def _members(conn, conv_id: str, conv_type: int, conv_name: str | None,
              users_map: dict, owner_uid: str, owner_name: str) -> list[dict]:
     """Every distinct sender in the conversation, named by the exporter's rule.
 
-    MIN(seq) makes SQLite pick sender_name from each sender's earliest message,
-    matching the file exporter's "first occurrence" behavior.
+    昵称取每个发送者 **seq 最小的那条消息** 上的 ``sender_name``，跟文件导出的
+    「第一次出现」行为一致。这里用相关子查询显式取那一行，而不是
+    ``SELECT sender_name, MIN(seq) ... GROUP BY sender_uid`` —— 后者靠的是
+    SQLite 对 bare column 的未定义行为（「恰好取到首行」），换查询计划就可能漂移，
+    而 ChatLab 的成员名错了会一路带到同步结果里。
     """
     rows = conn.execute(
-        "SELECT sender_uid, sender_name, MIN(seq) FROM messages "
-        "WHERE conv_id = ? AND sender_uid != '' GROUP BY sender_uid",
+        """SELECT m.sender_uid AS sender_uid,
+                  (SELECT m2.sender_name FROM messages m2
+                    WHERE m2.conv_id = m.conv_id
+                      AND m2.sender_uid = m.sender_uid
+                      AND m2.sender_name IS NOT NULL
+                      AND m2.sender_name != ''
+                    ORDER BY m2.seq ASC LIMIT 1) AS first_sender_name,
+                  MIN(m.seq) AS first_seq
+             FROM messages m
+            WHERE m.conv_id = ? AND m.sender_uid != ''
+            GROUP BY m.sender_uid""",
         (conv_id,),
     ).fetchall()
     return [
         {
             "platformId": r["sender_uid"],
             "accountName": sender_display_name(
-                r["sender_uid"], r["sender_name"], users_map=users_map,
+                r["sender_uid"], r["first_sender_name"], users_map=users_map,
                 owner_uid=owner_uid, owner_name=owner_name,
                 conv_type=conv_type, conv_name=conv_name,
             ),

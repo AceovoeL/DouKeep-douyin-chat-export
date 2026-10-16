@@ -19,6 +19,37 @@ describe('highlightText', () => {
   it('returns escaped text when there is no query', () => {
     expect(highlightText('<hi>', '')).toBe('&lt;hi&gt;')
   })
+
+  // 命中位置必须落在用户真正看到的字符上，不能落在 HTML 实体里面。
+  // 以前是先整段转义再搜索，`&` 转成 `&amp;` 之后拿用户输入的 `&` 去搜，就会命中
+  // 实体的内部：一个真 `&` 冒出三个黄条；搜 `amp` 会把实体名也高亮；搜 `<` 一个都搜不到。
+  it('highlights a real ampersand, not the escaped entity', () => {
+    const mark = (inner) => `<mark style="background:var(--highlight);color:#000;padding:0 2px;border-radius:2px">${inner}</mark>`
+    expect(highlightText('A & B', '&')).toBe(`A ${mark('&amp;')} B`)
+    expect(highlightText('A & B', 'amp')).toBe('A &amp; B')     // amp 是实体名，不该命中
+    expect(highlightText('A & B', '<')).toBe('A &amp; B')       // 原文里没有 <
+    expect(highlightText('a<b', '<')).toBe(`a${mark('&lt;')}b`) // 原文里真有 <
+  })
+
+  it('does not turn HTML entity names into search hits', () => {
+    // 原文里是 `&` 一个字符，转义后变成 `&amp;` 五个字符：搜 `amp` 不该命中那段实体名。
+    expect(highlightText('a&b', 'amp')).toBe('a&amp;b')
+    // 原文里真有 `amp` 三个字符时照旧命中（用户看到的就是这三个字）。
+    expect(highlightText('amp', 'amp')).toBe(
+      '<mark style="background:var(--highlight);color:#000;padding:0 2px;border-radius:2px">amp</mark>')
+    // 原文里真有 `&amp;` 五个字符（用户看到的文本）时也照旧命中；开头的 `&` 照旧转义
+    expect(highlightText('&amp;', 'amp')).toBe(
+      '&amp;<mark style="background:var(--highlight);color:#000;padding:0 2px;border-radius:2px">amp</mark>;')
+  })
+
+  it('keeps the query escaped so regex metacharacters are literal', () => {
+    expect(highlightText('a.b', '.')).toBe(
+      'a<mark style="background:var(--highlight);color:#000;padding:0 2px;border-radius:2px">.</mark>b')
+    expect(highlightText('a+b', '+')).toBe(
+      'a<mark style="background:var(--highlight);color:#000;padding:0 2px;border-radius:2px">+</mark>b')
+    expect(highlightText('100% 完成', '%')).toBe(
+      '100<mark style="background:var(--highlight);color:#000;padding:0 2px;border-radius:2px">%</mark> 完成')
+  })
 })
 
 describe('renderRichText', () => {

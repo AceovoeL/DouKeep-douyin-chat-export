@@ -817,6 +817,8 @@ const imgLoading = computed(() => (isStatic.value ? 'eager' : 'lazy'))
 // 用两个交替的动画名，保证连续两次换内容都能重新播放（同名动画不会自动重启）。
 const enterEpoch = ref(0)
 let enterTimer = null
+// 等 listRef 就绪的那个轮询定时器（见 onMounted / onUnmounted 里的 clearTimeout）
+let bindTimer = null
 const enterClass = computed(() => {
   if (!enterEpoch.value) return ''
   return enterEpoch.value % 2 ? 'msg-enter-a' : 'msg-enter-b'
@@ -1824,15 +1826,20 @@ onMounted(() => {
   if (isStatic.value) return
   // 延迟绑定，等 listRef 准备好
   const tryBind = () => {
+    bindTimer = null
     if (listRef.value) {
       listRef.value.addEventListener('scroll', onListScroll, { passive: true })
     } else {
-      setTimeout(tryBind, 200)
+      bindTimer = setTimeout(tryBind, 200)
     }
   }
   tryBind()
 })
 onUnmounted(() => {
+  // 轮询 listRef 的那个定时器也要停：组件在 listRef 就绪前就被卸载时，它会一直
+  // 空转，甚至在某次 listRef 又变成非空时往一个已经没人管的元素上挂 scroll 监听
+  // （onUnmounted 早就执行过，没人再摘得下来）。
+  clearTimeout(bindTimer)
   if (listRef.value) {
     listRef.value.removeEventListener('scroll', onListScroll)
   }

@@ -44,6 +44,45 @@ def test_next_cron_run_specific_hour_in_future():
     assert ts > datetime.now().timestamp()
 
 
+# ── day-of-month 与 day-of-week 同时受限时是「或」（crontab(5)） ────────────
+#
+# 这两个字段都被写小（都不是 `*`）时，标准 cron 的语义是「或者」：`0 0 1 * 1`
+# 意思是「每月 1 日 **或** 每周一」。以前按「与」算，会被一直推迟到「某个月 1 日
+# 刚好是周一」—— 实测 `0 0 1 * 1` 从 2025-02-01（周六）起要等到 2025-09-01，
+# 中间七个月的执行机会全丢了。下面几条锁住正确语义，也锁住只有一边受限的老行为。
+
+@pytest.mark.parametrize("cron, base, expected", [
+    # 每月 1 日 或 每周一：2 月 1 日是周六，最近的命中是 2 月 3 日（周一）
+    ("0 0 1 * 1", datetime(2025, 2, 1, 12, 0), datetime(2025, 2, 3, 0, 0)),
+    # 每月 13 日 或 每周五：2 月 1 日是周六，最近的命中是 2 月 7 日（周五）
+    ("0 0 13 * 5", datetime(2025, 2, 1, 12, 0), datetime(2025, 2, 7, 0, 0)),
+    # 多值组合：1 日 / 15 日，周一 / 周四 → 2 月 2 日（周日）之后最近的是 2 月 3 日（周一）
+    ("0 20 1,15 * 1,4", datetime(2025, 2, 2, 12, 0), datetime(2025, 2, 3, 20, 0)),
+    # 只有星期受限（day-of-month 是 *）：仍只认周一
+    ("0 20 * * 1", datetime(2025, 1, 1, 12, 0), datetime(2025, 1, 6, 20, 0)),
+    # 只有日期受限（day-of-week 是 *）：仍只认每月 1 日
+    ("0 20 1 * *", datetime(2025, 1, 2, 12, 0), datetime(2025, 2, 1, 20, 0)),
+    # 两个都是 *：每天都行
+    ("0 20 * * *", datetime(2025, 1, 1, 12, 0), datetime(2025, 1, 1, 20, 0)),
+    # 月份也受限：2025 内没有 1 月 1 日是周一的组合，要到 2026 年
+    ("0 0 1 1 *", datetime(2025, 6, 1, 12, 0), datetime(2026, 1, 1, 0, 0)),
+])
+def test_day_of_month_and_day_of_week_are_or_not_and(cron, base, expected):
+    parsed = s.parse_cron(cron)
+    assert parsed is not None
+    assert datetime.fromtimestamp(s.next_cron_run(parsed, now=base.timestamp())) == expected
+
+
+def test_both_restricted_cron_only_returns_matching_days():
+    """连续取 60 次，每次都必须是「1 日」或「周一」之一（不能有漏、也不能多）。"""
+    parsed = s.parse_cron("0 0 1 * 1")
+    moment = datetime(2025, 1, 1, 0, 0).timestamp()
+    for _ in range(60):
+        moment = s.next_cron_run(parsed, now=moment)
+        hit = datetime.fromtimestamp(moment)
+        assert hit.day == 1 or hit.weekday() == 0, hit
+
+
 # ── 勾选式时间表 ⇄ cron（面板「定时」一栏用） ─────────────────────────────
 #
 # 下面这 8 组就是面板上最常用的那几种说法，cron 那列是「用户勾出来的效果」。

@@ -208,10 +208,10 @@ const mediaFilter = computed(() => {
 })
 // 总数被截断时显示成「1000+」；其余情况就是准确数字。
 const totalText = computed(() => totalCapped.value ? `${total.value}+` : String(total.value))
-// 还有没有下一页。总数被截断时它不再是「一共多少条」，只能看这一页有没有装满：
-// 装载满说明后面可能还有，没装满就是到底了。
 // 还有没有下一页。总数被截断时它不再是「一共多少条」，只能看后端这一页有没有
 // 装满 —— 注意看的是 rawCount（过滤前），不是 results.length（见上面的说明）。
+// 会话实际条数恰好压在后端上限（1000）上时，最后一页仍是满的，会多发一次必定为空的
+// 请求才停；那一次只是本地 SQLite 数一下，代价可以忽略，不值得为它加状态。
 const hasMore = computed(() => totalCapped.value
   ? rawCount.value > 0 && rawCount.value % PAGE_SIZE === 0
   : results.value.length < total.value)

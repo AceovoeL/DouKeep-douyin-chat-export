@@ -339,6 +339,45 @@ def test_media_mount_serves_plain_files_without_a_flag(tmp_path):
     assert stat_result is not None
 
 
+def _media_app(directory):
+    """A real ASGI app hosting the /media mount (TestClient needs one)."""
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    return Starlette(routes=[Mount("/media", app=media_files.MediaStaticFiles(directory=str(directory)))])
+
+
+@pytest.fixture
+def media_client(tmp_path, monkeypatch):
+    from starlette.testclient import TestClient
+    (tmp_path / "videos").mkdir()
+    payload = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64
+    (tmp_path / "videos" / "a.mp4").write_bytes(payload)
+    # 转码一定失败（没有 ffmpeg）：按设计要降级成发原文件，不能 500。
+    monkeypatch.setattr(media_transcode, "find_ffmpeg", lambda: None)
+    client = TestClient(_media_app(tmp_path))
+    client.payload = payload          # 测试里断言「发回来的就是原件」
+    return client
+
+
+def test_media_mount_tc_flag_falls_back_to_the_original_instead_of_500(media_client):
+    """``?tc=1`` must never raise: a failed transcode serves the file as-is.
+
+    ``_transcoded_response`` 曾经被误写成模块函数 ``_card_icon_source`` 里的嵌套函数，
+    于是类上没有这个方法：浏览器解不了 HEVC、按前端逻辑带 ``?tc=1`` 重试时，整个请求
+    以 ``AttributeError`` 收场、回 500 —— 「H.265 按需兼容」整条路等于断的。这条用例
+    就是把那条路径真打一遍（以前只测了查询串解析，没人碰过挂载本身）。
+    """
+    assert media_client.get("/media/videos/a.mp4").status_code == 200
+    response = media_client.get("/media/videos/a.mp4?tc=1")
+    assert response.status_code == 200
+    assert response.content == media_client.payload
+
+
+def test_media_mount_tc_flag_on_missing_file_is_a_plain_404(media_client):
+    assert media_client.get("/media/videos/nope.mp4?tc=1").status_code == 404
+
+
 # ── the conversion itself (needs a real ffmpeg) ───────────────────────────
 
 requires_ffmpeg = pytest.mark.skipif(

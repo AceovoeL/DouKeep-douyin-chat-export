@@ -65,32 +65,15 @@ class MediaStaticFiles(StaticFiles):
         # 同一个链接对应的文件是固定的，交给浏览器缓存一天；文件本身不会变。
         return FileResponse(target, headers={"Cache-Control": "public, max-age=86400"})
 
-
-def _as_posix_path(path) -> str:
-    """把 Starlette 给的路径统一成用 ``/`` 分隔，好和常量比较（Windows 上是 ``\\``）。"""
-    return str(path).replace("\\", "/")
-
-
-def _card_icon_source(scope) -> str:
-    """从 ``?url=`` 取出原链接（只接受抖音图床的 http(s) 地址）。"""
-    query = scope.get("query_string") or b""
-    if not query:
-        return ""
-    try:
-        params = parse_qs(query.decode("latin-1"), keep_blank_values=True)
-    except (UnicodeDecodeError, ValueError):
-        return ""
-    raw = (params.get("url") or [""])[0]
-    if not raw:
-        return ""
-    try:
-        url = raw.encode("latin-1").decode("utf-8")
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        url = raw
-    return url if card_icons.is_allowed_icon_url(url) else ""
-
     async def _transcoded_response(self, path):
-        """Serve a cached H.264 rendition, or ``None`` to fall through."""
+        """Serve a cached H.264 rendition, or ``None`` to fall through.
+
+        它**必须是类方法**：``get_response`` 里是用 ``self._transcoded_response``
+        调的。以前这段被误写成了 ``_card_icon_source``（模块级函数）内部的嵌套函数，
+        于是类上根本没有这个方法，任何带 ``?tc=1`` 的请求都会以 ``AttributeError``
+        收场、回 500 —— 而那正是浏览器解不了 HEVC 时前端的自救重试（见 MessageList
+        模板里的 ``@error="onVideoError"``），等于「按需兼容」整条路是断的。
+        """
         try:
             full_path, stat_result = await run_in_threadpool(self.lookup_path, path)
         except (HTTPException, OSError, ValueError):
@@ -114,6 +97,30 @@ def _card_icon_source(scope) -> str:
                      os.path.basename(full_path), os.path.basename(rendition),
                      result.get("seconds", 0.0), result.get("encoder", "?"))
         return FileResponse(rendition, media_type="video/mp4")
+
+
+def _as_posix_path(path) -> str:
+    """把 Starlette 给的路径统一成用 ``/`` 分隔，好和常量比较（Windows 上是 ``\\``）。"""
+    return str(path).replace("\\", "/")
+
+
+def _card_icon_source(scope) -> str:
+    """从 ``?url=`` 取出原链接（只接受抖音图床的 http(s) 地址）。"""
+    query = scope.get("query_string") or b""
+    if not query:
+        return ""
+    try:
+        params = parse_qs(query.decode("latin-1"), keep_blank_values=True)
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    raw = (params.get("url") or [""])[0]
+    if not raw:
+        return ""
+    try:
+        url = raw.encode("latin-1").decode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        url = raw
+    return url if card_icons.is_allowed_icon_url(url) else ""
 
 
 def _wants_transcode(scope) -> bool:

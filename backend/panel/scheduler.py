@@ -85,6 +85,9 @@ def next_cron_run(parsed: list, now: float | None = None) -> float:
     ``now`` 是「从哪一刻往后找」（epoch 秒），不传就按此刻算。算出来的时刻总是
     **严格晚于** ``now``，所以刚好卡在某一分钟上不会被再算一次 —— 定时任务跑完
     立刻重排下一次时，靠的就是这一点，不然会原地转圈。
+
+    日期那一段按 crontab(5) 的语义判定（见 :func:`_day_matches`）：day-of-month 与
+    day-of-week 都受限时取「或」，不是一个与一个。
     """
     base = time.time() if now is None else now
     current = datetime.fromtimestamp(base)
@@ -92,9 +95,9 @@ def next_cron_run(parsed: list, now: float | None = None) -> float:
     minutes, hours, days, months, dow = parsed
     # Search up to 366 days ahead
     for _ in range(366 * 24 * 60):
-        if (cursor.month in months and cursor.day in days and
-                cursor.hour in hours and cursor.minute in minutes and
-                cursor.weekday() in convert_dow(dow)):
+        if (cursor.month in months and
+                _day_matches(cursor, days, dow) and
+                cursor.hour in hours and cursor.minute in minutes):
             return cursor.timestamp()
         cursor += timedelta(minutes=1)
     return base + 86400  # fallback: 1 day
@@ -104,6 +107,46 @@ def convert_dow(cron_dow: set) -> set:
     """Convert cron day-of-week (0=Sun) to Python weekday (0=Mon)."""
     mapping = {0: 6, 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
     return {mapping.get(d, d) for d in cron_dow}
+
+
+#: 五个字段各自的全量集合，用来判断「这个字段是不是被写小了」。
+#: 标准 cron 的日期规则要区分这两种情况，所以拿解析结果和全量比一比。
+_FULL_FIELDS = (
+    frozenset(range(0, 60)),   # minute
+    frozenset(range(0, 24)),   # hour
+    frozenset(range(1, 32)),   # day of month
+    frozenset(range(1, 13)),   # month
+    frozenset(range(0, 7)),    # day of week
+)
+
+
+def _restricted(values: set, index: int) -> bool:
+    """这个字段是不是被写小了（不是 ``*`` 的全量）。"""
+    return values != _FULL_FIELDS[index]
+
+
+def _day_matches(cursor: datetime, days: set, dow: set) -> bool:
+    """标准 cron 的日期判定。
+
+    crontab(5) 的规定（本仓库 ``tests/test_panel_scheduler.py`` 的注释也写明了这条
+    语义）：
+
+    * day-of-month 和 day-of-week **都是** ``*`` → 任何一天都行；
+    * 只有一边被写小 → 只认那一边；
+    * **两边都被写小 → 取「或」**（每月 1 日**或者**每周一，各自都算命中）。
+
+    这里以前按「与」算，于是 ``0 0 1 * 1`` 会被一直推迟到「某个月 1 日刚好是周一」
+    才执行 —— 实测从 2025-02-01（周六）起要等到 2025-09-01，晚了整整七个月，中间
+    四个月的周一和每月 1 日全都没跑。勾选式时间表产不出这种两边都受限的表达式
+    （``cron_to_simple_rule`` 会拒绝它），受影响的只有用户在高级输入框手写的 cron。
+    """
+    day_restricted = _restricted(days, 2)
+    dow_restricted = _restricted(dow, 4)
+    day_hit = cursor.day in days
+    dow_hit = cursor.weekday() in convert_dow(dow)
+    if day_restricted and dow_restricted:
+        return day_hit or dow_hit
+    return day_hit and dow_hit
 
 
 # ── 定时检查更新：和「定时采集」同一套勾选式时间表 ────────────────────────
