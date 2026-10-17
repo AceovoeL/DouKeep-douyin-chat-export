@@ -43,7 +43,13 @@
   --sidebar-width: 300px;
   --msg-list-pad-x: 22px;
   --msg-list-pad-y: 18px;
-  --share-card-width: 320px;
+  /* 分享视频 / 图文卡的宽度：卡里的字号、缩略图和留白都按它换算，
+     面板「外观 → 查看器布局与字号 → 分享视频卡宽度」可调 */
+  --share-video-card-width: 180px;
+  /* 分享评论卡（评论 + 分割线 + 缩略图）单独一套宽度，同样整张卡等比缩放 */
+  --share-comment-card-width: 240px;
+  /* 群邀请 / 豆包 / 评论引用这些小卡的宽度：不跟随上面两项 */
+  --share-card-width: 180px;
   --emoji-max-size: 240px;
   /* 文字式表情（[钱]、[憨笑]）的图片大小：1em = 跟所在气泡的文字一样大，
      控制面板的「外观 → 查看器布局」可以按倍数调 */

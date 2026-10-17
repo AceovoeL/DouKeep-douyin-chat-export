@@ -80,6 +80,87 @@ describe('share detection + extraction', () => {
   })
 })
 
+// 分享卡的作者头像 / 作品 id / 封面宽高。三类线上样本的字段位置不一样：
+// 800、10500 的头像在 content_thumb，11054 在动态排版卡的 top_bottom_content_left。
+// 链接、昵称与作品 id 均已脱敏。
+describe('share card author and commenter metadata', () => {
+  it('aweType=800 的作者头像在 content_thumb', () => {
+    const info = getShareInfo(withCj({
+      aweType: 800, content_name: '示例作者', content_title: '示例标题',
+      cover_url: { url_list: ['https://example.com/cover.jpeg'] },
+      content_thumb: { url_list: ['https://example.com/avatar.jpeg'] },
+    }))
+    expect(info.authorAvatar).toBe('https://example.com/avatar.jpeg')
+    expect(info.isCommentShare).toBe(false)
+  })
+
+  it('aweType=10500 是分享评论：评论者昵称 + 评论正文 + 作品标题和 media_type', () => {
+    const info = getShareInfo(withCj({
+      aweType: 10500, comment_user_name: '示例评论者', comment: '示例评论',
+      aweme_title: '视频标题', media_type: 2,
+      cover_url: { url_list: ['https://example.com/cover.jpeg'] },
+      content_thumb: { url_list: ['https://example.com/commenter-avatar.jpeg'] },
+    }))
+    expect(info.isCommentShare).toBe(true)
+    expect(info.commentUser).toBe('示例评论者')
+    // 评论者头像不再画在卡片上（参考图里只有一行灰字），但字段仍然给出来。
+    expect(info.authorAvatar).toBe('https://example.com/commenter-avatar.jpeg')
+    expect(info.mediaType).toBe(2)
+    // 评论卡的文字是视频标题，不是评论本身。
+    expect(info.title).toBe('视频标题')
+  })
+
+  it('封面宽高从 cover_width / cover_height 或排版卡的默认尺寸取', () => {
+    const flat = getShareInfo(withCj({
+      aweType: 800, content_title: '示例标题',
+      cover_url: { url_list: ['https://example.com/cover.jpeg'] },
+      cover_width: 576, cover_height: 1128,
+    }))
+    expect([flat.coverWidth, flat.coverHeight]).toEqual([576, 1128])
+    const layout = getShareInfo(withCj({
+      aweType: 11054,
+      im_dynamic_patch: {
+        default_width: 168, default_height: 264,
+        raw_data: JSON.stringify({ top: { content: 'https://example.com/cover.jpeg' } }),
+      },
+    }))
+    expect([layout.coverWidth, layout.coverHeight]).toEqual([168, 264])
+    // 什么都没有就留 0，前端等图片加载完再量。
+    expect(getShareInfo(withCj({ aweType: 800 })).coverWidth).toBe(0)
+  })
+
+  it('11054 动态排版卡的作者头像在 top_bottom_content_left', () => {
+    const layout = {
+      top: { content: 'https://example.com/cover.jpeg' },
+      top_bottom_top: { content: '示例标题' },
+      top_bottom_content_right: { content: '示例作者' },
+      top_bottom_content_left: { content: 'https://example.com/author-avatar.webp', type: 'im-image' },
+    }
+    const info = getShareInfo(withCj({
+      aweType: 11054, im_dynamic_patch: { raw_data: JSON.stringify(layout) },
+    }))
+    expect(info.authorAvatar).toBe('https://example.com/author-avatar.webp')
+    expect(info.author).toBe('示例作者')
+    expect(info.cover).toBe('https://example.com/cover.jpeg')
+  })
+
+  it('im-icon 占位的 top_bottom_content_left 不会被当成头像', () => {
+    const layout = { top_bottom_content_left: { content: 'place', type: 'im-icon' } }
+    const info = getShareInfo(withCj({
+      aweType: 800, im_dynamic_patch: { raw_data: JSON.stringify(layout) },
+    }))
+    expect(info.authorAvatar).toBe('')
+  })
+
+  it('只在 schema 里带作品 id 时也能点开官方链接', () => {
+    const info = getShareInfo(withCj({
+      aweType: 11054,
+      schema: 'aweme://aweme/detail/7000000000000000001?enter_from=chat',
+    }))
+    expect(info.itemId).toBe('7000000000000000001')
+  })
+})
+
 // 群公告（type_code=1004）：结构取自线上样本（消息 id、群名已脱敏），群"示例群聊"。
 describe('群公告', () => {
   const real = () => withCj({

@@ -128,6 +128,35 @@ def test_easter_redpack_card_width_is_clamped():
     assert clamp("280") == 200  # 字符串不接受，回默认
 
 
+def test_share_card_widths_are_clamped():
+    """分享视频卡默认 180px、分享评论卡默认 240px，各自在 140–360px 之间等比缩放。"""
+    defaults = appearance.default_appearance()["viewer"]["layout"]
+    assert defaults["shareVideoCardWidth"] == 180
+    assert defaults["shareCommentCardWidth"] == 240
+
+    def clamp(key, value):
+        return appearance.normalize_appearance(
+            {"viewer": {"layout": {key: value}}}
+        )["viewer"]["layout"][key]
+
+    for key, default in (("shareVideoCardWidth", 180), ("shareCommentCardWidth", 240)):
+        low, high = appearance.VIEWER_LAYOUT_DEFAULTS[key][1:]
+        assert clamp(key, 9999) == high
+        assert clamp(key, 10) == low
+        assert clamp(key, 300) == 300
+        assert clamp(key, "300") == default  # 字符串不接受，回默认
+
+
+def test_legacy_single_share_card_width_moves_to_video_card():
+    """旧配置只有一个 shareCardWidth：读进来时当作分享视频卡宽度，评论卡用默认值。"""
+    layout = appearance.normalize_appearance(
+        {"viewer": {"layout": {"shareCardWidth": 300}}}
+    )["viewer"]["layout"]
+    assert layout["shareVideoCardWidth"] == 300
+    assert layout["shareCommentCardWidth"] == 240
+    assert "shareCardWidth" not in layout
+
+
 def test_theme_choice_is_validated():
     assert appearance.normalize_appearance({"panel": {"theme": "ocean"}})["panel"]["theme"] == "ocean"
     assert appearance.normalize_appearance({"panel": {"theme": "neon"}})["panel"]["theme"] == "dark"
@@ -156,6 +185,13 @@ def test_only_the_important_options_are_exposed():
     assert {"accentHover", "scrollbarThumb", "priceColor"}.isdisjoint(defaults["viewer"]["colors"])
     assert {"senderFontSize", "timeFontSize", "groupGap", "listPadX", "listPadY"}.isdisjoint(
         defaults["viewer"]["layout"])
+    # 气泡内边距、气泡最大宽度、面板卡片内边距都不再开放
+    assert {"bubblePadX", "bubblePadY", "bubbleMaxWidthPct"}.isdisjoint(
+        defaults["viewer"]["layout"])
+    assert "cardPadding" not in defaults["panel"]["layout"]
+    # 分享视频卡和分享评论卡是两个独立设置项
+    assert {"shareVideoCardWidth", "shareCommentCardWidth"} <= set(defaults["viewer"]["layout"])
+    assert "shareCardWidth" not in defaults["viewer"]["layout"]
     # 卡片尺寸只留"图片最大边长"，并且并进了查看器尺寸组
     assert defaults["viewer"]["layout"]["imageMaxSize"] == 240
     assert "cards" not in defaults["viewer"]

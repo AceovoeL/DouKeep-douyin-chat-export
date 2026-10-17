@@ -402,7 +402,11 @@ export function getShareInfo(msg) {
   // "View once" text (aweType=10401, card-less) is not a share at all: never let
   // its body leak into the card title/comment fields.
   if (isViewOnceContentJson(source)) {
-    return { title: '', author: '', cover: '', itemId: '', productUrl: '', comment: '', commentUser: '', commentImg: '' }
+    return {
+      title: '', author: '', cover: '', itemId: '', productUrl: '',
+      comment: '', commentUser: '', commentImg: '',
+      authorAvatar: '', isCommentShare: false, coverWidth: 0, coverHeight: 0, mediaType: 0,
+    }
   }
 
   // Dynamic layouts are also used by video/photo/live-photo shares.
@@ -432,6 +436,20 @@ export function getShareInfo(msg) {
     : (awe === 700 ? source.text : '') || ''
   const commentUser = source.comment_user_name || ''
   const commentImg = firstMediaUrl(source.comment_url)
+  // 头像有两处来源：
+  //   · 800 / 10500 这类「卡片 + 作者」载荷，content_thumb 存的就是 100×100 头像
+  //     （10500 里是评论者的头像）；
+  //   · 11054 这类动态排版卡，头像在 top_bottom_content_left 的 im-image 上。
+  // 两处都取，谁有就用谁；没有就用昵称首字兜底（见 ShareCard.vue）。
+  const contentThumb = firstMediaUrl(source.content_thumb)
+  const layoutAvatarNode = layout.top_bottom_content_left
+  const layoutAvatarCandidate = layoutAvatarNode && typeof layoutAvatarNode === 'object'
+    ? layoutAvatarNode.content
+    : layoutAvatarNode
+  const layoutAvatar = typeof layoutAvatarCandidate === 'string'
+    // im-icon 的 content 是 "place" 这类图标名，不是地址，别当头像。
+    ? (/^https?:\/\//i.test(layoutAvatarCandidate) ? layoutAvatarCandidate : '')
+    : firstMediaUrl(layoutAvatarCandidate)
   const relatedVideo = source.related_share_video || {}
   // 封面可能藏在 cover_url / cover_info / content_thumb 等不同字段里。
   const cover = firstMediaUrl(source.cover_url)
@@ -444,15 +462,34 @@ export function getShareInfo(msg) {
   const plainContent = (msg.content && !msg.content.startsWith('{'))
     ? msg.content.replace(/^(?:分享\[[^\]]+\][:：]\s*|\[分享[^\]]*\]\s*)/, '')
     : ''
+  // 有的动态排版卡只在 schema 里带作品 id（aweme://aweme/detail/123…），
+  // 顶层的 itemId 是空的 —— 从 schema 再兜一层，卡片才点得动。
+  const schemaItemId = String(source.schema || '').match(/aweme\/detail\/(\d+)/)?.[1] || ''
+  // 封面宽高决定分享视频卡的形状：800 给 cover_width / cover_height，11054 这类
+  // 排版卡给 default_width / default_height。都没有就留 0，前端等图片加载完再量。
+  const coverSize = [
+    [source.cover_width, source.cover_height],
+    [source.cover_url?.width, source.cover_url?.height],
+    [source.im_dynamic_patch?.default_width, source.im_dynamic_patch?.default_height],
+    [source.aweme_info?.cover_url?.width, source.aweme_info?.cover_url?.height],
+  ].find(([w, h]) => Number(w) > 0 && Number(h) > 0) || [0, 0]
   return {
     title: layoutText(layout.top_bottom_top) || layoutText(layout.content_top) || source.content_title || source.aweme_title || source.poi_name || source.push_detail || source.bottom_card_title || extractShareTitle(msg.content) || plainContent || '',
     author: layoutText(layout.top_bottom_content_right) || source.content_name || '',
     cover: imageUrl(layout.top?.content) || cover || imageUrl(source.aweme_info?.cover_url),
-    itemId: String(source.itemId || source.item_id || source.aweme_info?.item_id || relatedVideo.itemId || ''),
+    itemId: String(source.itemId || source.item_id || source.aweme_info?.item_id || relatedVideo.itemId || schemaItemId || ''),
     productUrl,
     comment,
     commentUser,
     commentImg,
+    isCommentShare,
+    // 动态排版卡的头像优先；其余卡片（800）的头像在 content_thumb 里。
+    authorAvatar: layoutAvatar || contentThumb,
+    // 封面原始宽高（0 表示载荷里没给）。
+    coverWidth: Number(coverSize[0]) || 0,
+    coverHeight: Number(coverSize[1]) || 0,
+    // 10500 的 media_type：1 视频、2 图文，分享评论卡下方那句「来自视频」用它。
+    mediaType: Number(source.media_type) || 0,
   }
 }
 

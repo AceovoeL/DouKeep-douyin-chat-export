@@ -35,9 +35,15 @@ def cfg_file(tmp_path, monkeypatch):
     monkeypatch.setattr(cf, "PID_FILE", str(tmp_path / "cloudflared" / "tunnel.pid"))
     access.invalidate_cache()
     cf.JOB.reset()
+    cf.UPDATE_JOB.reset()
+    cf.invalidate_version_cache()
+    cf.invalidate_latest_cache()
     yield path
     access.invalidate_cache()
     cf.JOB.reset()
+    cf.UPDATE_JOB.reset()
+    cf.invalidate_version_cache()
+    cf.invalidate_latest_cache()
 
 
 @pytest.fixture
@@ -1131,3 +1137,436 @@ def test_verify_public_url_still_says_no_when_the_page_is_not_ours(cfg_file, mon
 
     assert cf.verify_public_url("chat.example.com") is False
 
+
+
+# ── 更新 cloudflared ──
+
+def _update_target() -> str:
+    return os.path.join(paths.CLOUDFLARED_DIR, cf.binary_name())
+
+
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+@pytest.fixture
+def fake_update(cfg_file, monkeypatch):
+    """把更新流程会碰网络 / 起进程的地方换成可控的假实现。"""
+    os.makedirs(paths.CLOUDFLARED_DIR, exist_ok=True)
+    target = _update_target()
+    with open(target, "wb") as handle:
+        handle.write(b"old")
+    access.set_public_access(enabled=True, domain="example.com")
+
+    calls = {"stopped": 0, "restarted": 0, "downloads": 0, "restart_ok": True}
+    state = {"running": True}
+
+    monkeypatch.setattr(cf, "binary_path", lambda: target)
+    # 检查阶段默认问到一个新版本（个别测试再改成「已是最新」或「问不到」）
+    monkeypatch.setattr(cf, "latest_version", lambda *, refresh=False: "2026.10.1")
+
+    def fake_version(binary):
+        if not binary or not os.path.isfile(binary):
+            return ""
+        data = _read_bytes(binary)
+        if data == b"new":
+            return "2026.10.1"
+        if data == b"old":
+            return "2026.10.0"
+        return ""
+
+    monkeypatch.setattr(cf, "version_of", fake_version)
+
+    def fake_download(progress=None, cancelled=None, *, promote=True):
+        calls["downloads"] += 1
+        part = cf._partial_path()
+        os.makedirs(os.path.dirname(part), exist_ok=True)
+        with open(part, "wb") as handle:
+            handle.write(b"new")
+        if progress:
+            progress(len(b"new"), len(b"new"))
+        return part
+
+    monkeypatch.setattr(cf, "download_binary", fake_download)
+    monkeypatch.setattr(cf, "tunnel_running", lambda: state["running"])
+    monkeypatch.setattr(cf, "read_pid", lambda: 4321)
+    monkeypatch.setattr(cf, "pid_alive", lambda pid: False)
+
+    def fake_stop():
+        calls["stopped"] += 1
+        state["running"] = False
+        return True
+
+    monkeypatch.setattr(cf, "stop_tunnel", fake_stop)
+
+    def fake_restart(*, wait=False, log=None):
+        calls["restarted"] += 1
+        current = _read_bytes(target) if os.path.isfile(target) else b""
+        if current == b"new":
+            state["running"] = True
+            return calls["restart_ok"]
+        state["running"] = True
+        return True
+
+    monkeypatch.setattr(cf, "restart_tunnel", fake_restart)
+    return calls
+
+
+def _run_update() -> dict:
+    ok, code = cf.start_update()
+    assert ok, code
+    thread = cf.UPDATE_JOB._thread
+    if thread:
+        thread.join(timeout=10)
+    return cf.UPDATE_JOB.snapshot()
+
+
+def test_update_flow_downloads_verifies_swaps_and_restarts(cfg_file, fake_update):
+    target = _update_target()
+    snapshot = _run_update()
+    assert snapshot["state"] == "done", snapshot
+    assert snapshot["from_version"] == "2026.10.0"
+    assert snapshot["to_version"] == "2026.10.1"
+    assert snapshot["was_running"] is True
+    assert snapshot["restarted"] is True
+    assert all(value == "done" for value in snapshot["steps"].values())
+    assert fake_update["stopped"] == 1
+    assert fake_update["restarted"] == 1
+    assert _read_bytes(target) == b"new"
+    assert not os.path.exists(cf._backup_path())
+    assert not os.path.exists(cf._staging_path())
+
+
+def test_update_keeps_the_old_binary_when_downloading_fails(cfg_file, fake_update, monkeypatch):
+    target = _update_target()
+
+    def fail(*args, **kwargs):
+        raise cf.TunnelError("download_failed", "network down")
+
+    monkeypatch.setattr(cf, "download_binary", fail)
+    snapshot = _run_update()
+    assert snapshot["state"] == "error"
+    assert snapshot["error"] == "download_failed"
+    assert fake_update["stopped"] == 0
+    assert fake_update["restarted"] == 0
+    assert _read_bytes(target) == b"old"
+
+
+def test_update_checks_first_and_skips_the_download_when_already_latest(
+        cfg_file, fake_update, monkeypatch):
+    """先查再下：线上最新版就是当前版本时，一个字节都不下、隧道也不停。"""
+    target = _update_target()
+    monkeypatch.setattr(cf, "latest_version", lambda *, refresh=False: "2026.10.0")
+    snapshot = _run_update()
+    assert snapshot["state"] == "done"
+    assert snapshot["unchanged"] is True
+    assert snapshot["latest"] == "2026.10.0"
+    assert snapshot["to_version"] == "2026.10.0"
+    assert fake_update["downloads"] == 0          # 关键：没有下载
+    assert fake_update["stopped"] == 0
+    assert fake_update["restarted"] == 0
+    assert _read_bytes(target) == b"old"
+    assert not os.path.exists(cf._staging_path())
+
+
+def test_update_still_reports_unchanged_when_the_download_turns_out_the_same(
+        cfg_file, fake_update, monkeypatch):
+    """检查时看到新版、下载回来却和当前一样（版本号没变 / 续传到旧文件）：也不替换。"""
+    target = _update_target()
+    monkeypatch.setattr(cf, "version_of",
+                        lambda binary: "2026.10.0" if binary and os.path.isfile(binary) else "")
+    snapshot = _run_update()
+    assert snapshot["state"] == "done"
+    assert snapshot["unchanged"] is True
+    assert fake_update["downloads"] == 1
+    assert fake_update["stopped"] == 0
+    assert fake_update["restarted"] == 0
+    assert _read_bytes(target) == b"old"
+    assert not os.path.exists(cf._staging_path())
+
+
+def test_update_downloads_when_the_version_check_cannot_reach_github(
+        cfg_file, fake_update, monkeypatch):
+    """问不到最新版（断网 / 限流）时不能把人挡住：照旧下载，由下载后的核对兜底。"""
+    monkeypatch.setattr(cf, "latest_version", lambda *, refresh=False: "")
+    snapshot = _run_update()
+    assert snapshot["state"] == "done"
+    assert snapshot["latest"] == ""
+    assert fake_update["downloads"] == 1
+    assert _read_bytes(_update_target()) == b"new"
+
+
+def test_update_rejects_an_older_download_without_touching_the_tunnel(cfg_file, fake_update, monkeypatch):
+    target = _update_target()
+
+    def fake_version(binary):
+        if not binary or not os.path.isfile(binary):
+            return ""
+        return "2026.9.0" if _read_bytes(binary) == b"new" else "2026.10.0"
+
+    monkeypatch.setattr(cf, "version_of", fake_version)
+    snapshot = _run_update()
+    assert snapshot["state"] == "error"
+    assert snapshot["error"] == "update_failed"
+    assert fake_update["stopped"] == 0
+    assert fake_update["restarted"] == 0
+    assert _read_bytes(target) == b"old"
+
+
+def test_update_rolls_back_when_the_new_version_will_not_connect(cfg_file, fake_update):
+    fake_update["restart_ok"] = False
+    target = _update_target()
+    snapshot = _run_update()
+    assert snapshot["state"] == "error"
+    assert snapshot["error"] == "restart_failed"
+    assert snapshot["restarted"] is True          # 旧版本已经重新连上
+    assert fake_update["stopped"] == 2          # 原隧道 + 没能连上的新版本
+    assert fake_update["restarted"] == 2
+    assert _read_bytes(target) == b"old"
+    assert not os.path.exists(cf._backup_path())
+
+
+def test_update_does_not_restart_a_tunnel_that_was_not_running(cfg_file, fake_update, monkeypatch):
+    monkeypatch.setattr(cf, "tunnel_running", lambda: False)
+    target = _update_target()
+    snapshot = _run_update()
+    assert snapshot["state"] == "done"
+    assert snapshot["was_running"] is False
+    assert fake_update["stopped"] == 0
+    assert fake_update["restarted"] == 0
+    assert _read_bytes(target) == b"new"
+
+
+def test_update_refuses_while_mounting(cfg_file):
+    lan_on_with_password(cfg_file)
+    cf.JOB._set(state="running")
+    ok, code = cf.start_update()
+    assert ok is False
+    assert code == "busy"
+
+
+def test_mount_refuses_while_updating(cfg_file):
+    lan_on_with_password(cfg_file)
+    cf.UPDATE_JOB._set(state="running")
+    ok, status = cf.start_mount("example.com")
+    assert ok is False
+    assert status["job"]["error"] == "updating"
+
+
+def test_public_status_exposes_the_cloudflared_version_and_update_job(cfg_file):
+    lan_on_with_password(cfg_file)
+    status = cf.mount_status()
+    assert status["update"]["state"] == "idle"
+    assert set(status["update"]["steps"]) == set(cf.UPDATE_STEPS)
+    assert isinstance(status["cloudflared"]["version"], str)
+    assert status["cloudflared"]["latest"] == ""
+    assert status["cloudflared"]["update_available"] is False
+
+
+def test_version_of_reads_the_cloudflared_version(monkeypatch):
+    class _Proc:
+        returncode = 0
+        stdout = "cloudflared version 2026.10.1 (built 2026-10-15T00:00 UTC)\n"
+        stderr = ""
+
+    monkeypatch.setattr(cf.subprocess, "run", lambda *args, **kwargs: _Proc())
+    assert cf.version_of("cf") == "2026.10.1"
+
+
+def test_version_of_gives_up_on_a_broken_binary(monkeypatch):
+    def boom(*args, **kwargs):
+        raise OSError("nope")
+
+    monkeypatch.setattr(cf.subprocess, "run", boom)
+    assert cf.version_of("cf") == ""
+
+
+def test_current_version_is_cached_until_the_file_changes(cfg_file, monkeypatch, tmp_path):
+    binary = tmp_path / "cloudflared"
+    binary.write_bytes(b"x")
+    monkeypatch.setattr(cf, "binary_path", lambda: str(binary))
+    calls = []
+
+    monkeypatch.setattr(cf, "version_of", lambda path: calls.append(path) or "2026.10.0")
+    cf.invalidate_version_cache()
+    assert cf.current_version() == "2026.10.0"
+    assert cf.current_version() == "2026.10.0"
+    assert len(calls) == 1
+    binary.write_bytes(b"xy")                     # size + mtime 都变了
+    assert cf.current_version() == "2026.10.0"
+    assert len(calls) == 2
+
+
+def test_latest_version_reads_the_tag_from_the_github_api(monkeypatch):
+    class _Response:
+        def read(self):
+            return json.dumps({"tag_name": "2026.10.1"}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cf.urllib.request, "urlopen",
+                        lambda request, timeout=None: _Response())
+    assert cf._latest_from_api() == "2026.10.1"
+
+
+def test_latest_version_falls_back_to_the_download_redirect(monkeypatch):
+    """接口被限流 / 挡住时，从下载地址的重定向里读版本（只读 1 个字节）。"""
+    class _Response:
+        def read(self, size=1):
+            return b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _Opener:
+        def __init__(self, recorder):
+            self.recorder = recorder
+
+        def open(self, request, timeout=None):
+            self.recorder.urls.append(
+                "https://github.com/cloudflare/cloudflared/releases/download/"
+                "2026.10.1/cloudflared-windows-amd64.exe")
+            return _Response()
+
+    monkeypatch.setattr(cf, "_latest_from_api", lambda: "")
+    monkeypatch.setattr(cf.urllib.request, "build_opener",
+                        lambda handler: _Opener(handler))
+    assert cf._fetch_latest_version() == "2026.10.1"
+
+
+def test_latest_version_is_cached_until_it_expires_or_is_refreshed(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cf, "_fetch_latest_version",
+                        lambda: calls.append(1) or "2026.10.1")
+    cf.invalidate_latest_cache()
+    assert cf.latest_version() == "2026.10.1"
+    assert cf.latest_version() == "2026.10.1"
+    assert len(calls) == 1                      # 第二次直接吃缓存，不联网
+    assert cf.latest_version(refresh=True) == "2026.10.1"
+    assert len(calls) == 2
+
+
+def test_latest_version_survives_github_being_unreachable(monkeypatch):
+    def boom(*args, **kwargs):
+        raise OSError("no network")
+
+    monkeypatch.setattr(cf.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(cf.urllib.request, "build_opener",
+                        lambda handler: (_ for _ in ()).throw(OSError("no network")))
+    cf.invalidate_latest_cache()
+    assert cf.latest_version() == ""
+    assert cf.cached_latest_version() == ""
+
+
+def test_update_check_compares_the_two_versions(cfg_file, monkeypatch):
+    monkeypatch.setattr(cf, "current_version", lambda: "2026.10.0")
+    monkeypatch.setattr(cf, "latest_version", lambda *, refresh=False: "2026.10.1")
+    assert cf.update_check() == {"current": "2026.10.0", "latest": "2026.10.1",
+                                 "outdated": True, "unknown": False}
+
+
+def test_update_check_does_not_claim_an_update_when_versions_match(cfg_file, monkeypatch):
+    monkeypatch.setattr(cf, "current_version", lambda: "2026.10.1")
+    monkeypatch.setattr(cf, "latest_version", lambda *, refresh=False: "2026.10.1")
+    info = cf.update_check()
+    assert info["outdated"] is False
+    assert info["unknown"] is False
+
+
+def test_check_endpoint_reports_the_versions_without_downloading(client, monkeypatch):
+    monkeypatch.setattr(cf, "current_version", lambda: "2026.10.0")
+    monkeypatch.setattr(cf, "latest_version", lambda *, refresh=False: "2026.10.1")
+    body = client.get("/panel/api/public/cloudflared/check?refresh=1").json()
+    assert body["ok"] is True
+    assert body["current"] == "2026.10.0"
+    assert body["latest"] == "2026.10.1"
+    assert body["outdated"] is True
+    assert body["payload"]["cloudflared"]["version"] == "2026.10.0"
+
+
+def test_download_can_keep_the_part_for_an_update(cfg_file, monkeypatch):
+    payload = b"x" * (cf._MIN_BINARY_SIZE + 10)
+
+    class _Response:
+        status = 200
+        headers = {"Content-Length": str(len(payload))}
+
+        def read(self, size):
+            if getattr(self, "_done", False):
+                return b""
+            self._done = True
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cf.urllib.request, "urlopen",
+                        lambda request, timeout=None: _Response())
+    result = cf.download_binary(promote=False)
+    assert result == cf._partial_path()
+    assert os.path.isfile(result)
+    assert not os.path.exists(_update_target())
+
+
+def test_update_endpoints_start_and_cancel(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(cf, "start_update",
+                        lambda: calls.append("start") or (True, ""))
+    monkeypatch.setattr(cf, "cancel_update",
+                        lambda: calls.append("cancel") or cf.mount_status())
+
+    body = client.post("/panel/api/public/cloudflared/update").json()
+    assert body["ok"] is True
+    assert calls == ["start"]
+    body = client.post("/panel/api/public/cloudflared/update/cancel").json()
+    assert body["ok"] is True
+    assert calls == ["start", "cancel"]
+
+
+def test_restart_tunnel_prefers_the_saved_config_uuid(cfg_file, monkeypatch):
+    access.set_public_access(enabled=True, domain="example.com")
+    running = {"value": False}
+    monkeypatch.setattr(cf, "configured_tunnel_uuid", lambda: "12345678-1234-1234-1234-123456789abc")
+    monkeypatch.setattr(cf, "tunnel_id", lambda name: (_ for _ in ()).throw(
+        AssertionError("本机 config 有 UUID 时不该再问云端")))
+    monkeypatch.setattr(cf, "has_binary", lambda: True)
+    monkeypatch.setattr(cf, "write_config", lambda uuid, domain: "config.yml")
+    monkeypatch.setattr(cf, "tunnel_running", lambda: running["value"])
+    monkeypatch.setattr(cf, "start_tunnel", lambda name: running.__setitem__("value", True) or 123)
+    assert cf.restart_tunnel() is True
+
+
+def test_wait_connected_can_report_to_a_custom_sink(cfg_file, monkeypatch):
+    os.makedirs(os.path.dirname(paths.CLOUDFLARED_LOG), exist_ok=True)
+    with open(paths.CLOUDFLARED_LOG, "w", encoding="utf-8") as handle:
+        handle.write("Registered tunnel connection connIndex=0\n")
+    monkeypatch.setattr(cf, "tunnel_running", lambda: True)
+    seen = []
+    assert cf.wait_connected(0, timeout=1, log=seen.append) is True
+    assert any("Registered tunnel connection" in line for line in seen)
+
+
+def test_panel_wires_the_cloudflared_update_button_and_modal():
+    html = open(PANEL_HTML, encoding="utf-8").read()
+    for needle in ("publicCfRow", "publicCfUpdateBtn", "cfUpdateModal",
+                   "openCloudflaredUpdateModal", "startCfUpdatePoll",
+                   "renderCfUpdateModal", "renderCfUpdateLog",
+                   "checkCloudflaredVersion", "cloudflared/check",
+                   "pubCfChecking", "pubCfVersionNew",
+                   "pubCfUpdateStepDownload", "pubCfUpdateDoneText",
+                   "cfUpdateErrorKey", "pubCfUpdateTitle", "pubCfUpdateConfirm"):
+        assert needle in html, needle
+    assert "pubCfUpdateBtn: '更新 cloudflared'" in html
+    assert "pubCfUpdateBtn: 'Update cloudflared'" in html
+    assert "return ['check', 'download', 'replace', 'restart', 'verify']" in html

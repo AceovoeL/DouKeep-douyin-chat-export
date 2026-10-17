@@ -82,7 +82,6 @@ PANEL_COLOR_DEFAULTS: dict[str, str] = {
 # name -> (默认值, 最小, 最大)
 PANEL_LAYOUT_DEFAULTS: dict[str, tuple[float, float, float]] = {
     "radius": (14.0, 0.0, 32.0),
-    "cardPadding": (22.0, 8.0, 48.0),
     "sidebarWidth": (224.0, 160.0, 360.0),
     "fontScale": (1.0, 0.8, 1.5),
     "shadow": (1.0, 0.0, 3.0),  # 0 无 / 1 轻 / 2 中 / 3 重
@@ -118,9 +117,6 @@ VIEWER_LAYOUT_DEFAULTS: dict[str, tuple[float, float, float]] = {
     "listFontSize": (13.0, 10.0, 18.0),
     "lineHeight": (1.55, 1.2, 2.0),
     "bubbleRadius": (14.0, 0.0, 32.0),
-    "bubblePadX": (13.0, 4.0, 24.0),
-    "bubblePadY": (9.0, 4.0, 24.0),
-    "bubbleMaxWidthPct": (74.0, 40.0, 95.0),
     "avatarSize": (36.0, 20.0, 64.0),
     "messageGap": (3.0, 0.0, 24.0),
     "sidebarWidth": (300.0, 200.0, 420.0),
@@ -131,6 +127,11 @@ VIEWER_LAYOUT_DEFAULTS: dict[str, tuple[float, float, float]] = {
     # 「彩蛋福袋」卡的宽度：卡片按固定比例（509×763）画，字的位置和字号都由宽度
     # 换算出来，所以改这一项就是整张卡等比放大缩小。默认 200 就是原来的观感。
     "easterCardWidth": (200.0, 120.0, 360.0),
+    # 分享视频 / 图文卡的宽度：卡里的字号、缩略图、留白都按宽度的百分比换算，
+    # 所以这一项等于整张卡的缩放。默认 180 比以前的 320 收敛一些。
+    "shareVideoCardWidth": (180.0, 140.0, 360.0),
+    # 分享评论卡（评论 + 分割线 + 缩略图）是另一张卡，宽度单独调，默认 240。
+    "shareCommentCardWidth": (240.0, 140.0, 360.0),
     # 气泡文字的字间距（px）：0＝原样，压缩字距填负数
     "letterSpacing": (0.0, -1.0, 8.0),
     # 文字式表情（[钱]、[憨笑] 这种被换成小图片的记号）的偏移：相对消息字号的
@@ -303,6 +304,12 @@ def normalize_appearance(raw, warnings: list[str] | None = None) -> dict:
     }
 
     viewer_raw = source.get("viewer") if isinstance(source.get("viewer"), dict) else {}
+    # 旧配置只有一个 shareCardWidth（视频卡和评论卡共用），读进来时并到视频卡，
+    # 免得升级后用户原来的宽度设置突然失效；评论卡用默认值。
+    layout_raw = viewer_raw.get("layout")
+    if isinstance(layout_raw, dict) and "shareVideoCardWidth" not in layout_raw \
+            and "shareCardWidth" in layout_raw:
+        layout_raw = {**layout_raw, "shareVideoCardWidth": layout_raw["shareCardWidth"]}
     viewer = {
         "theme": _norm_choice(
             viewer_raw.get("theme"), VIEWER_THEMES, defaults["viewer"]["theme"],
@@ -312,7 +319,7 @@ def normalize_appearance(raw, warnings: list[str] | None = None) -> dict:
             viewer_raw.get("colors"), VIEWER_COLOR_DEFAULTS, "viewer.colors", warnings,
         ),
         "layout": _norm_number_group(
-            viewer_raw.get("layout"), VIEWER_LAYOUT_DEFAULTS, "viewer.layout", warnings,
+            layout_raw, VIEWER_LAYOUT_DEFAULTS, "viewer.layout", warnings,
         ),
     }
 

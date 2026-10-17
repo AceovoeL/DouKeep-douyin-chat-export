@@ -1261,6 +1261,30 @@ async def cancel_mount():
     return _public_status_payload()
 
 
+@control_router.get("/api/public/cloudflared/check")
+async def check_cloudflared_update(refresh: bool = False):
+    """先问一句有没有新版本（不下 50MB）：面板用它在下载前决定要不要真下。
+
+    ``refresh=1`` 时绕过缓存、当场再问一次 GitHub；平时走 30 分钟的缓存，
+    面板反复打开不会把接口额度用光。
+    """
+    info = await asyncio.to_thread(_cloudflared.update_check, refresh=refresh)
+    return {"ok": True, **info, "payload": _cloudflared.mount_status()}
+
+
+@control_router.post("/api/public/cloudflared/update")
+async def update_cloudflared():
+    """开始更新 cloudflared（后台线程下载 + 替换；面板轮询 /api/public 看进度）。"""
+    ok, code = _cloudflared.start_update()
+    return {"ok": bool(ok), "error": code, "payload": _cloudflared.mount_status()}
+
+
+@control_router.post("/api/public/cloudflared/update/cancel")
+async def cancel_cloudflared_update():
+    """取消正在下载的更新（替换/重启阶段不会中断）。"""
+    return {"ok": True, "payload": _cloudflared.cancel_update()}
+
+
 @control_router.post("/api/public/disable")
 async def disable_public():
     """关闭公网访问：只停隧道进程，域名与云端记录都留着。"""
@@ -1305,6 +1329,9 @@ async def overwrite_public_dns():
 @control_router.post("/api/public/restart")
 async def restart_public():
     """把隧道再拉起来一次（域名没换时不用重走挂载流程）。"""
+    if _cloudflared.UPDATE_JOB.snapshot()["running"]:
+        return {"ok": False, "error": "updating",
+                "payload": _cloudflared.mount_status()}
     ok = await asyncio.to_thread(_cloudflared.restart_tunnel)
     return {"ok": bool(ok), "payload": _cloudflared.mount_status()}
 

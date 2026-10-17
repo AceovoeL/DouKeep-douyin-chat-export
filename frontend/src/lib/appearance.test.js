@@ -21,8 +21,9 @@ function payload(overrides = {}) {
           accent: '#00ff00',
         },
         layout: {
-          messageFontSize: 16, lineHeight: 1.8, bubbleMaxWidthPct: 60, avatarSize: 40,
+          messageFontSize: 16, lineHeight: 1.8, avatarSize: 40,
           emojiMaxSize: 120, imageMaxSize: 300, videoMaxSize: 420, easterCardWidth: 260,
+          shareVideoCardWidth: 200, shareCommentCardWidth: 260,
           emojiScale: 1.2,
           letterSpacing: 0.5, emojiOffsetX: -0.25, emojiOffsetY: 0.4,
         },
@@ -38,7 +39,6 @@ describe('toCssVars', () => {
     expect(theme).toBe('dark')
     expect(vars['--msg-font-size']).toBe('16px')
     expect(vars['--msg-line-height']).toBe('1.8')
-    expect(vars['--msg-max-width']).toBe('60%')
     expect(vars['--msg-avatar-size']).toBe('40px')
     expect(vars['--media-max-size']).toBe('300px')
     // 文字式表情大小是相对字号的倍数（em）
@@ -48,6 +48,9 @@ describe('toCssVars', () => {
     expect(vars['--video-max-size']).toBe('420px')
     // 彩蛋福袋卡的宽度：卡片上的字号按它换算，等于整张卡等比缩放
     expect(vars['--easter-card-width']).toBe('260px')
+    // 分享视频卡、分享评论卡各有自己的宽度，两张卡分别等比缩放
+    expect(vars['--share-video-card-width']).toBe('200px')
+    expect(vars['--share-comment-card-width']).toBe('260px')
     expect(vars['--font-viewer']).toBe('yahei-stack')
     // 气泡文字的字间距（px，0 就是原样）
     expect(vars['--msg-letter-spacing']).toBe('0.5px')
@@ -58,6 +61,10 @@ describe('toCssVars', () => {
     expect(vars['--msg-group-gap']).toBeUndefined()
     expect(vars['--scrollbar-thumb']).toBeUndefined()
     expect(vars['--accent-hover']).toBeUndefined()
+    // 气泡内边距 / 气泡最大宽度已经不是设置项，也不再产生变量
+    expect(vars['--bubble-pad-x']).toBeUndefined()
+    expect(vars['--bubble-pad-y']).toBeUndefined()
+    expect(vars['--msg-max-width']).toBeUndefined()
   })
 
   it('does not override colors unless the theme is custom', () => {

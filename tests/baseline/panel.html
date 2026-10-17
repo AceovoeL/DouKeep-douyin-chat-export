@@ -316,6 +316,7 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 /* 公网访问：挂在「局域网访问」下面那一块 */
 .pub-box { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .pub-box h2 { font-size: calc(15px * var(--font-scale)); }
+.pub-cf-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 .pub-state { display: inline-flex; align-items: center; gap: 7px; font-size: calc(12.5px * var(--font-scale)); color: var(--text2); }
 .pub-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text3); }
 .pub-state.on::before { background: var(--green); }
@@ -1084,73 +1085,6 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .panel-main:has(#page-about.active), .panel-main:has(#page-logs.active) { max-width: 1120px; }
 
 /* ── Appearance settings (设置 → 外观) ── */
-/* 预览分三块：面板 / 会话列表 / 聊天，尽量让每个可调项都能在这里看到效果 */
-.ap-preview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
-@media (max-width: 1100px) { .ap-preview { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 780px) { .ap-preview { grid-template-columns: 1fr; } }
-.ap-pv-box { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg); display: flex; flex-direction: column; }
-.ap-pv-cap { font-size: calc(11px * var(--font-scale)); color: var(--text3); padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--bg3); }
-.ap-pv-panel { display: flex; flex: 1; min-height: 214px; background: var(--bg); }
-.ap-pv-side { width: calc(var(--panel-sidebar) * 0.3); max-width: 42%; flex-shrink: 0; background: var(--bg2); border-right: 1px solid var(--border); padding: 8px 6px; display: flex; flex-direction: column; gap: 3px; }
-.ap-pv-brand { display: flex; align-items: center; gap: 5px; font-size: calc(10px * var(--font-scale)); color: var(--text); font-weight: 700; padding: 0 2px 2px; }
-.ap-pv-brand i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
-.ap-pv-nav { padding: 3px 6px; border-radius: 5px; font-size: calc(9px * var(--font-scale)); color: var(--text2); }
-.ap-pv-nav.active { background: var(--accent-bg); color: var(--accent); }
-.ap-pv-main { flex: 1; min-width: 0; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
-.ap-pv-h2 { font-size: calc(9.5px * var(--font-scale)); font-weight: 600; color: var(--text2); }
-.ap-pv-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 9px; text-align: center; box-shadow: var(--panel-shadow, var(--shadow)); }
-.ap-pv-num { font-size: calc(16px * var(--font-scale)); font-weight: 700; color: var(--accent); }
-.ap-pv-label { font-size: calc(9px * var(--font-scale)); color: var(--text2); }
-.ap-pv-chips { display: flex; gap: 4px; flex-wrap: wrap; }
-.ap-pv-chip { font-size: calc(9px * var(--font-scale)); padding: 2px 6px; border-radius: 999px; font-weight: 600; }
-.ap-pv-chip.ok { background: var(--green-bg); color: var(--green); }
-.ap-pv-chip.warn { background: var(--yellow-bg); color: var(--yellow); }
-.ap-pv-chip.err { background: var(--red-bg); color: var(--red); }
-.ap-pv-input { font-size: calc(9px * var(--font-scale)); padding: 4px 7px; border-radius: 6px; background: var(--bg3); border: 1px solid var(--border); color: var(--text3); }
-.ap-pv-btn { align-self: flex-start; background: var(--accent); color: #fff; border-radius: 6px; padding: 4px 10px; font-size: calc(10px * var(--font-scale)); font-weight: 600; }
-
-/* 会话列表预览：宽度跟着"会话列表宽度"设置走 */
-.ap-pv-list { flex: 1; min-height: 214px; background: var(--pv-bg-secondary); display: flex; flex-direction: column; }
-.ap-pv-listhead { padding: 7px 9px; font-size: calc(10px * var(--font-scale)); font-weight: 600; color: var(--pv-text-primary); border-bottom: 1px solid var(--pv-border); }
-.ap-pv-listsearch { margin: 6px 8px; padding: 4px 8px; border-radius: 6px; background: var(--pv-bg-primary); border: 1px solid var(--pv-border); color: var(--pv-text-muted); font-size: calc(9px * var(--font-scale)); }
-.ap-pv-conv { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-left: 3px solid transparent; }
-.ap-pv-conv.active { background: color-mix(in srgb, var(--pv-accent) 13%, transparent); border-left-color: var(--pv-accent); }
-.ap-pv-conv-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.ap-pv-conv-name { font-size: var(--pv-list-font-size); color: var(--pv-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-pv-conv.active .ap-pv-conv-name { color: var(--pv-accent); }
-.ap-pv-conv-meta { font-size: calc(9px * var(--font-scale)); color: var(--pv-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-pv-scroll { width: calc(var(--pv-sidebar-width) * 0.42); max-width: 100%; flex: 1; display: flex; flex-direction: column; }
-
-/* 聊天预览 */
-.ap-pv-chatwrap { flex: 1; min-height: 214px; display: flex; flex-direction: column; background: var(--pv-bg-primary); }
-.ap-pv-topbar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--pv-bg-secondary); border-bottom: 1px solid var(--pv-border); }
-.ap-pv-topname { font-size: calc(10px * var(--font-scale)); font-weight: 600; color: var(--pv-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-pv-toplink { margin-left: auto; font-size: calc(9px * var(--font-scale)); color: var(--pv-accent); border: 1px solid var(--pv-border); border-radius: 5px; padding: 2px 6px; white-space: nowrap; }
-.ap-pv-chat { flex: 1; min-height: 262px; background: var(--pv-bg-primary); padding: 8px; display: flex; flex-direction: column; gap: var(--pv-msg-gap); overflow: hidden; }
-.ap-pv-row { display: flex; gap: 6px; max-width: var(--pv-msg-max-width); }
-.ap-pv-row.self { flex-direction: row-reverse; margin-left: auto; }
-.ap-pv-av { width: calc(var(--pv-avatar-size) * 0.7); height: calc(var(--pv-avatar-size) * 0.7); border-radius: 50%; background: var(--pv-bg-tertiary); color: var(--pv-text-secondary); font-size: calc(9px * var(--font-scale)); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.ap-pv-bubble { padding: var(--pv-bubble-pad-y) var(--pv-bubble-pad-x); border-radius: var(--pv-bubble-radius); font-size: var(--pv-msg-font-size); line-height: var(--pv-msg-line-height); letter-spacing: var(--pv-msg-letter-spacing, 0); word-break: break-word; }
-.ap-pv-bubble.other { background: var(--pv-bg-message-other); color: var(--pv-text-primary); border-top-left-radius: 4px; }
-.ap-pv-bubble.self { background: var(--pv-bg-message-self); color: var(--pv-text-on-self); border-top-right-radius: 4px; }
-.ap-pv-stack { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ap-pv-sender { font-size: calc(9px * var(--font-scale)); color: var(--pv-text-secondary); }
-.ap-pv-time { align-self: center; font-size: calc(9px * var(--font-scale)); color: var(--pv-text-muted); }
-.ap-pv-card { background: var(--pv-card-bg); border-left: 3px solid var(--pv-accent); border-radius: 8px; padding: 6px 8px; max-width: var(--pv-msg-max-width); }
-.ap-pv-cardtitle { font-size: var(--pv-msg-font-size); color: var(--pv-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-pv-carddesc { font-size: calc(9px * var(--font-scale)); color: var(--pv-text-secondary); margin-top: 2px; }
-.ap-pv-mediarow { display: flex; align-items: flex-end; gap: 6px; }
-.ap-pv-emoji { width: var(--pv-emoji-size); height: var(--pv-emoji-size); max-width: 32%; border-radius: 6px; background: var(--pv-bg-tertiary); }
-/* 文字式表情（[钱]、[憨笑]）换成的图片：跟着气泡字号和"倍数"变大小，
-   位置也跟真页面一样受左右/上下偏移控制 */
-.ap-pv-inline-emoji { height: var(--pv-emoji-text-size); width: auto; vertical-align: calc(-0.15em + var(--pv-emoji-offset-y, 0em)); transform: translateX(var(--pv-emoji-offset-x, 0em)); margin-left: 3px; }
-.ap-pv-media { width: var(--pv-media-max-size); height: var(--pv-media-max-size); max-width: 100%; border-radius: 6px; background: var(--pv-bg-tertiary); border: 1px solid var(--pv-card-border); }
-.ap-pv-video { width: var(--pv-video-size); height: calc(var(--pv-video-size) * 1.3); max-width: 42%; border-radius: 6px; background: var(--pv-bg-tertiary); border: 1px solid var(--pv-card-border); display: grid; place-items: center; }
-.ap-pv-video > span { font-size: calc(9px * var(--font-scale)); color: var(--pv-text-secondary); }
-.ap-pv-meta { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
-.ap-pv-time { font-size: calc(9px * var(--font-scale)); color: var(--pv-text-muted); }
-.ap-pv-hl { font-size: calc(10px * var(--font-scale)); color: var(--pv-text-primary); background: color-mix(in srgb, var(--pv-highlight) 30%, transparent); border-radius: 4px; padding: 1px 5px; }
-.ap-pv-sys { align-self: center; font-size: calc(10px * var(--font-scale)); color: var(--pv-system-text); background: var(--pv-system-bg); padding: 3px 10px; border-radius: 999px; }
 
 .ap-group { border: 1px solid var(--border); border-radius: 10px; margin-top: 10px; overflow: hidden; }
 .ap-group > summary { cursor: pointer; padding: 10px 12px; font-size: calc(12.5px * var(--font-scale)); font-weight: 600; color: var(--text); background: var(--bg3); }
@@ -1394,6 +1328,36 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
     <div class="confirm-actions">
       <button class="btn btn-outline" id="publicCancelBtn" type="button" onclick="closePublicModal()" data-i18n="cancel">取消</button>
       <button class="btn btn-primary" id="publicStartBtn" type="button" onclick="publicModalPrimary()"></button>
+    </div>
+  </div>
+</div>
+<!-- cloudflared 更新：下载进度 / 结果（设置页「更新 cloudflared」按钮打开） -->
+<div id="cfUpdateModal" class="confirm-modal" hidden onclick="if(event.target===this)closeCfUpdateModal()">
+  <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="cfUpdateModalTitle">
+    <div class="confirm-head">
+      <div class="confirm-icon" aria-hidden="true">⤓</div>
+      <div style="flex:1;min-width:0">
+        <div class="confirm-title" id="cfUpdateModalTitle"></div>
+        <div class="confirm-message" id="cfUpdateModalDesc"></div>
+      </div>
+    </div>
+
+    <div id="cfUpdateProgress">
+      <div class="pub-steps" id="cfUpdateSteps"></div>
+      <div class="pub-bar"><i id="cfUpdateBar"></i></div>
+      <div class="meta" id="cfUpdateText" style="margin-top:7px"></div>
+      <div class="meta" id="cfUpdateLogHint" style="margin-top:10px" hidden data-i18n="pubCfUpdateLogHint">更新过程（也可以看「日志 → 公网挂载」）：</div>
+      <pre class="log-box pub-log" id="cfUpdateLog" hidden></pre>
+    </div>
+
+    <div id="cfUpdateResult" hidden>
+      <div class="meta" id="cfUpdateResultText" style="margin:12px 0 0"></div>
+      <pre class="log-box pub-log" id="cfUpdateResultDetail" hidden></pre>
+    </div>
+
+    <div class="confirm-actions">
+      <button class="btn btn-outline" id="cfUpdateCancelBtn" type="button" onclick="cancelCloudflaredUpdate()" hidden></button>
+      <button class="btn btn-primary" id="cfUpdateDoneBtn" type="button" onclick="closeCfUpdateModal()" hidden></button>
     </div>
   </div>
 </div>
@@ -1918,6 +1882,14 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
                 onclick="fixPublicDns()" hidden data-i18n="pubFixDnsBtn">把解析改到这台电脑</button>
       </div>
 
+      <!-- cloudflared 版本 + 手动更新（内置自动更新是关着的，见 backend/cloudflared.py） -->
+      <div class="pub-cf-row" id="publicCfRow" hidden>
+        <span class="meta" id="publicCfVersion"></span>
+        <span style="flex:1"></span>
+        <button class="btn btn-outline btn-sm" id="publicCfUpdateBtn" type="button"
+                onclick="openCloudflaredUpdateModal()" data-i18n="pubCfUpdateBtn">更新 cloudflared</button>
+      </div>
+
       <div class="meta" id="publicStatus" style="margin-top:8px"></div>
     </div>
 
@@ -1971,108 +1943,10 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
     <div class="meta" id="notifyStatus" style="margin-top:6px"></div>
   </div>
 
-  <!-- 外观：字体 / 面板与查看器配色 / 尺寸，保存后所有人共用 -->
+  <!-- 外观：字体 / 尺寸，保存后所有人共用 -->
   <div class="section" id="appearanceSection">
     <h2 data-i18n="apTitle">外观</h2>
-    <div class="meta" style="margin-bottom:10px" data-i18n="apDesc">自定义面板与查看器的字体、配色和尺寸，保存后对所有人生效。</div>
-
-    <div class="ap-preview">
-      <div class="ap-pv-box">
-        <div class="ap-pv-cap" data-i18n="apPreviewPanel">面板预览</div>
-        <div class="ap-pv-panel">
-          <div class="ap-pv-side">
-            <div class="ap-pv-brand"><i></i><span data-i18n="apPvBrand">控制面板</span></div>
-            <div class="ap-pv-nav active" data-i18n="navOverview">概览</div>
-            <div class="ap-pv-nav" data-i18n="navScrape">采集</div>
-            <div class="ap-pv-nav" data-i18n="navSettings">设置</div>
-          </div>
-          <div class="ap-pv-main">
-            <div class="ap-pv-h2" data-i18n="apPvSection">分区标题</div>
-            <div class="ap-pv-card">
-              <div class="ap-pv-num">128</div>
-              <div class="ap-pv-label" data-i18n="apPvConv">会话</div>
-            </div>
-            <div class="ap-pv-chips">
-              <span class="ap-pv-chip ok" data-i18n="apPvOk">成功</span>
-              <span class="ap-pv-chip warn" data-i18n="apPvWarn">警告</span>
-              <span class="ap-pv-chip err" data-i18n="apPvErr">失败</span>
-            </div>
-            <div class="ap-pv-input" data-i18n="apPvInput">输入框</div>
-            <div class="ap-pv-btn" data-i18n="apPvButton">按钮</div>
-          </div>
-        </div>
-      </div>
-      <div class="ap-pv-box">
-        <div class="ap-pv-cap" data-i18n="apPreviewList">会话列表预览</div>
-        <div class="ap-pv-list">
-          <div class="ap-pv-scroll">
-            <div class="ap-pv-listhead" data-i18n="apPvTitle">抖音聊天记录</div>
-            <div class="ap-pv-listsearch" data-i18n="apPvSearch">搜索会话</div>
-            <div class="ap-pv-conv">
-              <span class="ap-pv-av" data-i18n="apPvPeer">他</span>
-              <span class="ap-pv-conv-info">
-                <span class="ap-pv-conv-name" data-i18n="apPvName">会话名称</span>
-                <span class="ap-pv-conv-meta" data-i18n="apPvMeta">最后一条消息</span>
-              </span>
-            </div>
-            <div class="ap-pv-conv active">
-              <span class="ap-pv-av" data-i18n="apPvMe">我</span>
-              <span class="ap-pv-conv-info">
-                <span class="ap-pv-conv-name" data-i18n="apPvName">会话名称</span>
-                <span class="ap-pv-conv-meta" data-i18n="apPvMeta">最后一条消息</span>
-              </span>
-            </div>
-            <div class="ap-pv-conv">
-              <span class="ap-pv-av" data-i18n="apPvPeer">他</span>
-              <span class="ap-pv-conv-info">
-                <span class="ap-pv-conv-name" data-i18n="apPvName">会话名称</span>
-                <span class="ap-pv-conv-meta" data-i18n="apPvMeta">最后一条消息</span>
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="ap-pv-box">
-        <div class="ap-pv-cap" data-i18n="apPreviewChat">聊天预览</div>
-        <div class="ap-pv-chatwrap">
-          <div class="ap-pv-topbar">
-            <span class="ap-pv-av" data-i18n="apPvPeer">他</span>
-            <span class="ap-pv-topname" data-i18n="apPvPeerName">聊天对象</span>
-            <span class="ap-pv-toplink" data-i18n="apPvLink">查找聊天记录</span>
-          </div>
-          <div class="ap-pv-chat">
-            <div class="ap-pv-sys" data-i18n="apPvSystem">系统通知</div>
-            <div class="ap-pv-row">
-              <div class="ap-pv-av" data-i18n="apPvPeer">他</div>
-              <div class="ap-pv-stack">
-                <div class="ap-pv-sender" data-i18n="apPvSender">对方昵称</div>
-                <div class="ap-pv-bubble other">
-                  <span data-i18n="apPvOther">对方发来的消息</span>
-                  <img class="ap-pv-inline-emoji" src="/emoji/憨笑.webp" alt="" onerror="this.style.display='none'" />
-                </div>
-              </div>
-            </div>
-            <div class="ap-pv-row self">
-              <div class="ap-pv-bubble self" data-i18n="apPvSelf">我发的消息气泡</div>
-              <div class="ap-pv-av" data-i18n="apPvMe">我</div>
-            </div>
-            <div class="ap-pv-mediarow">
-              <div class="ap-pv-emoji"></div>
-              <div class="ap-pv-media"></div>
-              <div class="ap-pv-video"><span>▶</span></div>
-            </div>
-            <div class="ap-pv-card">
-              <div class="ap-pv-cardtitle" data-i18n="apPvCardTitle">分享内容标题</div>
-              <div class="ap-pv-carddesc" data-i18n="apPvCardDesc">分享卡片说明</div>
-            </div>
-            <div class="ap-pv-meta">
-              <span class="ap-pv-time" data-i18n="apPvTime">12:30</span>
-              <span class="ap-pv-hl" data-i18n="apPvHighlight">搜索命中的词</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <div class="meta" style="margin-bottom:10px" data-i18n="apDesc">自定义面板与查看器的字体和尺寸，保存后对所有人生效。</div>
 
     <div class="row" style="margin-bottom:4px">
       <button class="btn btn-primary" onclick="saveAppearance()" data-i18n="apSave">保存外观</button>
@@ -2641,6 +2515,44 @@ const T = {
     pubErrorRaw: 'cloudflared 的原话：',
     pubErrDownload: 'cloudflared 下载失败（网络中断）。已经下好的部分会留着，重试会接着下。',
     pubErrUnknown: '出了点意外，请重试；还不行就看看服务端日志。',
+    pubCfUpdateBtn: '更新 cloudflared',
+    pubCfUpdateView: '查看更新进度',
+    pubCfUpdateTitle: '更新 cloudflared',
+    pubCfUpdateStart: '开始更新',
+    pubCfUpdateCancel: '取消更新',
+    pubCfUpdateCancelling: '正在取消…',
+    pubCfUpdateDoneBtn: '完成',
+    pubCfUpdateProgressTitle: '正在更新 cloudflared…',
+    pubCfUpdateProgressDesc: '先去 GitHub 问一句有没有新版本，有新版本才下载（约 50MB）。下载不会停隧道；替换时隧道会短暂断开，完成后自动重连。如果页面暂时打不开，隧道恢复后会自己接上。',
+    pubCfUpdateDoneTitle: 'cloudflared 已更新',
+    pubCfUpdateFailedTitle: '更新失败',
+    pubCfUpdateStepDownload: '下载新版本',
+    pubCfUpdateStepCheck: '检查新版本',
+    pubCfUpdateStepReplace: '替换本机程序',
+    pubCfUpdateStepRestart: '重新启动隧道',
+    pubCfUpdateStepVerify: '确认新版本',
+    pubCfUpdateLogHint: '更新过程（也可以看「日志 → 公网挂载」）：',
+    pubCfUpdateNoBinary: '还没有 cloudflared：先点「挂载到公网」，首次挂载会自动下载。',
+    pubCfUpdateBusy: '正在挂载到公网，等它结束再更新。',
+    pubCfUpdatingHint: '正在更新 cloudflared，完成后就能挂载。',
+    pubErrUpdating: '正在更新 cloudflared，等它结束再挂载。',
+    pubCfVersion: (v) => v ? `cloudflared ${v}` : 'cloudflared',
+    pubCfVersionNew: (cur, latest) => `cloudflared ${cur}（有新版本 ${latest}）`,
+    pubCfChecking: '正在检查有没有新版本…',
+    pubCfUpdateConfirm: (cur, latest) => latest
+      ? `检查到新版本 ${latest}（当前 ${cur || '未知版本'}）。将从 Cloudflare 官方下载并替换它，下载约 50MB；替换时会停一下隧道（如果你正通过公网域名打开面板，页面会短暂断开，隧道重启后自动恢复），新版本起不来会自动回滚。继续？`
+      : `没能确认最新版本（网络不通或 GitHub 没回话），将直接下载 Cloudflare 官方最新版并核对（当前 ${cur || '未知版本'}）。下载约 50MB；替换时会停一下隧道，新版本起不来会自动回滚。继续？`,
+    pubCfUpdateRunning: (pct, stage) => pct == null ? `正在更新…（${stage}）` : `正在更新… ${pct}%`,
+    pubCfUpdateDoneText: (from, to) => from && to ? `已更新：${from} → ${to}` : `已更新到最新版${to ? ' ' + to : ''}。`,
+    pubCfUpdateTunnelRestarted: '隧道已用新版本重新连上 Cloudflare。',
+    pubCfUpdateTunnelNotRunning: '隧道当前没在运行，下次挂载会使用新版本。',
+    pubCfUpdateAlreadyLatest: (v) => `已经是最新版${v ? ' ' + v : ''}，没有替换，也没有停隧道。`,
+    pubCfUpdateFailed: '更新没有完成，原来的版本还在。',
+    pubCfUpdateRestartFailed: '新版本没能让隧道连上，已回滚到原来的版本。',
+    pubCfUpdateDetail: '详细信息：',
+    pubCfUpdateDoneShort: (v) => `cloudflared 已更新到${v ? ' ' + v : '最新版'}。`,
+    pubCfUpdateFailedShort: 'cloudflared 更新失败，详情看「日志 → 公网挂载」。',
+    pubCfUpdateCancelled: '已取消更新。',
     devModeOffPublicWarn: '公网访问也开着：关掉开发者模式会顺手把公网入口也关掉（域名留着，重新打开开发者模式就能一键挂回去）。',
     notifyTitle: '通知',
     notifyDesc: '采集失败时通过 Server酱 推送到微信。',
@@ -2713,41 +2625,13 @@ const T = {
     jobErrorQueued: (n) => `还有 ${n} 个错误待处理，处理完当前错误后会依次弹出`,
     jobErrorMerged: (n) => `已合并 ${n} 条失败`,
     apTitle: '外观',
-    apDesc: '自定义面板与查看器的字体、配色和尺寸，保存后对所有人生效。',
-    apPreviewPanel: '面板预览',
-    apPreviewChat: '聊天预览',
-    apPvBrand: '控制面板',
-    apPvSection: '分区标题',
-    apPvConv: '会话',
-    apPvButton: '按钮',
-    apPvOk: '成功',
-    apPvWarn: '警告',
-    apPvErr: '失败',
-    apPvInput: '输入框',
-    apPreviewList: '会话列表预览',
-    apPvTitle: '抖音聊天记录',
-    apPvSearch: '搜索会话',
-    apPvName: '会话名称',
-    apPvMeta: '最后一条消息',
-    apPvPeerName: '聊天对象',
-    apPvLink: '查找聊天记录',
-    apPvSender: '对方昵称',
-    apPvTime: '12:30',
-    apPvCardTitle: '分享内容标题',
-    apPvCardDesc: '分享卡片说明',
-    apPvHighlight: '搜索命中的词',
-    apPvPeer: '他',
-    apPvMe: '我',
-    apPvOther: '对方发来的消息',
-    apPvSelf: '我发的消息气泡',
-    apPvSystem: '系统通知',
+    apDesc: '自定义面板与查看器的字体和尺寸，保存后对所有人生效。',
     apSave: '保存外观',
     apResetAll: '恢复默认外观',
     apExport: '导出配置',
     apImport: '导入配置',
     apLocalFontsBtn: '读取本机字体',
     apFontPickTitle: '选择字体',
-    apThemePickTitle: '选择主题',
     apShadowPickTitle: '选择阴影强度',
     apShadow0: '无阴影', apShadow1: '轻', apShadow2: '中', apShadow3: '重',
     apFontPreviewText: '抖音聊天记录 Aa Bb 123',
@@ -2758,7 +2642,7 @@ const T = {
     apWarnings: (n) => `已保存，但有 ${n} 项取值不合法，已自动用默认值代替。`,
     apImported: '配置已导入并保存。',
     apImportFailed: '导入失败：文件不是有效的配置文件。',
-    apConfirmReset: '恢复默认外观会把字体、配色、尺寸全部还原成出厂设置，确定继续吗？',
+    apConfirmReset: '恢复默认外观会把字体和尺寸全部还原成出厂设置，确定继续吗？',
     apConfirmResetTitle: '恢复默认外观',
     apConfirmResetOk: '恢复默认',
     apLoading: '正在加载外观设置…',
@@ -2779,7 +2663,7 @@ const T = {
     logsKindPublic: '公网挂载',
     logsNoteServer: '后端服务输出（config/logs/server.log），采集与更新的过程都写在这里。',
     logsNoteRestart: '重启过程记录（config/logs/restart.log）：等旧服务退出、端口释放、新服务是否起来。',
-    logsNotePublic: '公网挂载记录（config/logs/cloudflared.log）：首次下载 cloudflared、等你在浏览器里授权、建隧道、连上 Cloudflare 边缘的过程都写在这里；域名打不开时先看这份。时间按本机时间显示。',
+    logsNotePublic: '公网挂载记录（config/logs/cloudflared.log）：首次下载 cloudflared、等你在浏览器里授权、建隧道、连上 Cloudflare 边缘的过程都写在这里；域名打不开时先看这份。时间按本机时间显示。cloudflared 提示版本过旧时，到「设置 → 公网访问」点「更新 cloudflared」。',
     logsRefresh: '刷新',
     logsAutoRefresh: '自动刷新（每 3 秒）',
     logsOpenFolder: '打开日志文件夹',
@@ -3244,6 +3128,44 @@ const T = {
     pubErrorRaw: 'What cloudflared said:',
     pubErrDownload: 'Downloading cloudflared failed (network dropped). What was downloaded is kept — retrying resumes.',
     pubErrUnknown: 'Something unexpected happened. Try again; if it keeps failing, check the server log.',
+    pubCfUpdateBtn: 'Update cloudflared',
+    pubCfUpdateView: 'View update progress',
+    pubCfUpdateTitle: 'Update cloudflared',
+    pubCfUpdateStart: 'Start update',
+    pubCfUpdateCancel: 'Cancel update',
+    pubCfUpdateCancelling: 'Cancelling…',
+    pubCfUpdateDoneBtn: 'Done',
+    pubCfUpdateProgressTitle: 'Updating cloudflared…',
+    pubCfUpdateProgressDesc: 'It asks GitHub for the latest version first and only downloads (about 50 MB) when there is a newer one. Downloading does not stop the tunnel. The tunnel disconnects briefly while the program is replaced and reconnects automatically. If this page becomes unreachable, it reconnects once the tunnel is back.',
+    pubCfUpdateDoneTitle: 'cloudflared updated',
+    pubCfUpdateFailedTitle: 'Update failed',
+    pubCfUpdateStepDownload: 'Download the new version',
+    pubCfUpdateStepCheck: 'Check for a new version',
+    pubCfUpdateStepReplace: 'Replace the local program',
+    pubCfUpdateStepRestart: 'Restart the tunnel',
+    pubCfUpdateStepVerify: 'Confirm the new version',
+    pubCfUpdateLogHint: 'Update log (also under Logs → Public tunnel):',
+    pubCfUpdateNoBinary: 'cloudflared is not installed yet — click “Mount to the internet”; the first mount downloads it.',
+    pubCfUpdateBusy: 'Public mounting is running; wait for it to finish before updating.',
+    pubCfUpdatingHint: 'cloudflared is updating; mounting becomes available when it finishes.',
+    pubErrUpdating: 'cloudflared is updating; wait for it to finish before mounting.',
+    pubCfVersion: (v) => v ? `cloudflared ${v}` : 'cloudflared',
+    pubCfVersionNew: (cur, latest) => `cloudflared ${cur} (new version ${latest} available)`,
+    pubCfChecking: 'Checking for a new version…',
+    pubCfUpdateConfirm: (cur, latest) => latest
+      ? `A new version ${latest} is available (you have ${cur || 'an unknown version'}). Cloudflare's latest build will be downloaded and used to replace it — about 50 MB; the tunnel stops briefly while the program is replaced and reconnects automatically (if you are viewing this panel through the public domain, the page may disconnect briefly and reconnect). A new version that cannot start is rolled back. Continue?`
+      : `The latest version could not be confirmed (the network is down or GitHub did not answer), so the latest official build will be downloaded directly and verified (you have ${cur || 'an unknown version'}). About 50 MB; the tunnel stops briefly while the program is replaced, and a new version that cannot start is rolled back. Continue?`,
+    pubCfUpdateRunning: (pct, stage) => pct == null ? `Updating… (${stage})` : `Updating… ${pct}%`,
+    pubCfUpdateDoneText: (from, to) => from && to ? `Updated: ${from} → ${to}` : `Updated to the latest version${to ? ' ' + to : ''}.`,
+    pubCfUpdateTunnelRestarted: 'The tunnel reconnected to Cloudflare on the new version.',
+    pubCfUpdateTunnelNotRunning: 'The tunnel is not running; the next mount will use the new version.',
+    pubCfUpdateAlreadyLatest: (v) => `Already on the latest version${v ? ' ' + v : ''} — nothing was replaced and the tunnel was not stopped.`,
+    pubCfUpdateFailed: 'The update did not complete; the previous version is still in place.',
+    pubCfUpdateRestartFailed: 'The new version did not reconnect the tunnel, so the previous version was restored.',
+    pubCfUpdateDetail: 'Details:',
+    pubCfUpdateDoneShort: (v) => `cloudflared updated to${v ? ' ' + v : ' the latest version'}.`,
+    pubCfUpdateFailedShort: 'cloudflared update failed — see Logs → Public tunnel for details.',
+    pubCfUpdateCancelled: 'Update cancelled.',
     devModeOffPublicWarn: 'Public access is on too: turning off developer mode also closes the public entry point (the domain is kept — switch developer mode back on and mount it again in one click).',
     lanSaved: 'Settings saved.',
     lanDevMode: 'In dev mode (uvicorn --reload) the service is not restarted automatically — restart it once by hand to apply the listening address.',
@@ -3319,41 +3241,13 @@ const T = {
     jobErrorQueued: (n) => (n > 1 ? n + ' more errors waiting' : '1 more error waiting'),
     jobErrorMerged: (n) => n + ' failures merged',
     apTitle: 'Appearance',
-    apDesc: 'Customize fonts, colors and sizes of the panel and viewer; saved on the server for everyone.',
-    apPreviewPanel: 'Panel preview',
-    apPreviewChat: 'Chat preview',
-    apPvBrand: 'Control Panel',
-    apPvSection: 'Section title',
-    apPvConv: 'Chats',
-    apPvButton: 'Button',
-    apPvOk: 'OK',
-    apPvWarn: 'Warn',
-    apPvErr: 'Error',
-    apPvInput: 'Input',
-    apPreviewList: 'Chat list preview',
-    apPvTitle: 'Douyin Chat',
-    apPvSearch: 'Search chats',
-    apPvName: 'Chat name',
-    apPvMeta: 'Last message',
-    apPvPeerName: 'Chat partner',
-    apPvLink: 'Search',
-    apPvSender: 'Sender',
-    apPvTime: '12:30',
-    apPvCardTitle: 'Shared item',
-    apPvCardDesc: 'Card caption',
-    apPvHighlight: 'Matched word',
-    apPvPeer: 'A',
-    apPvMe: 'Me',
-    apPvOther: 'A message from the other side',
-    apPvSelf: 'My own message bubble',
-    apPvSystem: 'System notice',
+    apDesc: 'Customize fonts and sizes of the panel and viewer; saved on the server for everyone.',
     apSave: 'Save appearance',
     apResetAll: 'Restore defaults',
     apExport: 'Export config',
     apImport: 'Import config',
     apLocalFontsBtn: 'Read local fonts',
     apFontPickTitle: 'Choose a font',
-    apThemePickTitle: 'Choose a theme',
     apShadowPickTitle: 'Choose shadow strength',
     apShadow0: 'None', apShadow1: 'Light', apShadow2: 'Medium', apShadow3: 'Strong',
     apFontPreviewText: 'Douyin chat Aa Bb 123',
@@ -3364,7 +3258,7 @@ const T = {
     apWarnings: (n) => `Saved, but ${n} value(s) were invalid and replaced with the default.`,
     apImported: 'Config imported and saved.',
     apImportFailed: 'Import failed: not a valid config file.',
-    apConfirmReset: 'Restoring defaults resets fonts, colors and sizes to the factory values. Continue?',
+    apConfirmReset: 'Restoring defaults resets fonts and sizes to the factory values. Continue?',
     apConfirmResetTitle: 'Restore default appearance',
     apConfirmResetOk: 'Restore defaults',
     apLoading: 'Loading appearance settings…',
@@ -3385,7 +3279,7 @@ const T = {
     logsKindPublic: 'Public tunnel',
     logsNoteServer: 'Backend service output (config/logs/server.log), including scraping and update runs.',
     logsNoteRestart: 'Restart record (config/logs/restart.log): waiting for the old service, the port coming free, and whether the new service started.',
-    logsNotePublic: 'Public tunnel record (config/logs/cloudflared.log): the first cloudflared download, waiting for the browser authorization, creating the tunnel and connecting to the Cloudflare edge. Check this file first when the domain stops working. Times are shown in your local time.',
+    logsNotePublic: 'Public tunnel record (config/logs/cloudflared.log): the first cloudflared download, waiting for the browser authorization, creating the tunnel and connecting to the Cloudflare edge. Check this file first when the domain stops working. Times are shown in your local time. When cloudflared reports an outdated version, click “Update cloudflared” under Settings → Public access.',
     logsRefresh: 'Refresh',
     logsAutoRefresh: 'Auto refresh (every 3s)',
     logsOpenFolder: 'Open log folder',
@@ -5773,6 +5667,8 @@ let publicModalMode = 'form';          // form / progress / result
 //: 弹窗是不是在「跟着后台任务走」：跟着时按任务的真实状态切界面；
 //: 只是打开表单（比如想换个域名）时不要被上一次的结果抢走画面。
 let publicFollowJob = false;
+//: 这次打开面板有没有问过「cloudflared 有没有新版本」：只问一次，轮询不重复问
+let cfVersionChecked = false;
 
 function publicEl(id) { return document.getElementById(id); }
 
@@ -5801,6 +5697,8 @@ function renderPublicAccess() {
   const job = d.job || {};
   const on = !!d.enabled;
   const busy = job.state === 'running';
+  const updateJob = d.update || {};
+  const updating = updateJob.state === 'running';
 
   publicEl('publicMountRow').hidden = on;
   publicEl('publicActiveRow').hidden = !on;
@@ -5811,10 +5709,13 @@ function renderPublicAccess() {
   // 之后就面对一个点不动的按钮，只能刷新页面。
   const btn = publicEl('publicMountBtn');
   btn.disabled = busy ? false : !d.ready;
+  if (updating && !busy) btn.disabled = true;
   btn.textContent = t(busy ? 'pubViewProgress' : 'pubMountBtn');
   const note = publicEl('publicReadyNote');
   if (!d.ready) {
     setDynText(note, t(d.ready_reason === 'lan_off' ? 'pubNeedLan' : 'pubErrUnknown'));
+  } else if (updating) {
+    setDynText(note, t('pubCfUpdatingHint'));
   } else if (d.domain) {
     setDynText(note, t('pubSavedDomain', d.domain));
   } else {
@@ -5823,6 +5724,40 @@ function renderPublicAccess() {
   // 存过域名但当前关着：留一个「彻底移除」的出口
   const removeBtn = publicEl('publicRemoveBtn');
   if (removeBtn) removeBtn.hidden = !(!!d.domain && !on);
+
+  // cloudflared 版本 + 更新按钮：只要有程序就显示（公网开/关都能更新）。
+  const cfRow = publicEl('publicCfRow');
+  if (cfRow) {
+    cfRow.hidden = !d.binary;
+    const cfBtn = publicEl('publicCfUpdateBtn');
+    if (cfBtn) {
+      cfBtn.disabled = busy;             // 挂载中不改程序；更新中它用来「查看进度」
+      cfBtn.textContent = t(updating ? 'pubCfUpdateView' : 'pubCfUpdateBtn');
+    }
+    const cfVersion = publicEl('publicCfVersion');
+    if (cfVersion) {
+      const cf = d.cloudflared || {};
+      const version = cf.version || '';
+      if (updating) {
+        const pct = updateJob.download ? updateJob.download.percent : null;
+        setDynText(cfVersion, t('pubCfUpdateRunning', pct,
+          t(cfUpdateStepKey(updateJob.step || 'check'))));
+      } else if (cf.update_available && cf.latest) {
+        setDynText(cfVersion, t('pubCfVersionNew', version, cf.latest));
+      } else {
+        setDynText(cfVersion, t('pubCfVersion', version));
+      }
+    }
+    // 版本行只自动问一次 GitHub：问到了就把「有新版本」标出来，问不到就算了。
+    // 服务端另有 30 分钟缓存，翻来覆去打开面板也不会把接口额度用光。
+    if (!cfVersionChecked && d.binary) {
+      cfVersionChecked = true;
+      checkCloudflaredVersion(false);
+    }
+  }
+
+  // 更新在后台跑：就算用户刷新过页面、没打开弹窗，也让版本/状态行跟着走
+  if (updating && !cfUpdatePollTimer) startCfUpdatePoll();
 
   // 挂载在后台跑：状态行显示当前进行到哪一步 / 下载百分比。
   // 这一段必须在下面的 `if (!on) return` **之前** —— 挂载过程中 enabled 还是 false，
@@ -5834,6 +5769,17 @@ function renderPublicAccess() {
       ? t('pubDownloadText', download.percent,
           (download.received / 1048576).toFixed(1), (download.total / 1048576).toFixed(1))
       : `${t(publicStepKey(job.step || 'binary'))}…`);
+    status.hidden = false;
+  }
+
+  // 更新在后台跑、弹窗又关掉时，至少让设置页这一行跟着走
+  if (updating && !busy) {
+    const status = publicEl('publicStatus');
+    const download = updateJob.download;
+    setDynText(status, download
+      ? t('pubDownloadText', download.percent,
+          (download.received / 1048576).toFixed(1), (download.total / 1048576).toFixed(1))
+      : t('pubCfUpdateRunning', null, t(cfUpdateStepKey(updateJob.step || 'download'))));
     status.hidden = false;
   }
 
@@ -6112,15 +6058,19 @@ function renderPublicJobLog(job, visible) {
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
-function renderPublicSteps(steps) {
+function renderStepList(keys, steps, labelFor) {
   const marks = { done: '✓', running: '◌', error: '✗', pending: '·' };
-  return publicStepKeys().map(key => {
+  return keys.map(key => {
     const state = steps[key] || 'pending';
     return `<div class="pub-step" data-state="${state}">
         <span class="pub-step-mark">${marks[state] || '·'}</span>
-        <span class="pub-step-body">${lanEscape(t(publicStepKey(key)))}</span>
+        <span class="pub-step-body">${lanEscape(t(labelFor(key)))}</span>
       </div>`;
   }).join('');
+}
+
+function renderPublicSteps(steps) {
+  return renderStepList(publicStepKeys(), steps, publicStepKey);
 }
 
 function publicStepKeys() { return ['binary', 'auth', 'create', 'dns', 'start', 'verify']; }
@@ -6145,6 +6095,7 @@ function publicErrorKey(code) {
     create_failed: 'pubErrCreate',
     dns_failed: 'pubErrRoot',
     start_failed: 'pubErrStart',
+    updating: 'pubErrUpdating',
   }[code] || 'pubErrUnknown';
 }
 
@@ -6157,6 +6108,223 @@ function publicModalPrimary() {
     return;
   }
   startPublicMount();
+}
+
+/* ── cloudflared 更新（按钮 + 进度弹窗） ──
+   点按钮先问一句最新版本（不下载）；确实有新版本才下那 50MB。
+   下载 / 替换 / 重启都在服务端后台跑；这里每秒轮询 /panel/api/public 的 payload.update。
+   如果面板本身是通过公网域名打开的，替换时隧道会短暂断开，fetch 失败属正常：
+   轮询遇到网络错误**不能停**，隧道回来自动继续。 */
+let cfUpdatePollTimer = null;
+let cfUpdatePendingResult = false;
+
+function cfUpdateStepKeys() { return ['check', 'download', 'replace', 'restart', 'verify']; }
+
+function cfUpdateStepKey(key) {
+  return {
+    check: 'pubCfUpdateStepCheck', download: 'pubCfUpdateStepDownload',
+    replace: 'pubCfUpdateStepReplace', restart: 'pubCfUpdateStepRestart',
+    verify: 'pubCfUpdateStepVerify',
+  }[key] || 'pubCfUpdateStepCheck';
+}
+
+function cfUpdateErrorKey(code) {
+  return {
+    download_failed: 'pubErrDownload',
+    binary_missing: 'pubCfUpdateNoBinary',
+    busy: 'pubCfUpdateBusy',
+    update_failed: 'pubCfUpdateFailed',
+    restart_failed: 'pubCfUpdateRestartFailed',
+  }[code] || 'pubCfUpdateFailed';
+}
+
+/* 问一句「有没有新版本」：只回版本号，不下载（服务端有 30 分钟缓存）。
+   refresh=true 时绕过缓存 —— 用户主动点「更新」就走这条，答案当场问出来。 */
+async function checkCloudflaredVersion(refresh) {
+  cfVersionChecked = true;              // 不管问没问到都算问过，别在轮询里反复问
+  try {
+    const r = await fetch('/panel/api/public/cloudflared/check' + (refresh ? '?refresh=1' : ''),
+                          { cache: 'no-store' });
+    const body = await r.json().catch(() => ({}));
+    if (body && body.payload) {
+      publicState = body.payload;
+      renderPublicAccess();
+    }
+    return body;
+  } catch { return null; }
+}
+
+async function openCloudflaredUpdateModal() {
+  const d = await loadPublicAccess();
+  if (!d) return;
+  const job = d.update || {};
+  if (job.state === 'running'
+      || (cfUpdatePendingResult && (job.state === 'done' || job.state === 'error'))) {
+    publicEl('cfUpdateModal').hidden = false;
+    await renderCfUpdateModal();
+    if (job.state === 'running') startCfUpdatePoll();
+    return;
+  }
+  if (!d.binary) { setPublicStatus('pubCfUpdateNoBinary'); return; }
+  // 先问一句有没有新版本：已经是最新就不下那 50MB，也不停隧道。
+  setPublicStatus('pubCfChecking');
+  const info = await checkCloudflaredVersion(true);
+  setPublicStatus('');
+  const version = (info && info.current) || (d.cloudflared || {}).version || '';
+  const latest = (info && info.latest) || '';
+  if (latest && !info.unknown && !info.outdated) {
+    setPublicStatus('pubCfAlreadyLatest', latest);
+    return;
+  }
+  const ok = await lanConfirm(t('pubCfUpdateConfirm', version, latest),
+                              'pubCfUpdateTitle', 'pubCfUpdateStart');
+  if (!ok) return;
+  setPublicStatus('');
+  cfUpdatePendingResult = true;
+  try {
+    const r = await fetch('/panel/api/public/cloudflared/update', { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    publicState = body.payload || publicState;
+    renderPublicAccess();
+    if (!body.ok) {
+      cfUpdatePendingResult = false;
+      setPublicStatus(cfUpdateErrorKey(body.error));
+      return;
+    }
+    publicEl('cfUpdateModal').hidden = false;
+    await renderCfUpdateModal();
+    startCfUpdatePoll();
+  } catch {
+    cfUpdatePendingResult = false;
+    setPublicStatus('pubErrUnknown');
+  }
+}
+
+function startCfUpdatePoll() {
+  stopCfUpdatePoll();
+  cfUpdatePollTimer = setInterval(async () => {
+    const d = await loadPublicAccess();
+    if (!d) return;                       // 隧道正在重启：请求失败是预期的，继续轮询
+    const job = d.update || {};
+    if (!publicEl('cfUpdateModal').hidden) await renderCfUpdateModal();
+    if (job.state === 'running') return;
+    stopCfUpdatePoll();
+    if (job.state === 'done') {
+      // 检查完发现已经是最新：说「已是最新版」，别谎称刚更新过
+      setPublicStatus(job.unchanged ? 'pubCfAlreadyLatest' : 'pubCfUpdateDoneShort',
+                      job.to_version || '');
+    } else if (job.state === 'error') setPublicStatus('pubCfUpdateFailedShort');
+    else if (job.state === 'idle' && !publicEl('cfUpdateModal').hidden) {
+      setPublicStatus('pubCfUpdateCancelled');
+      closeCfUpdateModal();
+    }
+  }, 1000);
+}
+
+function stopCfUpdatePoll() {
+  if (cfUpdatePollTimer) { clearInterval(cfUpdatePollTimer); cfUpdatePollTimer = null; }
+}
+
+async function renderCfUpdateModal() {
+  const d = publicState || {};
+  const job = d.update || {};
+  const state = job.state || 'idle';
+  const progress = publicEl('cfUpdateProgress');
+  const result = publicEl('cfUpdateResult');
+  const cancelBtn = publicEl('cfUpdateCancelBtn');
+  const doneBtn = publicEl('cfUpdateDoneBtn');
+  if (!progress || !result) return;
+
+  progress.hidden = state !== 'running';
+  result.hidden = state === 'running' || state === 'idle';
+  publicEl('cfUpdateModal').hidden = false;
+
+  if (state === 'running') {
+    publicEl('cfUpdateModalTitle').textContent = t('pubCfUpdateProgressTitle');
+    publicEl('cfUpdateModalDesc').textContent = t('pubCfUpdateProgressDesc');
+    publicEl('cfUpdateSteps').innerHTML =
+      renderStepList(cfUpdateStepKeys(), job.steps || {}, cfUpdateStepKey);
+    const download = job.download;
+    if (download) {
+      publicEl('cfUpdateBar').style.width = `${download.percent}%`;
+      setDynText(publicEl('cfUpdateText'), t(
+        'pubDownloadText', download.percent,
+        (download.received / 1048576).toFixed(1), (download.total / 1048576).toFixed(1)));
+    } else {
+      publicEl('cfUpdateBar').style.width = '100%';
+      setDynText(publicEl('cfUpdateText'),
+        t(cfUpdateStepKey(job.step || 'download')) + '…');
+    }
+    renderCfUpdateLog(job, true);
+    const cancelling = !!job.cancelled;
+    cancelBtn.hidden = !(job.step === 'check' || job.step === 'download');
+    cancelBtn.disabled = cancelling;
+    cancelBtn.textContent = cancelling ? t('pubCfUpdateCancelling') : t('pubCfUpdateCancel');
+    doneBtn.hidden = true;
+    return;
+  }
+
+  publicEl('cfUpdateModalTitle').textContent =
+    t(state === 'done' ? 'pubCfUpdateDoneTitle' : 'pubCfUpdateFailedTitle');
+  publicEl('cfUpdateModalDesc').textContent = '';
+  const detail = (job.error_detail || '').trim();
+  let message;
+  if (state === 'done') {
+    if (job.unchanged) {
+      message = t('pubCfUpdateAlreadyLatest', job.to_version || '');
+    } else {
+      message = t('pubCfUpdateDoneText', job.from_version || '', job.to_version || '');
+      message += ' ' + t(job.was_running && job.restarted
+        ? 'pubCfUpdateTunnelRestarted' : 'pubCfUpdateTunnelNotRunning');
+    }
+    setDynText(publicEl('cfUpdateResultText'), message);
+  } else {
+    setDynText(publicEl('cfUpdateResultText'),
+      t('pubErrorPrefix') + t(cfUpdateErrorKey(job.error))
+      + (detail ? ' ' + t('pubCfUpdateDetail') : ''));
+  }
+  const detailBox = publicEl('cfUpdateResultDetail');
+  detailBox.hidden = !detail;
+  detailBox.textContent = detail;
+  renderCfUpdateLog(job, false);
+  cancelBtn.hidden = true;
+  doneBtn.hidden = false;
+  doneBtn.textContent = t('pubCfUpdateDoneBtn');
+}
+
+function renderCfUpdateLog(job, visible) {
+  const box = publicEl('cfUpdateLog');
+  const hint = publicEl('cfUpdateLogHint');
+  box.hidden = !visible;
+  hint.hidden = !visible;
+  if (!visible) return;
+  const lines = (job && job.log) || [];
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+  box.textContent = lines.join('\n');
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function cancelCloudflaredUpdate() {
+  try { await fetch('/panel/api/public/cloudflared/update/cancel', { method: 'POST' }); } catch {}
+  try {
+    const d = await loadPublicAccess();
+    if (d) await renderCfUpdateModal();
+  } catch {}
+  if (!cfUpdatePollTimer) startCfUpdatePoll();
+}
+
+function closeCfUpdateModal() {
+  publicEl('cfUpdateModal').hidden = true;
+  const job = (publicState || {}).update || {};
+  if (job.state === 'running') {
+    startCfUpdatePoll();
+    return;
+  }
+  stopCfUpdatePoll();
+  if (job.state === 'done' || job.state === 'error' || job.state === 'idle') {
+    cfUpdatePendingResult = false;
+  }
+  loadPublicAccess();
 }
 
 async function startPublicMount() {
@@ -6262,7 +6430,8 @@ async function restartPublicTunnel() {
     const d = await r.json().catch(() => ({}));
     publicState = d.payload || publicState;
     renderPublicAccess();
-    setPublicStatus(d.ok ? 'pubStateOn' : 'pubErrStart');
+    setPublicStatus(d.ok ? 'pubStateOn'
+      : (d.error === 'updating' ? 'pubErrUpdating' : 'pubErrStart'));
   } catch { setPublicStatus('pubErrStart'); }
 }
 
@@ -6693,50 +6862,16 @@ async function importCookie() {
 const AP_TEXT = {
   'fonts.ui': ['界面字体', 'UI font'],
   'fonts.viewer': ['聊天字体', 'Chat font'],
-  'panel.theme': ['面板主题', 'Panel theme'],
-  'panel.colors.bg': ['页面背景', 'Page background'],
-  'panel.colors.bg2': ['卡片与侧栏', 'Cards & sidebar'],
-  'panel.colors.bg3': ['控件背景', 'Control background'],
-  'panel.colors.accent': ['主色', 'Accent'],
-  'panel.colors.text': ['正文颜色', 'Body text'],
-  'panel.colors.text2': ['次级文字', 'Secondary text'],
-  'panel.colors.text3': ['弱化文字', 'Faint text'],
-  'panel.colors.border': ['边框颜色', 'Border'],
-  'panel.colors.green': ['成功色', 'Success'],
-  'panel.colors.red': ['错误色', 'Danger'],
-  'panel.colors.yellow': ['警告色', 'Warning'],
   'panel.layout.radius': ['圆角', 'Corner radius'],
-  'panel.layout.cardPadding': ['卡片内边距', 'Card padding'],
   'panel.layout.sidebarWidth': ['侧栏宽度', 'Sidebar width'],
   'panel.layout.fontScale': ['字号缩放', 'Font scale'],
   'panel.layout.shadow': ['阴影强度', 'Shadow strength'],
-  'viewer.colors.bgPrimary': ['页面背景', 'Page background'],
-  'viewer.theme': ['查看器主题', 'Viewer theme'],
-  'viewer.colors.bgSecondary': ['顶部栏与卡片', 'Top bar & cards'],
-  'viewer.colors.bgTertiary': ['控件背景', 'Control background'],
-  'viewer.colors.bgMessageSelf': ['我方气泡', 'My bubble'],
-  'viewer.colors.bgMessageSelfEnd': ['我方气泡（渐变末端）', 'My bubble (gradient end)'],
-  'viewer.colors.bgMessageOther': ['对方气泡', 'Their bubble'],
-  'viewer.colors.textOnSelf': ['我方气泡文字', 'Text on my bubble'],
-  'viewer.colors.textPrimary': ['正文颜色', 'Body text'],
-  'viewer.colors.textSecondary': ['次级文字', 'Secondary text'],
-  'viewer.colors.textMuted': ['弱化文字', 'Faint text'],
-  'viewer.colors.borderColor': ['边框颜色', 'Border'],
-  'viewer.colors.accent': ['主色', 'Accent'],
-  'viewer.colors.highlight': ['搜索高亮', 'Search highlight'],
-  'viewer.colors.systemText': ['系统通知文字', 'System notice text'],
-  'viewer.colors.systemBg': ['系统通知背景', 'System notice background'],
-  'viewer.colors.cardBg': ['卡片背景', 'Card background'],
-  'viewer.colors.cardBorder': ['卡片边框', 'Card border'],
   'viewer.layout.messageFontSize': ['消息字号', 'Message font size'],
   'viewer.layout.letterSpacing': ['文字字间距', 'Letter spacing'],
   'viewer.layout.emojiScale': ['文字表情大小（倍数）', 'Inline text emoji size (×)'],
   'viewer.layout.listFontSize': ['会话列表字号', 'Conversation list size'],
   'viewer.layout.lineHeight': ['行高（倍数）', 'Line height (×)'],
   'viewer.layout.bubbleRadius': ['气泡圆角', 'Bubble radius'],
-  'viewer.layout.bubblePadX': ['气泡左右内边距', 'Bubble side padding'],
-  'viewer.layout.bubblePadY': ['气泡上下内边距', 'Bubble vertical padding'],
-  'viewer.layout.bubbleMaxWidthPct': ['气泡最大宽度（%）', 'Bubble max width (%)'],
   'viewer.layout.avatarSize': ['头像大小', 'Avatar size'],
   'viewer.layout.messageGap': ['消息间距', 'Message spacing'],
   'viewer.layout.sidebarWidth': ['会话列表宽度', 'Sidebar width'],
@@ -6746,33 +6881,26 @@ const AP_TEXT = {
   'viewer.layout.imageMaxSize': ['图片最大边长', 'Max image size'],
   'viewer.layout.videoMaxSize': ['视频最大边长', 'Max video size'],
   'viewer.layout.easterCardWidth': ['彩蛋福袋卡宽度', 'Easter redpack card width'],
+  'viewer.layout.shareVideoCardWidth': ['分享视频卡宽度', 'Share video card width'],
+  'viewer.layout.shareCommentCardWidth': ['分享评论卡宽度', 'Share comment card width'],
 };
 
 const AP_GROUP_TEXT = {
   fonts: ['字体', 'Fonts'],
-  panelColors: ['面板配色', 'Panel colors'],
   panelLayout: ['面板布局', 'Panel layout'],
-  viewerColors: ['查看器配色', 'Viewer colors'],
   viewerLayout: ['查看器布局与字号', 'Viewer layout & sizes'],
 };
 
-const AP_THEME_TEXT = {
-  dark: ['暗色', 'Dark'], light: ['浅色', 'Light'], ocean: ['海洋', 'Ocean'],
-  purple: ['紫色', 'Purple'], custom: ['自定义', 'Custom'],
-  wechat: ['微信绿', 'WeChat green'], warm: ['暖棕', 'Warm brown'],
-};
-
-// 只留改了能一眼看出来的项；像"浮层背景""滚动条""价格文字"这类太偏门的已经去掉。
+// 面板配色、查看器配色两个分组已经从设置里去掉；这里只保留"自定义主题"仍然
+// 需要套用的面板颜色键（老配置里选过自定义的话，颜色照旧生效）。
 const AP_PANEL_COLOR_KEYS = ['bg', 'bg2', 'bg3', 'accent', 'text', 'text2', 'text3', 'border', 'green', 'red', 'yellow'];
-const AP_VIEWER_COLOR_KEYS = ['bgPrimary', 'bgSecondary', 'bgTertiary', 'bgMessageSelf', 'bgMessageSelfEnd', 'bgMessageOther', 'textOnSelf', 'textPrimary', 'textSecondary', 'textMuted', 'borderColor', 'accent', 'highlight', 'systemText', 'systemBg', 'cardBg', 'cardBorder'];
 // [最小值, 最大值, 步进]
 const AP_PANEL_LAYOUT = {
-  radius: [0, 32, 1], cardPadding: [8, 48, 1],
+  radius: [0, 32, 1],
   sidebarWidth: [160, 360, 1], fontScale: [0.8, 1.5, 0.05],
 };
 const AP_VIEWER_LAYOUT = {
   messageFontSize: [10, 24, 1], emojiScale: [0.5, 2.5, 0.05], listFontSize: [10, 18, 1], lineHeight: [1.2, 2, 0.05], bubbleRadius: [0, 32, 1],
-  bubblePadX: [4, 24, 1], bubblePadY: [4, 24, 1], bubbleMaxWidthPct: [40, 95, 1],
   avatarSize: [20, 64, 1], messageGap: [0, 24, 1],
   sidebarWidth: [200, 420, 1],
   letterSpacing: [-1, 8, 0.5],
@@ -6780,11 +6908,14 @@ const AP_VIEWER_LAYOUT = {
   imageMaxSize: [120, 600, 10], videoMaxSize: [120, 600, 10],
   // 彩蛋福袋卡按固定比例画，字跟着宽度换算，所以只给宽度一项就能整体缩放
   easterCardWidth: [120, 360, 10],
+  // 视频卡和评论卡分开：卡里的字号、缩略图、留白都按各自宽度百分比换算
+  shareVideoCardWidth: [140, 360, 10],
+  shareCommentCardWidth: [140, 360, 10],
 };
 
 // 数字字段后面那行"最小值–最大值 单位"里的单位
 const AP_RANGE_UNIT = {
-  lineHeight: '×', emojiScale: '×', bubbleMaxWidthPct: '%', fontScale: '×',
+  lineHeight: '×', emojiScale: '×', fontScale: '×',
   emojiOffsetX: 'em', emojiOffsetY: 'em',
 };
 
@@ -6794,12 +6925,8 @@ function apRangeUnit(key) {
 
 const AP_GROUPS = [
   { key: 'fonts', fields: ['fonts.ui', 'fonts.viewer'].map(p => ({ path: p, type: 'font' })) },
-  { key: 'panelColors', fields: [{ path: 'panel.theme', type: 'theme', themes: ['dark', 'light', 'ocean', 'purple', 'custom'] }]
-      .concat(AP_PANEL_COLOR_KEYS.map(k => ({ path: 'panel.colors.' + k, type: 'color' }))) },
   { key: 'panelLayout', fields: Object.keys(AP_PANEL_LAYOUT).map(k => ({ path: 'panel.layout.' + k, type: 'number', range: AP_PANEL_LAYOUT[k], unit: apRangeUnit(k) }))
       .concat([{ path: 'panel.layout.shadow', type: 'select', options: [0, 1, 2, 3].map(v => ({ value: v, labelKey: 'apShadow' + v })) }]) },
-  { key: 'viewerColors', fields: [{ path: 'viewer.theme', type: 'theme', themes: ['dark', 'wechat', 'light', 'warm', 'purple', 'custom'] }]
-      .concat(AP_VIEWER_COLOR_KEYS.map(k => ({ path: 'viewer.colors.' + k, type: 'color' }))) },
   { key: 'viewerLayout', fields: Object.keys(AP_VIEWER_LAYOUT).map(k => ({ path: 'viewer.layout.' + k, type: 'number', range: AP_VIEWER_LAYOUT[k], unit: apRangeUnit(k) })) },
 ];
 
@@ -6821,7 +6948,7 @@ let apFonts = [];        // 内置字体清单（来自后端）
 let apLocalFonts = [];   // 本机字体（浏览器授权后读到）
 
 function apText(key) {
-  const row = AP_TEXT[key] || AP_GROUP_TEXT[key] || AP_THEME_TEXT[key];
+  const row = AP_TEXT[key] || AP_GROUP_TEXT[key];
   if (!row) return key;
   return lang === 'en' ? row[1] : row[0];
 }
@@ -6891,7 +7018,6 @@ function applyPanelAppearance() {
   // 等宽字体已经不是设置项了，交给 CSS 里的默认值
   body.style.removeProperty('--panel-mono');
   body.style.setProperty('--panel-sidebar', (layout.sidebarWidth || 224) + 'px');
-  body.style.setProperty('--card-padding', (layout.cardPadding == null ? 22 : layout.cardPadding) + 'px');
   body.style.removeProperty('--section-gap');
   body.style.setProperty('--font-scale', String(layout.fontScale || 1));
   body.style.setProperty('--panel-shadow', AP_SHADOWS[layout.shadow] || AP_SHADOWS[1]);
@@ -6903,66 +7029,6 @@ function applyPanelAppearance() {
   });
   body.setAttribute('data-theme', custom ? 'custom' : (panel.theme || 'dark'));
   syncAppearanceTheme();
-  applyAppearancePreview();
-}
-
-// 预览窗口里的聊天部分：用 --pv-* 变量，取值跟随"查看器外观"设置。
-function applyAppearancePreview() {
-  if (!apData) return;
-  const body = document.body;
-  const viewer = apData.viewer || {};
-  const layout = viewer.layout || {};
-  const custom = viewer.theme === 'custom';
-  const palette = AP_VIEWER_PALETTES[viewer.theme] || AP_VIEWER_PALETTES.dark;
-  const colors = viewer.colors || {};
-  const pick = key => (custom ? colors[key] : null) || palette[key] || AP_VIEWER_PALETTES.dark[key];
-  const bubbleBg = key => {
-    const start = pick('bgMessageSelf');
-    const end = pick('bgMessageSelfEnd');
-    return end && end !== start ? 'linear-gradient(180deg, ' + start + ' 0%, ' + end + ' 100%)' : start;
-  };
-
-  const set = (name, value) => body.style.setProperty(name, value);
-  set('--pv-bg-primary', pick('bgPrimary'));
-  set('--pv-bg-secondary', pick('bgSecondary'));
-  set('--pv-bg-tertiary', pick('bgTertiary'));
-  set('--pv-bg-message-other', pick('bgMessageOther'));
-  set('--pv-bg-message-self', bubbleBg());
-  set('--pv-text-on-self', pick('textOnSelf'));
-  set('--pv-text-primary', pick('textPrimary'));
-  set('--pv-text-secondary', pick('textSecondary'));
-  set('--pv-text-muted', pick('textMuted'));
-  set('--pv-border', pick('borderColor'));
-  set('--pv-accent', pick('accent'));
-  set('--pv-highlight', pick('highlight'));
-  set('--pv-system-text', pick('systemText'));
-  set('--pv-system-bg', pick('systemBg'));
-  set('--pv-card-bg', pick('cardBg'));
-  set('--pv-card-border', pick('cardBorder'));
-  set('--pv-msg-font-size', (layout.messageFontSize || 14) + 'px');
-  // 气泡文字的字间距；0 时写 0px，跟真页面一样是"原样"
-  set('--pv-msg-letter-spacing', (layout.letterSpacing || 0) + 'px');
-  // 气泡里的文字式表情图片大小：默认 1 倍 = 跟消息文字一样大
-  set('--pv-emoji-text-size', (layout.emojiScale || 1) + 'em');
-  set('--pv-list-font-size', (layout.listFontSize || 13) + 'px');
-  set('--pv-msg-line-height', String(layout.lineHeight || 1.55));
-  set('--pv-bubble-radius', (layout.bubbleRadius || 0) + 'px');
-  set('--pv-bubble-pad-x', (layout.bubblePadX || 13) + 'px');
-  set('--pv-bubble-pad-y', (layout.bubblePadY || 9) + 'px');
-  set('--pv-msg-max-width', (layout.bubbleMaxWidthPct || 74) + '%');
-  set('--pv-avatar-size', (layout.avatarSize || 36) + 'px');
-  set('--pv-msg-gap', (layout.messageGap == null ? 3 : layout.messageGap) + 'px');
-  set('--pv-sidebar-width', (layout.sidebarWidth || 300) + 'px');
-  // 预览只有真页面的四分之一宽，三种媒体框都按比例缩，才看得出"最大边长"调大调小
-  const pvSize = (value, fallback) =>
-    Math.min(Math.max(Math.round((value || fallback) * 0.24), 20), 110) + 'px';
-  set('--pv-emoji-size', pvSize(layout.emojiMaxSize, 240));
-  // 文字式表情（[钱]、[憨笑]）的偏移：跟真页面一样按 em 走，
-  // 预览里的内联表情也就是那个跟着气泡字号变的小图片
-  set('--pv-emoji-offset-x', (layout.emojiOffsetX || 0) + 'em');
-  set('--pv-emoji-offset-y', (layout.emojiOffsetY || 0) + 'em');
-  set('--pv-media-max-size', pvSize(layout.imageMaxSize, 240));
-  set('--pv-video-size', pvSize(layout.videoMaxSize, 280));
 }
 
 /* ── 选择弹窗：字体 / 主题 / 阴影档位共用同一个居中的弹窗 ── */
@@ -7018,22 +7084,6 @@ function choosePickOption(value) {
   closePicker();
 }
 
-// 主题色小圆点：内置主题用它们各自的强调色，自定义用当前自定义主色
-const AP_THEME_DOTS = {
-  dark: '#f2586e', light: '#1677ff', ocean: '#35c0d6', purple: '#b57cff',
-  wechat: '#95ec69', warm: '#e8a050', custom: null,
-};
-
-function apThemeDotColor(id, path) {
-  if (id === 'custom') {
-    // 面板主题看面板的自定义主色，查看器主题看查看器的
-    return path && path.startsWith('panel.')
-      ? (apData.panel?.colors?.accent || '#8a8f9c')
-      : (apData.viewer?.colors?.accent || '#8a8f9c');
-  }
-  return AP_THEME_DOTS[id] || '#8a8f9c';
-}
-
 function renderPicker() {
   const list = document.getElementById('apPickerList');
   const preview = document.getElementById('apPickerPreview');
@@ -7045,7 +7095,7 @@ function renderPicker() {
   const current = apGetPath(apData, apPickPath);
   const isFont = field.type === 'font';
 
-  if (title) title.textContent = t(isFont ? 'apFontPickTitle' : field.type === 'theme' ? 'apThemePickTitle' : 'apShadowPickTitle');
+  if (title) title.textContent = t(isFont ? 'apFontPickTitle' : 'apShadowPickTitle');
   if (footBtn) footBtn.style.display = isFont ? '' : 'none';
   document.getElementById('apPickerHint').textContent = '';
 
@@ -7073,8 +7123,6 @@ function renderPicker() {
     list.innerHTML = '<div class="ap-pick-group">' + t('apBuiltinFonts') + '</div>' + builtin
       + (local ? '<div class="ap-pick-group">' + t('apLocalFontGroup') + '</div>' + local : '')
       + (saved ? '<div class="ap-pick-group">' + t('apSavedFont') + '</div>' + saved : '');
-  } else if (field.type === 'theme') {
-    list.innerHTML = field.themes.map(id => row(id, apText(id), null, apThemeDotColor(id, field.path))).join('');
   } else {
     list.innerHTML = field.options.map(o => row(o.value, t(o.labelKey), null, null)).join('');
   }
@@ -7086,7 +7134,7 @@ function apPreviewPick(element) {
   apPreviewPickItem(element.dataset.value, element);
 }
 
-// 弹窗顶部那行"预览"：字体显示自己的字形，主题显示配色圆点 + 名字
+// 弹窗顶部那行"预览"：字体显示自己的字形，阴影档位显示一个示例方块
 function apPreviewPickItem(value, element) {
   const preview = document.getElementById('apPickerPreview');
   const field = apFieldByPath(apPickPath);
@@ -7095,10 +7143,6 @@ function apPreviewPickItem(value, element) {
   if (field.type === 'font') {
     preview.style.fontFamily = element ? element.style.fontFamily : apFontStackOf(value);
     preview.textContent = (label || apFontLabel(value)) + ' · ' + t('apFontPreviewText');
-  } else if (field.type === 'theme') {
-    preview.style.fontFamily = '';
-    preview.innerHTML = '<span class="ap-pick-dot" style="background:' + apEsc(apThemeDotColor(value, apPickPath)) + '"></span>'
-      + '<span>' + apEsc(label || apText(value)) + '</span>';
   } else {
     preview.style.fontFamily = '';
     const label2 = label || t((field.options.find(o => String(o.value) === String(value)) || {}).labelKey || 'apShadow1');
@@ -7142,11 +7186,6 @@ function apControlHtml(field) {
     control = '<button type="button" class="ap-pick-btn"' + bind
       + ' onclick="openPicker(\'' + field.path + '\')" title="' + apEsc(apFontLabel(value)) + '">'
       + '<span>' + apEsc(apFontLabel(value)) + '</span><i>▾</i></button>';
-  } else if (field.type === 'theme') {
-    control = '<button type="button" class="ap-pick-btn"' + bind
-      + ' onclick="openPicker(\'' + field.path + '\')" title="' + apEsc(apText(value)) + '">'
-      + '<span class="ap-pick-dot" style="background:' + apEsc(apThemeDotColor(value, field.path)) + '"></span>'
-      + '<span>' + apEsc(apText(value)) + '</span><i>▾</i></button>';
   } else if (field.type === 'select') {
     const option = field.options.find(o => String(o.value) === String(value)) || field.options[0];
     control = '<button type="button" class="ap-pick-btn"' + bind

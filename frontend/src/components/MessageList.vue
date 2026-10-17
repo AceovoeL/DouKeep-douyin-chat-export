@@ -527,29 +527,15 @@
                   </div>
                 </div>
               </div>
-              <!-- 分享卡片（含 type=0/1 漏网的作品/地点/直播卡） -->
-              <div v-else-if="isShareCard(msg)" class="msg-share-card" @click="openShare(msg)">
-                <div v-if="getShareInfo(msg).comment || getShareInfo(msg).commentImg" class="msg-share-comment">
-                  <span v-if="getShareInfo(msg).commentUser" class="msg-share-comment-user">{{ getShareInfo(msg).commentUser }}：</span>{{ getShareInfo(msg).comment }}
-                  <img v-if="getShareInfo(msg).commentImg" :src="getShareInfo(msg).commentImg" class="msg-share-comment-img" :loading="imgLoading" @error="onImgError" />
-                </div>
-                <div class="msg-share-card-inner">
-                  <div class="msg-share-card-body">
-                    <!-- 没有标题的作品分享不写占位文字，标题行整行留白 -->
-                    <div v-if="shareCardTitle(msg)" class="msg-share-card-title">{{ shareCardTitle(msg) }}</div>
-                    <div v-if="getShareInfo(msg).author" class="msg-share-card-author">
-                      @ {{ getShareInfo(msg).author }}
-                    </div>
-                  </div>
-                  <img
-                    v-if="getShareInfo(msg).cover"
-                    :src="getShareInfo(msg).cover"
-                    class="msg-share-card-cover"
-                    :loading="imgLoading"
-                    @error="onImgError"
-                  />
-                </div>
-              </div>
+              <!-- 分享卡片（含 type=0/1 漏网的作品/地点/直播卡）：
+                   视频/图文/动图/文章都画成「宽封面 + 播放按钮 + 左下角作者 + 下方标题」，
+                   分享评论则是「评论 + 灰色分割线 + 视频封面与标题」，见 ShareCard.vue。 -->
+              <ShareCard
+                v-else-if="isShareCard(msg)"
+                :message="msg"
+                :loading="imgLoading"
+                @open="openShare(msg)"
+              />
               <!-- 视频消息：本地有 .mp4 → 真播放；否则展示封面 + 时长 -->
               <div v-else-if="isJsonVideo(msg)" class="msg-media msg-video-poster">
                 <video
@@ -583,28 +569,12 @@
                 <div v-else class="msg-media-missing">[贴纸]</div>
               </div>
               <!-- msg_type=1 但实际是分享卡片（JSON content 含 content_title） -->
-              <div v-else-if="isJsonShare(msg)" class="msg-share-card" @click="openShare(msg)">
-                <div v-if="getShareInfo(msg).comment || getShareInfo(msg).commentImg" class="msg-share-comment">
-                  <span v-if="getShareInfo(msg).commentUser" class="msg-share-comment-user">{{ getShareInfo(msg).commentUser }}：</span>{{ getShareInfo(msg).comment }}
-                  <img v-if="getShareInfo(msg).commentImg" :src="getShareInfo(msg).commentImg" class="msg-share-comment-img" :loading="imgLoading" @error="onImgError" />
-                </div>
-                <div class="msg-share-card-inner">
-                  <div class="msg-share-card-body">
-                    <!-- 没有标题的作品分享不写占位文字，标题行整行留白 -->
-                    <div v-if="shareCardTitle(msg)" class="msg-share-card-title">{{ shareCardTitle(msg) }}</div>
-                    <div v-if="getShareInfo(msg).author" class="msg-share-card-author">
-                      @ {{ getShareInfo(msg).author }}
-                    </div>
-                  </div>
-                  <img
-                    v-if="getShareInfo(msg).cover"
-                    :src="getShareInfo(msg).cover"
-                    class="msg-share-card-cover"
-                    :loading="imgLoading"
-                    @error="onImgError"
-                  />
-                </div>
-              </div>
+              <ShareCard
+                v-else-if="isJsonShare(msg)"
+                :message="msg"
+                :loading="imgLoading"
+                @open="openShare(msg)"
+              />
               <!-- 语音消息 -->
               <div v-else-if="isVoiceMsg(msg)" class="msg-bubble msg-voice-bubble">
                 <div class="msg-voice-player" :class="{ playing: isVoicePlaying(msg) }">
@@ -679,7 +649,7 @@
                 </div>
               </div>
               <!-- 评论引用视频（aweType=700，文本+关联视频） -->
-              <div v-else-if="isVideoComment(msg)" class="msg-share-card" @click="openVideoReference(msg)">
+              <div v-else-if="isVideoComment(msg)" class="msg-video-comment-card" @click="openVideoReference(msg)">
                 <div class="msg-share-comment" v-html="renderText(msg.content)"></div>
                 <div class="msg-share-card-inner msg-share-card-ref">
                   <span class="msg-share-card-ref-icon">▶</span>
@@ -742,7 +712,7 @@ import LivePhoto from './LivePhoto.vue'
 import {
   clearCjCache, getContentJson, tryParseJson, tryParseShareContent, extractShareTitle,
   isJsonSystemMsg, isJsonSticker, getStickerUrl, shouldShow, renderSystemMsg, getWatchTogether, getProfileCard, getForwardInfo, isSystemMsg, duplicateSystemMessageIds,
-  extractServerMsgIds, isVideoComment, isJsonShare, getShareInfo, shareCardTitle, getInlinePic,
+  extractServerMsgIds, isVideoComment, isJsonShare, getShareInfo, getInlinePic,
   isLooseEmoji, isLooseImage, isShareCard,
   isVideoMsg, hasLocalVideo, isJsonVideo, getVideoPoster, getVideoDuration,
   getImageSrc, getEmojiSrc, getLivePhotoVideo, isViewOnce, getViewOnceText, getModifyKinds, getModifyReactions,
@@ -791,6 +761,7 @@ import dailyFireRing from '@/assets/head_wrapper_circle.png'
 import easterCardBackground from '@/assets/gift.png'
 
 import ForwardRecords from './ForwardRecords.vue'
+import ShareCard from './ShareCard.vue'
 
 const props = defineProps({
   conversation: Object,
@@ -1599,7 +1570,7 @@ function selectMsgContent(e) {
   if (!body) return
   // 优先精确选中消息内容容器（避开 sender / time）
   const content = body.querySelector(
-  ':scope > .msg-bubble, :scope > .msg-share-card, :scope > .msg-goods-card, :scope > .msg-share-comment, :scope > .msg-media'
+  ':scope > .msg-bubble, :scope > .msg-share-card, :scope > .msg-video-comment-card, :scope > .msg-goods-card, :scope > .msg-media'
   )
   const target = content || body
   const range = document.createRange()
@@ -3505,8 +3476,10 @@ watch(() => props.jumpToSeq, async (seq) => {
   margin-top: auto;
 }
 
-/* 分享卡片 */
-.msg-share-card {
+/* 评论引用视频（aweType=700）：朴素的「评论 + 引用的视频」小卡。
+   真正的分享视频/图文卡片由 ShareCard.vue 画（宽封面、播放按钮、作者条、下方标题），
+   两者的外观规则不放在一起，免得改一边顺手碰坏另一边。 */
+.msg-video-comment-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3519,63 +3492,22 @@ watch(() => props.jumpToSeq, async (seq) => {
   max-width: var(--share-card-width);
   border-left: 3px solid var(--accent);
 }
+.msg-video-comment-card:hover {
+  filter: brightness(1.1);
+}
+.msg-item.msg-self > .msg-body > .msg-video-comment-card {
+  background: var(--bg-message-self);
+  border-top-left-radius: 10px;
+  border-top-right-radius: 2px;
+}
 .msg-share-comment {
   font-size: 14px;
   line-height: 1.5;
   word-break: break-word;
 }
-.msg-share-comment-user {
-  font-weight: 600;
-  color: var(--accent);
-}
-.msg-share-comment-img {
-  display: block;
-  max-width: 180px;
-  max-height: 180px;
-  border-radius: 6px;
-  margin-top: 6px;
-  object-fit: contain;
-}
 .msg-share-card-inner {
   display: flex;
   gap: 10px;
-}
-.msg-share-card:hover {
-  filter: brightness(1.1);
-}
-.msg-item.msg-self > .msg-body > .msg-share-card {
-  background: var(--bg-message-self);
-  border-top-left-radius: 10px;
-  border-top-right-radius: 2px;
-}
-.msg-share-card-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.msg-share-card-title {
-  font-size: 13px;
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-.msg-share-card-author {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: auto;
-}
-.msg-share-card-cover {
-  width: 60px;
-  height: 60px;
-  border-radius: 6px;
-  object-fit: cover;
-  flex-shrink: 0;
-  align-self: center;
 }
 .msg-share-card-ref {
   background: var(--bg-tertiary);

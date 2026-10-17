@@ -35,8 +35,6 @@ const SIZE_VARS = {
   messageFontSize: '--msg-font-size',
   listFontSize: '--conv-name-size',
   bubbleRadius: '--bubble-radius',
-  bubblePadX: '--bubble-pad-x',
-  bubblePadY: '--bubble-pad-y',
   avatarSize: '--msg-avatar-size',
   messageGap: '--msg-gap',
   sidebarWidth: '--sidebar-width',
@@ -44,6 +42,8 @@ const SIZE_VARS = {
   imageMaxSize: '--media-max-size',
   videoMaxSize: '--video-max-size',
   easterCardWidth: '--easter-card-width',
+  shareVideoCardWidth: '--share-video-card-width',
+  shareCommentCardWidth: '--share-comment-card-width',
   letterSpacing: '--msg-letter-spacing',
 }
 
@@ -59,10 +59,6 @@ const EM_VARS = {
   emojiOffsetY: '--emoji-offset-y',
 }
 
-const PERCENT_VARS = {
-  bubbleMaxWidthPct: '--msg-max-width',
-}
-
 // 所有可能被写进去的变量名，换主题时要先清干净，否则会残留上一套配色。
 const ALL_VARS = [
   ...Object.values(COLOR_VARS),
@@ -70,7 +66,6 @@ const ALL_VARS = [
   ...Object.values(SIZE_VARS),
   ...Object.values(UNITLESS_VARS),
   ...Object.values(EM_VARS),
-  ...Object.values(PERCENT_VARS),
   '--font-viewer',
 ]
 
@@ -96,10 +91,6 @@ export function toCssVars(payload, options = {}) {
   for (const [key, name] of Object.entries(EM_VARS)) {
     const value = layout[key]
     if (typeof value === 'number') vars[name] = `${value}em`
-  }
-  for (const [key, name] of Object.entries(PERCENT_VARS)) {
-    const value = layout[key]
-    if (typeof value === 'number') vars[name] = `${value}%`
   }
 
   if (appearance?.fonts?.viewer) {

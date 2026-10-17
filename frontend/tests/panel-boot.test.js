@@ -63,6 +63,66 @@ describe('控制面板页面启动', () => {
 })
 
 /**
+ * 「外观」设置的分组：字体、面板布局、查看器布局与字号。
+ * 面板配色 / 查看器配色整块删除，气泡内边距和气泡最大宽度也不再出现；
+ * 分享卡拆成视频卡、评论卡两个独立宽度。这里直接把设置渲染出来核对字段。
+ */
+describe('外观设置分组', () => {
+  it('只保留字体、面板布局、查看器布局，字段与要求一致', async () => {
+    const { dom, window: win } = bootPanel()
+    const appearance = {
+      fonts: { ui: 'system', viewer: 'system' },
+      panel: { theme: 'dark', colors: {}, layout: { radius: 14, sidebarWidth: 224, fontScale: 1, shadow: 1 } },
+      viewer: { theme: 'dark', colors: {}, layout: {
+        messageFontSize: 14, lineHeight: 1.55, bubbleRadius: 14, avatarSize: 36,
+        shareVideoCardWidth: 180, shareCommentCardWidth: 240,
+      } },
+    }
+    // 走真实加载路径：外观接口返回上面这份配置，页面自己填进分组
+    win.fetch = async () => ({
+      ok: true,
+      json: async () => ({ appearance, defaults: appearance, fonts: [] }),
+    })
+    await win.loadAppearance()
+    const doc = win.document
+    const groups = [...doc.querySelectorAll('#apFields details[data-group]')]
+      .map(el => el.dataset.group)
+    expect(groups).toEqual(['fonts', 'panelLayout', 'viewerLayout'])
+
+    const paths = [...doc.querySelectorAll('#apFields [data-ap-path]')]
+      .map(el => el.dataset.apPath)
+    // 字体与面板布局只留这 6 项
+    for (const keep of [
+      'fonts.ui', 'fonts.viewer', 'panel.layout.radius',
+      'panel.layout.sidebarWidth', 'panel.layout.fontScale', 'panel.layout.shadow',
+    ]) expect(paths).toContain(keep)
+    expect(paths).not.toContain('panel.layout.cardPadding')
+
+    // 查看器布局：气泡内边距 / 最大宽度删除，分享卡拆成两项
+    for (const gone of [
+      'viewer.layout.bubblePadX', 'viewer.layout.bubblePadY',
+      'viewer.layout.bubbleMaxWidthPct',
+    ]) expect(paths).not.toContain(gone)
+    expect(paths).toContain('viewer.layout.shareVideoCardWidth')
+    expect(paths).toContain('viewer.layout.shareCommentCardWidth')
+
+    // 两个分享卡宽度按中文名显示，改一项就是整张卡等比缩放
+    const labelOf = path => doc.querySelector(
+      '#apFields [data-ap-path="' + path + '"]',
+    ).closest('.ap-field').querySelector('label').textContent
+    expect(labelOf('viewer.layout.shareVideoCardWidth')).toBe('分享视频卡宽度')
+    expect(labelOf('viewer.layout.shareCommentCardWidth')).toBe('分享评论卡宽度')
+
+    // 配色分组已经整块删除
+    expect(doc.querySelector('#apFields [data-ap-path^="panel.colors."]')).toBeNull()
+    expect(doc.querySelector('#apFields [data-ap-path^="viewer.colors."]')).toBeNull()
+    expect(doc.querySelector('#apFields [data-ap-path="panel.theme"]')).toBeNull()
+    expect(doc.querySelector('#apFields [data-ap-path="viewer.theme"]')).toBeNull()
+    dom.window.close()
+  })
+})
+
+/**
  * 资源包弹窗那两句分工：
  * * `#packWhat` 是固定的说明（这是什么、不下会怎样），**任何状态下都在**；
  * * `#packModalMessage` 只说「现在什么状态」（要不要下 / 下载中 / 装好了 / 失败）。
