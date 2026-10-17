@@ -158,3 +158,68 @@ async function flush() {
   await new Promise(resolve => setTimeout(resolve, 0))
   await nextTick()
 }
+
+
+// ── 「彩蛋福袋」卡（aweType=110360 · card_key=msg_easter_redpack）────────────────
+// 结构照真实样本：content_json 里嵌 im_dynamic_patch，raw_data 是再次编码的排版 JSON。
+// 图片和账号只用假值；卡片上的两行字是固定的，不随载荷文案变。
+function easterMsg(id, ts, senderUid = 'bbb') {
+  const contentJson = {
+    aweType: 110360,
+    description: '[彩蛋福袋]',
+    im_dynamic_patch: {
+      card_key: 'msg_easter_redpack',
+      card_type: 'pay_msg_easter_redpack_card',
+      raw_data: JSON.stringify({
+        top: { cover_image: 'https://p26-infras.byteimg.com/static-assets/demo.png' },
+        bottom: { content: '彩蛋福袋' },
+        content_content: { content: '已领取' },
+      }),
+    },
+  }
+  return {
+    msg_id: id,
+    msg_type: 0,
+    seq: Number(id.slice(1)),
+    timestamp: ts,
+    sender_uid: senderUid,
+    content: '[彩蛋福袋]',
+    raw_data: JSON.stringify({ content_json: JSON.stringify(contentJson) }),
+    media_local_path: 'card_icons/demo.png',
+  }
+}
+
+describe('聊天窗口的彩蛋福袋卡', () => {
+  it('按发送者分左右，两行文字固定写「已过期」「彩蛋福袋」', async () => {
+    items = [easterMsg('m1', T0, 'bbb')]
+    const { app, host } = mount()
+    await flush()
+
+    const item = host.querySelector('.msg-item')
+    const card = host.querySelector('.msg-easter-card')
+    expect(card).not.toBeNull()
+    // 不是居中的系统提示（否则它会落在 .msg-system 里）
+    expect(item.classList.contains('msg-system')).toBe(false)
+    expect(item.classList.contains('msg-self')).toBe(false)
+    // 载荷里写的是「已领取」，卡片上一律改成「已过期」
+    expect(card.querySelector('.msg-easter-status').textContent.trim()).toBe('已过期')
+    expect(card.querySelector('.msg-easter-name').textContent.trim()).toBe('彩蛋福袋')
+    // 采集时存下的本地图优先（不发网络请求）
+    expect(card.querySelector('.msg-easter-cover').getAttribute('src'))
+      .toBe('/media/card_icons/demo.png')
+    // 商品卡的兜底判据很宽，别把这族卡片截成一个空商品壳
+    expect(host.querySelector('.msg-goods-card')).toBeNull()
+    app.unmount()
+    host.remove()
+  })
+
+  it('自己发的卡片贴右边', async () => {
+    items = [easterMsg('m1', T0, 'aaa')]
+    const { app, host } = mount()
+    await flush()
+    expect(host.querySelector('.msg-item').classList.contains('msg-self')).toBe(true)
+    expect(host.querySelector('.msg-easter-card')).not.toBeNull()
+    app.unmount()
+    host.remove()
+  })
+})

@@ -113,6 +113,21 @@ def test_message_letter_spacing_and_emoji_offsets_are_validated():
     assert offset("emojiOffsetX", "0.5") == 0.0  # 字符串不接受，回默认
 
 
+def test_easter_redpack_card_width_is_clamped():
+    """彩蛋福袋卡的宽度：默认 200px，能在 120–360px 之间等比缩放。"""
+    defaults = appearance.default_appearance()["viewer"]["layout"]
+    assert defaults["easterCardWidth"] == 200
+
+    clamp = lambda value: appearance.normalize_appearance(
+        {"viewer": {"layout": {"easterCardWidth": value}}}
+    )["viewer"]["layout"]["easterCardWidth"]
+    low, high = appearance.VIEWER_LAYOUT_DEFAULTS["easterCardWidth"][1:]
+    assert clamp(9999) == high
+    assert clamp(10) == low
+    assert clamp(280) == 280
+    assert clamp("280") == 200  # 字符串不接受，回默认
+
+
 def test_theme_choice_is_validated():
     assert appearance.normalize_appearance({"panel": {"theme": "ocean"}})["panel"]["theme"] == "ocean"
     assert appearance.normalize_appearance({"panel": {"theme": "neon"}})["panel"]["theme"] == "dark"

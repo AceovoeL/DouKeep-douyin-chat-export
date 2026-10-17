@@ -43,6 +43,7 @@ const SIZE_VARS = {
   emojiMaxSize: '--emoji-max-size',
   imageMaxSize: '--media-max-size',
   videoMaxSize: '--video-max-size',
+  easterCardWidth: '--easter-card-width',
   letterSpacing: '--msg-letter-spacing',
 }
 

@@ -3,16 +3,32 @@
 Chat-media URLs are independent of merge-share JSON. Images/emoji/voice use the
 payload's own origin URL + AES-GCM skey (or a plain CDN URL). Self-recorded
 videos need a logged-in batch_play_info lookup — see video_downloader.
+
+下载统一走 :func:`fetch_with_retries`：抖音的图片 CDN 在密集下载时偶尔直接掐断连接
+（``WinError 10054``），以前一次失败就丢一张图，还会被面板当成「采集报错」弹框、暂停
+整轮采集；现在瞬时断线会先重试，重试仍失败也不会打断采集（见
+``extractor/web_scraper.py`` 的失败汇总）。
 """
 import json
 import logging
 import os
 import re
+import time
+import urllib.error
 
 from common.paths import EMOJI_DIR, IMAGES_DIR, MEDIA_DIR, VIDEOS_DIR, VOICE_DIR
 from common.tls import client_context
 
 media_log = logging.getLogger("app.media")
+
+#: 一次下载最多试几次、两次之间等多久（第 1 次重试前等 0.5 秒，第 2 次前等 1 秒）。
+#: 只在「连接被对方掐断」这类瞬时错误上重试，见 :func:`is_transient_download_error`。
+DOWNLOAD_ATTEMPTS = 3
+_RETRY_WAIT = 0.5
+
+#: Windows 下「连接被掐断」的错误码：10053 本机中止，10054 远端重置
+#: （日志里那句「远程主机强迫关闭了一个现有的连接」就是后者）。
+_TRANSIENT_WINERRORS = (10053, 10054)
 
 
 def _object(value):
@@ -77,6 +93,51 @@ def _fetch(url, timeout=20):
     })
     with urllib.request.urlopen(req, timeout=timeout, context=client_context()) as resp:
         return resp.read()
+
+
+def _unwrap_urlerror(exc):
+    """urllib 常把底层网络异常包在 ``URLError.reason`` 里，剥开再判断。"""
+    for _ in range(3):
+        if isinstance(exc, urllib.error.HTTPError):
+            break
+        if not isinstance(exc, urllib.error.URLError):
+            break
+        reason = getattr(exc, "reason", None)
+        if reason is None or reason is exc:
+            break
+        exc = reason
+    return exc
+
+
+def is_transient_download_error(exc) -> bool:
+    """这次失败是不是「连接被临时掐断」，值得再来一次。
+
+    抖音的图片 CDN 在密集下载时偶尔会直接重置连接，日志里就是
+    ``[WinError 10054] 远程主机强迫关闭了一个现有的连接``。这种失败隔半秒重来通常就好，
+    所以值得重试；而 403/404（链接过期、没权限）、解密失败、DNS 解析失败重试多少次都
+    一样，不该浪费时间。**读超时也不重试**：单次已经等了 20 秒，再试两次只是白卡。
+
+    面板把 ``[media]/[voice] ... 失败`` 当成采集错误弹框并暂停整轮采集，所以这个判断
+    也用来区分「可以安静跳过」和「真的没下到」。
+    """
+    exc = _unwrap_urlerror(exc)
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return True
+    return getattr(exc, "winerror", None) in _TRANSIENT_WINERRORS
+
+
+def fetch_with_retries(url, timeout=20):
+    """下载一个地址；只有瞬时断线才重试（见 :func:`is_transient_download_error`）。"""
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            return _fetch(url, timeout)
+        except Exception as exc:
+            if attempt == DOWNLOAD_ATTEMPTS - 1 or not is_transient_download_error(exc):
+                raise
+            time.sleep(_RETRY_WAIT * (attempt + 1))
+    raise RuntimeError("下载失败")                            # pragma: no cover - 循环里已抛出
 
 
 def _server_image_name(url):
@@ -144,7 +205,7 @@ def _save_emoji(url, emoji_dir):
     rel = f"emoji/{filename}"
     if os.path.exists(target):
         return rel
-    data = _fetch(url)
+    data = fetch_with_retries(url)
     if len(data) < 100:
         return None
     os.makedirs(emoji_dir, exist_ok=True)
@@ -173,7 +234,7 @@ def _save_image(origin_url, skey_hex, server_id, img_dir, video_dir=None):
     if existing:
         return existing
 
-    cipher = _fetch(origin_url)
+    cipher = fetch_with_retries(origin_url)
     if len(cipher) < 28:
         return None
     key = bytes.fromhex(skey_hex)
@@ -344,7 +405,7 @@ def download_direct_media(cj, server_id):
             rel = f"voice/{sid}.mpeg"
             if os.path.isfile(target) and os.path.getsize(target) > 0:
                 return rel
-            data = _fetch(voice_url)
+            data = fetch_with_retries(voice_url)
             if len(data) <= 100:
                 media_log.warning("语音下载为空 %s", sid)
                 return None

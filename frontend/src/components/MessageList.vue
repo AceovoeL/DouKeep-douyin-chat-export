@@ -484,6 +484,28 @@
                 <!-- 「去喂食」：只做展示、点不动 -->
                 <div class="msg-feed-btn" aria-disabled="true">{{ feedCard(msg).button }}</div>
               </div>
+              <!-- 「彩蛋福袋」卡（aweType=110360 · card_key=msg_easter_redpack）：
+                    跟普通消息一样按发送者分左右。底图是项目自带的 assets/gift.png，
+                    上半部分叠载荷里的插图；中部偏下固定写「已过期」、底部固定写
+                    「彩蛋福袋」，不照抄载荷里的「拆福袋 / 已领取」（见
+                    lib/easterRedpackCard.js）。必须排在商品卡前面 —— 商品卡的兜底
+                    判据（top + content_top + content_content）也会把这族卡片截走。 -->
+              <div
+                v-else-if="easterCard(msg)"
+                class="msg-easter-card"
+                :style="easterCardStyle"
+              >
+                <img
+                  v-if="easterCard(msg).cover"
+                  class="msg-easter-cover"
+                  :src="easterCoverSrc(msg)"
+                  alt=""
+                  :loading="imgLoading"
+                  @error="onCardIconError(msg)"
+                />
+                <div class="msg-easter-status">{{ easterCard(msg).status }}</div>
+                <div class="msg-easter-name">{{ easterCard(msg).title }}</div>
+              </div>
               <!-- 商品分享卡片：上图 + 描述（最多 3 行）+ 原价/券后价 -->
               <div v-else-if="getGoodsCard(msg)" class="msg-goods-card" @click="openShare(msg)">
                 <div class="msg-goods-cover-wrap">
@@ -736,6 +758,9 @@ import { getFireInviteCard, isFireInviteCard, clearFireInviteCardCache } from '@
 import { getFireBabyCard, isFireBabyCard, clearFireBabyCardCache } from '@/lib/fireBabyCard'
 import { getFeedCard, isFeedCard, clearFeedCardCache } from '@/lib/feedCard'
 import { getDailyFireCard, isDailyFireCard, clearDailyFireCardCache } from '@/lib/dailyFireCard'
+import {
+  getEasterRedpackCard, isEasterRedpackCard, clearEasterRedpackCardCache,
+} from '@/lib/easterRedpackCard'
 import { getInviteCard, isInviteCard, getMusicCard, clearSystemCardCache } from '@/lib/cardKinds'
 import { retryVideoWithTranscode, retryVideoIfUndecodable } from '@/lib/mediaPlayback'
 import { senderDisplayName, selfPickerOptions, pickerOptionLabel } from '@/lib/selfIdentity'
@@ -762,6 +787,8 @@ import feedCardInvite from '@/assets/invite-feed.png'
 // （卡片载荷里也给这两张图的链接，但都是会过期的临时地址，自带一份更稳）。
 import dailyFireFlame from '@/assets/fire.png'
 import dailyFireRing from '@/assets/head_wrapper_circle.png'
+// 「彩蛋福袋」卡的底图（下半部分、蝴蝶结和文字位置都印在这张图上；文字由界面另外画）。
+import easterCardBackground from '@/assets/gift.png'
 
 import ForwardRecords from './ForwardRecords.vue'
 
@@ -1043,6 +1070,9 @@ function _isSystem(msg) {
   // 「喂精灵」卡（card_key=msg_fire_invitation 的 feeding 一种）同理：抖音里它就是
   // 一条跟着发送者走的卡片消息（见下面的 feed 卡片模板），不是居中的系统提示。
   if (isFeedCard(msg)) return false
+  // 「彩蛋福袋」卡（aweType=110360）也是发送者发的一张卡片（对方发的在左、我发的在右），
+  // 不能当居中的系统提示（见下面的 easter 卡片模板）。
+  if (isEasterRedpackCard(msg)) return false
   // 「陪伴天数」卡（aweType=110270）虽然和见面礼卡同一个 card_key，但用户 2026-10-11
   // 明确要求它**居中**显示，所以它跟系统提示一起走（见下面的 daily 卡片模板）——
   // 不要因为它是"卡片"就挪到普通消息那一侧。
@@ -1059,7 +1089,7 @@ function _isSystem(msg) {
 function _shouldShow(msg) {
   return shouldShow(msg) || isInviteCard(msg) || !!musicCard(msg)
     || isFireInviteCard(msg) || isFireBabyCard(msg) || isFeedCard(msg)
-    || isDailyFireCard(msg)
+    || isDailyFireCard(msg) || isEasterRedpackCard(msg)
 }
 
 // 群公告卡片：返回 { title, body } 或 null（见 lib/douyinMessage.js）。
@@ -1384,6 +1414,20 @@ function inviteCard(msg) {
 function musicCard(msg) {
   return getMusicCard(msg)
 }
+
+// ── 「彩蛋福袋」卡（见 lib/easterRedpackCard.js）──
+function easterCard(msg) {
+  return getEasterRedpackCard(msg)
+}
+
+// 卡片上半部分那张插图：和别的卡片图一样先找采集时存下的本地那份，没有就走
+// iconSrc() 让后端按 ?url= 补拉一次（链接过期就只能显示底图）。
+function easterCoverSrc(msg) {
+  const card = easterCard(msg)
+  return card?.cover ? cardIcon(msg, card.cover) : ''
+}
+
+const easterCardStyle = { '--easter-card-bg': `url("${easterCardBackground}")` }
 
 // 卡片图（群头像 / 豆包卡封面）的地址：
 //   1. 采集时存下来的那份（raw_data.card_icon_dir → /media/card_icons/…）；
@@ -1890,6 +1934,7 @@ function resetParseCaches() {
   clearFireBabyCardCache()
   clearFeedCardCache()
   clearDailyFireCardCache()
+  clearEasterRedpackCardCache()
   clearSystemCardCache()
   for (const key of Object.keys(groupCache)) delete groupCache[key]
   for (const key of Object.keys(brokenCardIcons)) delete brokenCardIcons[key]
@@ -2974,6 +3019,65 @@ watch(() => props.jumpToSeq, async (seq) => {
 }
 .msg-feed-card--old .msg-feed-btn:hover {
   background: #f7dde5;
+}
+/* 「彩蛋福袋」卡（aweType=110360）：底图是 assets/gift.png（509×763，蝴蝶结已经
+   印在图上），上半部分叠载荷里的插图。抖音在「已领取」状态会把插图调暗到 70%，
+   这张卡在本项目里一律按「已过期」画，所以插图也照参考图调暗 —— 调暗后它的底色
+   正好和底图接上，上下不会出现一条亮边。文字由界面另外画（底图上没有字）。 */
+.msg-easter-card {
+  /* 宽度由控制面板「外观 → 查看器布局」的「彩蛋福袋卡宽度」决定（写到 <html>
+     上的 --easter-card-width，默认值见 style.css）。下面两行字的字号按宽度换算，
+     所以宽度一变，卡片和文字一起等比缩放。 */
+  position: relative;
+  box-sizing: border-box;
+  width: var(--easter-card-width, 200px);
+  max-width: 100%;
+  aspect-ratio: 509 / 763;
+  border-radius: 12px;
+  background-image: var(--easter-card-bg);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  user-select: none;
+}
+.msg-easter-cover {
+  position: absolute;
+  left: 1.57%;   /* 8 / 509 */
+  top: 1.05%;    /* 8 / 763 */
+  width: 96.66%; /* 492 / 509 */
+  height: auto;
+  filter: brightness(0.7);
+  /* 插图下沿淡出，露出底图上的蝴蝶结：从插图高度 78% 处开始变透明，93% 处完全
+     透明（卡片 y ≈ 465，正好是蝴蝶结上沿）。红色那版的底图也能这样慢慢过渡到
+     下方的米色，不会切出一条生硬的横线。 */
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 78%, transparent 93%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 78%, transparent 93%);
+  pointer-events: none;
+}
+.msg-easter-status,
+.msg-easter-name {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  text-align: center;
+  color: #5c3b05;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+/* 中部偏下：抖音官方写「已领取」，这里固定写「已过期」。 */
+.msg-easter-status {
+  top: 73.86%;
+  transform: translateY(-50%);
+  font-size: calc(var(--easter-card-width, 200px) * 0.085);
+}
+/* 底部：卡片名字固定写「彩蛋福袋」。 */
+.msg-easter-name {
+  top: 90.6%;
+  transform: translateY(-50%);
+  font-size: calc(var(--easter-card-width, 200px) * 0.073);
 }
 /* 联系门店引导卡片（aweType=110284）：卡片外观是 assets/call-to-shop.png
    （原图 824×212，左边电话图标 + 两行文案，右边一片空白），

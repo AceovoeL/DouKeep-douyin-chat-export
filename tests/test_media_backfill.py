@@ -341,3 +341,43 @@ def _write_emoji(directory, url):
     with open(os.path.join(directory, name), "wb") as handle:
         handle.write(b"GIF89a" + b"x" * 200)
     return "emoji/" + name
+
+
+# 「彩蛋福袋」卡（aweType=110360 · card_key=msg_easter_redpack）：老库里缺的插图
+# 也要靠「回填媒体」补下来（上半部分那张图是带签名的临时链接，过期就没了）。
+EASTER_COVER = (
+    "https://p26-infras.byteimg.com/static-assets/"
+    "example-cover.png~tplv-example-75compress.image")
+
+
+def _easter_row():
+    return _raw({
+        "aweType": 110360, "description": "[彩蛋福袋]",
+        "im_dynamic_patch": {
+            "card_key": "msg_easter_redpack",
+            "card_type": "pay_msg_easter_redpack_card",
+            "raw_data": json.dumps({
+                "top": {"cover_image": EASTER_COVER, "type": "im-image"},
+                "content_content": {"content": "拆福袋", "type": "im-button"},
+            }, ensure_ascii=False),
+        },
+    })
+
+
+def test_easter_redpack_card_is_a_backfill_candidate(temp_db, media_dirs, monkeypatch):
+    """只给了 card_key 的老行也要被粗筛捞出来，并把插图存进 card_icons/。"""
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_easter", "c1", 1, msg_type=0, content="[彩蛋福袋]",
+                   raw_data=_easter_row())
+    assert [r["msg_id"] for r in media_backfill.iter_media_rows(conn)] == ["srv_easter"]
+
+    monkeypatch.setattr(card_icons, "_fetch_icon",
+                        lambda url: (b"\x89PNG" + b"x" * 200, "image/png"))
+    stats = media_backfill.backfill_media(conn)
+    assert stats["ok"] == 1
+    path = conn.execute(
+        "SELECT media_local_path FROM messages WHERE msg_id='srv_easter'").fetchone()[0]
+    assert path.startswith("card_icons/")
+    assert card_icons.find_card_icon(EASTER_COVER) == path
+    conn.close()

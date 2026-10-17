@@ -1,4 +1,4 @@
-"""卡片自带图片的落地缓存（群邀请卡的群头像、豆包卡的封面）。
+"""卡片自带图片的落地缓存（群邀请卡的群头像、豆包卡的封面、彩蛋福袋卡的顶图）。
 
 抖音给这些图的是一条**带签名的临时链接**（`x-expires` 一般 180 天），群邀请卡那张
 更是 http 的 byteimg 链接。归档时如果只顾着存消息、没把图拉下来，等签名过期，
@@ -175,6 +175,14 @@ FEED_CARD_TYPES = ("im_msg_fire_invitation_feeding",)
 DAILY_FIRE_AWE_TYPE = 110270
 DAILY_FIRE_CARD_TYPES = ("im_msg_daily_fire",)
 
+#: 「彩蛋福袋」卡（aweType=110360 · card_key=msg_easter_redpack ·
+#: card_type=pay_msg_easter_redpack_card）。这张卡下半部分的底图是项目自带的
+#: ``assets/gift.png``，上半部分那张插图在排版 ``top.cover_image`` 里 —— 带签名的
+#: 临时链接，采集时要顺手存下来（见 :func:`easter_redpack_cover_url`）。
+EASTER_REDPACK_AWE_TYPE = 110360
+EASTER_REDPACK_CARD_KEY = "msg_easter_redpack"
+EASTER_REDPACK_CARD_TYPES = ("pay_msg_easter_redpack_card",)
+
 
 def image_url(value) -> str:
     """抖音各种图片字段的统一取图方式：字符串，或 ``{url_list:[...]}``。"""
@@ -233,8 +241,8 @@ def is_fire_card(cj) -> bool:
     return str(patch.get("card_type")) in FIRE_CARD_TYPES
 
 
-def _fire_layout(cj) -> dict | None:
-    """关系卡的排版（``im_dynamic_patch.raw_data``，可能是再次编码的字符串）。"""
+def _card_layout(cj) -> dict | None:
+    """卡片排版（``im_dynamic_patch.raw_data``，可能是再次编码的字符串）。"""
     patch = cj.get("im_dynamic_patch") if isinstance(cj, dict) else None
     raw = patch.get("raw_data") if isinstance(patch, dict) else None
     if isinstance(raw, str):
@@ -251,7 +259,7 @@ def _fire_icon_url(cj) -> str:
     邀请卡在 ``top.content``（字符串）；接受纪念卡在 ``top@1.content.flame_icon``，
     老载荷会把它放在 ``top.content.flame_icon``。
     """
-    layout = _fire_layout(cj)
+    layout = _card_layout(cj)
     if not layout:
         return ""
     top1 = layout.get("top@1")
@@ -305,7 +313,7 @@ def feed_card_image_urls(cj) -> tuple[str, str]:
     """
     if not is_feed_card(cj):
         return "", ""
-    layout = _fire_layout(cj) or {}
+    layout = _card_layout(cj) or {}
     ui = _whole_card_ui(layout)
     background = (
         _image_url(ui.get("background_image@light"))
@@ -339,7 +347,7 @@ def daily_fire_icon_url(cj) -> str:
     """
     if not is_daily_fire_card(cj):
         return ""
-    layout = _fire_layout(cj) or {}
+    layout = _card_layout(cj) or {}
     content = layout.get("content_top")
     content = content.get("content") if isinstance(content, dict) else None
     for item in content if isinstance(content, list) else []:
@@ -349,6 +357,44 @@ def daily_fire_icon_url(cj) -> str:
         if url:
             return url
     return ""
+
+
+def is_easter_redpack_card(cj) -> bool:
+    """「彩蛋福袋」卡（aweType=110360 · card_key=msg_easter_redpack）。
+
+    认卡片时三个记号任一命中即可：``card_key``、``card_type`` 或 ``aweType``。
+    老样本偶尔缺其中一两个，前端 `easterRedpackCard.js` 的判据与此保持一致。
+    """
+    if not isinstance(cj, dict):
+        return False
+    patch = cj.get("im_dynamic_patch")
+    if isinstance(patch, dict):
+        if str(patch.get("card_key")) == EASTER_REDPACK_CARD_KEY:
+            return True
+        if str(patch.get("card_type")) in EASTER_REDPACK_CARD_TYPES:
+            return True
+    return str(cj.get("aweType")) == str(EASTER_REDPACK_AWE_TYPE)
+
+
+def easter_redpack_cover_url(cj) -> str:
+    """「彩蛋福袋」卡上半部分那张插图（排版 ``top.cover_image``）。
+
+    这张图是带签名的临时链接；排版里没有时依次退回顶层的 ``cover_url`` / ``icon``
+    （个别老载荷这么给）。找不到也照常画卡 —— 前端还有项目自带的 ``assets/gift.png``。
+    """
+    if not is_easter_redpack_card(cj):
+        return ""
+    layout = _card_layout(cj) or {}
+    top = layout.get("top")
+    if isinstance(top, dict):
+        url = _image_url(top.get("cover_image")) or _image_url(top.get("content"))
+        if url:
+            return url
+    return (
+        _image_url(layout.get("cover_image"))
+        or _image_url(cj.get("cover_url"))
+        or _image_url(cj.get("icon"))
+    )
 
 
 def card_icon_urls(cj) -> list[str]:
@@ -365,7 +411,8 @@ def card_icon_url(cj) -> str:
     群邀请卡用 ``icon``（``aweme_invite_card.group_icon`` 是同一张），
     豆包卡用 ``icon``（没有时退回 ``cover_url``），
     聊天火花卡用那颗火花图标（``top`` / ``top@1`` 里的图片），
-    喂食卡用它的背景图（另一张食物图见 :func:`feed_card_image_urls`）。
+    喂食卡用它的背景图（另一张食物图见 :func:`feed_card_image_urls`），
+    彩蛋福袋卡用上半部分那张插图（见 :func:`easter_redpack_cover_url`）。
     """
     if not isinstance(cj, dict):
         return ""
@@ -381,6 +428,8 @@ def card_icon_url(cj) -> str:
         return feed_card_image_urls(cj)[0]
     if is_daily_fire_card(cj):
         return daily_fire_icon_url(cj)
+    if is_easter_redpack_card(cj):
+        return easter_redpack_cover_url(cj)
     return ""
 
 

@@ -6745,6 +6745,7 @@ const AP_TEXT = {
   'viewer.layout.emojiOffsetY': ['文字表情上下偏移', 'Inline emoji vertical offset'],
   'viewer.layout.imageMaxSize': ['图片最大边长', 'Max image size'],
   'viewer.layout.videoMaxSize': ['视频最大边长', 'Max video size'],
+  'viewer.layout.easterCardWidth': ['彩蛋福袋卡宽度', 'Easter redpack card width'],
 };
 
 const AP_GROUP_TEXT = {
@@ -6777,6 +6778,8 @@ const AP_VIEWER_LAYOUT = {
   letterSpacing: [-1, 8, 0.5],
   emojiMaxSize: [40, 320, 10], emojiOffsetX: [-1, 1, 0.05], emojiOffsetY: [-1, 1, 0.05],
   imageMaxSize: [120, 600, 10], videoMaxSize: [120, 600, 10],
+  // 彩蛋福袋卡按固定比例画，字跟着宽度换算，所以只给宽度一项就能整体缩放
+  easterCardWidth: [120, 360, 10],
 };
 
 // 数字字段后面那行"最小值–最大值 单位"里的单位

@@ -332,3 +332,90 @@ def test_daily_fire_card_rejects_the_gift_sibling():
     no_image = _daily_payload({"content_top": {"content": [{"type": "im-text", "content": "x"}]}})
     assert card_icons.daily_fire_icon_url(no_image) == ""
     assert card_icons.card_icon_urls(no_image) == []
+
+
+# 「彩蛋福袋」卡（aweType=110360 · card_key=msg_easter_redpack ·
+# card_type=pay_msg_easter_redpack_card）：上半部分那张插图在排版 top.cover_image，
+# 是带签名的临时链接。下半部分底图（含蝴蝶结和文字位置）用项目自带的 assets/gift.png，
+# 所以采集端只需要把这张插图存下来。
+_EASTER_COVER = (
+    "https://p26-infras.byteimg.com/static-assets/"
+    "example-cover.png~tplv-example-75compress.image")
+
+
+def _easter_payload(layout, *, awe_type=110360, card_key="msg_easter_redpack",
+                    card_type="pay_msg_easter_redpack_card"):
+    return {
+        "aweType": awe_type,
+        "description": "[彩蛋福袋]",
+        "im_dynamic_patch": {
+            "card_key": card_key,
+            "card_type": card_type,
+            "raw_data": json.dumps(layout, ensure_ascii=False),
+        },
+    }
+
+
+def _easter_layout():
+    return {
+        "top": {"cover_image": _EASTER_COVER, "type": "im-image"},
+        "bottom": {"content": "彩蛋福袋", "type": "im-text"},
+        "content_content": {"content": "拆福袋", "type": "im-button"},
+    }
+
+
+def test_easter_redpack_card_saves_its_cover():
+    """彩蛋福袋卡要存的是上半部分那张插图（top.cover_image）。"""
+    card = _easter_payload(_easter_layout())
+    assert card_icons.is_easter_redpack_card(card) is True
+    assert card_icons.easter_redpack_cover_url(card) == _EASTER_COVER
+    assert card_icons.card_icon_urls(card) == [_EASTER_COVER]
+    assert card_icons.card_icon_url(card) == _EASTER_COVER
+    # 路径以 .image 结尾时按响应头猜扩展名（这里 PNG），哈希名和前端一致
+    assert card_icons.icon_filename(_EASTER_COVER) == (
+        card_icons.fnv1a_32(_EASTER_COVER) + ".webp")
+    assert card_icons.icon_extension(_EASTER_COVER, "image/png") == ".png"
+
+
+def test_easter_redpack_card_recognized_by_any_marker():
+    """card_key / card_type / aweType 任一命中都能认出来（老样本偶尔缺记号）。"""
+    layout = _easter_layout()
+    by_type = _easter_payload(layout, card_key="", awe_type=0)
+    assert card_icons.is_easter_redpack_card(by_type) is True
+    assert card_icons.easter_redpack_cover_url(by_type) == _EASTER_COVER
+
+    by_awe = _easter_payload(layout, card_key="", card_type="", awe_type=110360)
+    assert card_icons.is_easter_redpack_card(by_awe) is True
+
+    no_marker = _easter_payload(layout, card_key="", card_type="", awe_type=0)
+    assert card_icons.is_easter_redpack_card(no_marker) is False
+    assert card_icons.easter_redpack_cover_url(no_marker) == ""
+
+
+def test_easter_redpack_card_rejects_other_cards():
+    """商品卡、喂食卡等别的卡片不会被顺手存成彩蛋福袋。"""
+    goods = {
+        "aweType": 11029,
+        "im_dynamic_patch": {
+            "card_key": "msg_big_product",
+            "card_type": "",
+            "raw_data": json.dumps(_easter_layout(), ensure_ascii=False),
+        },
+    }
+    assert card_icons.is_easter_redpack_card(goods) is False
+    assert card_icons.easter_redpack_cover_url(goods) == ""
+    assert card_icons.card_icon_url(goods) == ""
+
+
+def test_easter_redpack_card_without_cover_still_works():
+    """排版坏掉或没有插图时返回空串，不抛异常（前端仍有底图可画）。"""
+    no_cover = _easter_payload({"bottom": {"content": "彩蛋福袋"}})
+    assert card_icons.easter_redpack_cover_url(no_cover) == ""
+    broken = _easter_payload({})
+    broken["im_dynamic_patch"]["raw_data"] = "{不是 JSON"
+    assert card_icons.is_easter_redpack_card(broken) is True
+    assert card_icons.easter_redpack_cover_url(broken) == ""
+
+    # 个别老载荷把图放在顶层 cover_url / icon 上，也能兜住
+    top_level = {"aweType": 110360, "cover_url": {"url_list": [_EASTER_COVER]}}
+    assert card_icons.easter_redpack_cover_url(top_level) == _EASTER_COVER

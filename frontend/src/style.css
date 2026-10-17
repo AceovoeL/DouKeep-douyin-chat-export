@@ -55,6 +55,8 @@
   --msg-letter-spacing: 0px;
   --media-max-size: 240px;
   --video-max-size: 280px;
+  /* 「彩蛋福袋」卡的宽度：卡上的字号按它换算，所以改这一项就是整张卡等比缩放 */
+  --easter-card-width: 200px;
   --system-text-color: var(--text-secondary);
   --system-bg: color-mix(in srgb, var(--text-primary) 6%, transparent);
   --card-bg: var(--bg-message-other);

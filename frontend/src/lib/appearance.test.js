@@ -22,7 +22,7 @@ function payload(overrides = {}) {
         },
         layout: {
           messageFontSize: 16, lineHeight: 1.8, bubbleMaxWidthPct: 60, avatarSize: 40,
-          emojiMaxSize: 120, imageMaxSize: 300, videoMaxSize: 420,
+          emojiMaxSize: 120, imageMaxSize: 300, videoMaxSize: 420, easterCardWidth: 260,
           emojiScale: 1.2,
           letterSpacing: 0.5, emojiOffsetX: -0.25, emojiOffsetY: 0.4,
         },
@@ -46,6 +46,8 @@ describe('toCssVars', () => {
     // 表情包 / 图片 / 视频 三档各自独立
     expect(vars['--emoji-max-size']).toBe('120px')
     expect(vars['--video-max-size']).toBe('420px')
+    // 彩蛋福袋卡的宽度：卡片上的字号按它换算，等于整张卡等比缩放
+    expect(vars['--easter-card-width']).toBe('260px')
     expect(vars['--font-viewer']).toBe('yahei-stack')
     // 气泡文字的字间距（px，0 就是原样）
     expect(vars['--msg-letter-spacing']).toBe('0.5px')

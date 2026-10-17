@@ -27,10 +27,10 @@ from playwright.async_api import async_playwright
 from common import paths
 from common.message_kinds import daily_share_text, is_daily_share, is_view_once
 from common.message_modify import parse_modify
-from common.tls import client_context
 from extractor.forwarded import backfill_uploaded_forwards
 from extractor.im_media import (  # noqa: F401 — re-exported for tools/control_panel
     _detect_media_format, _fetch, _save_emoji, _save_image,
+    fetch_with_retries, is_transient_download_error,
 )
 from extractor.models import (
     init_db, get_db, upsert_user, upsert_conversation, update_conversation_stats,
@@ -139,6 +139,31 @@ def _share_cover(cj):
         if urls and isinstance(urls[0], str):
             return urls[0]
     return None
+
+
+def _report_download_problems(prefix, what, problems, *, fail_line):
+    """把逐个附件的下载失败收成几行，而不是每个文件刷一行。
+
+    面板会把 ``[media]/[voice] ... 失败`` 当成采集错误：弹框、并把这轮采集暂停最多
+    两分钟。单张表情 / 一条语音被图片 CDN 顺手掐断（``WinError 10054``）不值得这个
+    待遇，所以这类只在日志里留一行「没下到」，并说明下次采集会自动补齐；链接过期
+    （403）之类真的补不上的，仍然按 ``fail_line`` 报出来，让面板照旧提示。
+
+    :param problems: ``[(名字, 异常)]``，名字用来在真失败的那行里指认是哪一条。
+    :param fail_line: 真失败那行的格式串，可用 ``{label}`` / ``{exc}`` 占位。
+    """
+    if not problems:
+        return
+    transient = [item for item in problems if is_transient_download_error(item[1])]
+    permanent = [item for item in problems if not is_transient_download_error(item[1])]
+    if transient:
+        # 这句有意不带「失败」二字：它只是被跳过的附件，不是采集出错。
+        print(f"  [{prefix}] 有 {len(transient)} 个{what}因网络中断没下到"
+              f"（已重试，下次采集会自动补齐）")
+    for label, exc in permanent[:3]:
+        print(fail_line.format(label=label, exc=exc))
+    if len(permanent) > 3:
+        print(f"  [{prefix}] 另有 {len(permanent) - 3} 个{what}下载失败")
 
 
 def _classify_json_message(cj):
@@ -935,7 +960,8 @@ class WebChatScraper:
         if not voice_msgs:
             return
 
-        # 批量下载（通过浏览器 fetch 以携带 cookie）
+        # 批量下载（带「连接被掐断」重试；失败最后统一汇报）
+        problems = []
         for m, url, duration in voice_msgs:
             server_id = m.get("server_id", "unknown")
             filename = f"{server_id}.mpeg"
@@ -947,10 +973,7 @@ class WebChatScraper:
                 continue
 
             try:
-                import urllib.request
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=15, context=client_context()) as resp:
-                    data = resp.read()
+                data = fetch_with_retries(url, timeout=15)
                 if len(data) > 100:
                     with open(local_path, "wb") as f:
                         f.write(data)
@@ -958,14 +981,19 @@ class WebChatScraper:
                     dur_sec = round(duration / 1000)
                     print(f"  [voice] 已下载语音 {dur_sec}s: {filename}")
                 else:
-                    print(f"  [voice] 下载失败（空响应 {len(data)}B）: {server_id}")
+                    problems.append((server_id, ValueError(f"空响应 {len(data)}B")))
             except Exception as e:
-                print(f"  [voice] 下载失败: {server_id}: {e}")
+                problems.append((server_id, e))
+        _report_download_problems(
+            "voice", "语音", problems, fail_line="  [voice] 下载失败: {label}: {exc}")
 
     async def _download_image_files(self, messages):
         """下载图片/表情包到本地。
         - 表情：直接保存（无加密），按 URL 路径哈希去重
         - 图片：从 origin_url 拉密文，AES-256-GCM 解密 (skey) 后保存
+
+        失败不逐个打印：被 CDN 掐断（瞬时）的只在最后汇总成一行「没下到」，真下不到的
+        才按原来的 `[media] xxx 失败` 报出来，免得面板为一张图暂停整轮采集。
         """
         if not self.download_images:
             return
@@ -974,7 +1002,7 @@ class WebChatScraper:
         os.makedirs(img_dir, exist_ok=True)
         os.makedirs(emoji_dir, exist_ok=True)
 
-        ok, fail = 0, 0
+        ok, problems = 0, []
         for m in messages:
             mt = m.get("msg_type")
             if mt == "emoji":
@@ -986,8 +1014,7 @@ class WebChatScraper:
                     if rel:
                         m["local_path"] = rel; ok += 1
                 except Exception as e:
-                    fail += 1
-                    print(f"  [media] emoji 失败: {e}")
+                    problems.append(("emoji", e))
             elif mt == "image":
                 try:
                     cj = json.loads(m.get("content_json", "") or "{}")
@@ -1000,8 +1027,7 @@ class WebChatScraper:
                     if rel:
                         m["local_path"] = rel; ok += 1
                 except Exception as e:
-                    fail += 1
-                    print(f"  [media] image 失败: {e}")
+                    problems.append(("image", e))
             elif mt == "video":
                 # awe_type=0 的视频：只下载 poster（封面图）。真正的视频文件需要
                 # 反查 vid→URL 才能拿，留待后续；poster 用 poster.skey 解密。
@@ -1016,10 +1042,11 @@ class WebChatScraper:
                     if rel:
                         m["local_path"] = rel; ok += 1
                 except Exception as e:
-                    fail += 1
-                    print(f"  [media] video 封面失败: {e}")
-        if ok or fail:
-            print(f"  [media] 图片/表情/视频封面 已下载 {ok} 个 (失败 {fail})")
+                    problems.append(("video 封面", e))
+        if ok or problems:
+            print(f"  [media] 图片/表情/视频封面 已下载 {ok} 个 (失败 {len(problems)})")
+        _report_download_problems(
+            "media", "附件", problems, fail_line="  [media] {label} 失败: {exc}")
 
     async def _backfill_missing_media(self):
         """采集收尾：把库里缺图的小火人表情 / 卡片封面补一次（全库，整轮一次）。

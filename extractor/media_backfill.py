@@ -65,6 +65,11 @@ _ROW_HINTS = (
     # 认的是 card_key + card_type（见 common/card_icons.py 的 is_fire_card）。
     + _json_like_patterns("card_key", f'"{card_icons.FIRE_CARD_KEY}"')
     + _json_like_patterns("card_key", f'\\"{card_icons.FIRE_CARD_KEY}\\"')
+    # 「彩蛋福袋」卡：上半部分那张插图是带签名的临时链接，老库里的也要补下来。
+    # 认 card_key 和 aweType 两样（老样本偶尔只给其中一个）。
+    + _json_like_patterns("card_key", f'"{card_icons.EASTER_REDPACK_CARD_KEY}"')
+    + _json_like_patterns("card_key", f'\\"{card_icons.EASTER_REDPACK_CARD_KEY}\\"')
+    + _json_like_patterns("aweType", str(card_icons.EASTER_REDPACK_AWE_TYPE))
 )
 _MEDIA_ROW_WHERE = (
     "(("

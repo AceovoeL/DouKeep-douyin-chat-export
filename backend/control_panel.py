@@ -287,8 +287,18 @@ _MEDIA_FAILURE_PATTERNS = tuple(re.compile(pattern) for pattern in (
     r"^\[!\]\s*batch #\d+ JS 端报错",                   # 某一批消息在 JS 端就报错
 ))
 
-# "…已下载 12 个 (失败 0)" is the summary of that step, not a failure itself.
-_MEDIA_SUMMARY_PATTERN = re.compile(r"已下载 \d+ 个 \(失败")
+# Step summaries that mention 「失败」 but are not failures themselves:
+# "…已下载 12 个 (失败 0)" and the run-end 「补齐缺图的消息: 需要 2 条，成功 1，失败 1」.
+# 后者尤其不能弹：库里只要有一张图永久补不上（链接过期），每轮采集结束都会弹一次框、
+# 把采集暂停两分钟，纯属骚扰。
+_MEDIA_SUMMARY_PATTERNS = (
+    re.compile(r"已下载 \d+ 个 \(失败"),
+    re.compile(r"补齐缺图的消息:\s*需要\s*\d+\s*条"),
+)
+
+# 瞬时断线被跳过的附件（"…因网络中断没下到（已重试，下次采集会自动补齐）"）：消息都已
+# 保存，只是少了一张图，下次采集会补。不该当采集错误弹框，更不该暂停整轮采集。
+_TRANSIENT_MEDIA_PATTERN = re.compile(r"下次采集会自动补齐")
 
 # "[voice] 识别统计: 总数=47 … 失败=0 跳过=0" 也是汇总行：里面有「失败」两个字，
 # 但失败数是 0，不该弹框。逐条语音失败没有单独的日志行，汇总行是唯一的信号，所以
@@ -306,7 +316,11 @@ def classify_scrape_log_line(line: str) -> str | None:
         return None
     if any(pattern.search(text) for pattern in _FATAL_ERROR_PATTERNS):
         return "fatal"
-    if _MEDIA_SUMMARY_PATTERN.search(text) or _ZERO_FAILURE_PATTERN.search(text):
+    if _TRANSIENT_MEDIA_PATTERN.search(text):
+        return None
+    if any(pattern.search(text) for pattern in _MEDIA_SUMMARY_PATTERNS):
+        return None
+    if _ZERO_FAILURE_PATTERN.search(text):
         return None
     if any(pattern.search(text) for pattern in _MEDIA_FAILURE_PATTERNS):
         return "media"
