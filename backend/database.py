@@ -5,6 +5,7 @@ The connection factory and schema live in `common.db`; the reader uses
 """
 import sqlite3
 
+from common.bubble_assets import bubble_id_from_raw_data
 from common.db import connect
 from common.display_rules import display_count, sender_display_counts
 from common.owner import detect_owner
@@ -13,6 +14,19 @@ from common.paths import DB_PATH  # re-exported for backward compatibility
 
 def get_db():
     return connect()
+
+
+def _attach_bubble_ids(items):
+    """给消息补上 bubble_id（旧库没有这一列，从 raw_data 里现取）。
+
+    新采集的消息会在 raw_data 顶层写 bubble_id；旧消息翻 fields.f9。
+    解析失败或没有装饰时补空串，前端照常画普通气泡。
+    """
+    for item in items:
+        if item.get("bubble_id"):
+            continue
+        item["bubble_id"] = bubble_id_from_raw_data(item.get("raw_data"))
+    return items
 
 
 # 判定「显示条数」需要的列（见 common/display_rules.py）。
@@ -171,7 +185,7 @@ def get_messages(conv_id, page_size=100, before_seq=None, after_seq=None):
         ).fetchone()[0]
 
     conn.close()
-    return [dict(r) for r in rows], total
+    return _attach_bubble_ids([dict(r) for r in rows]), total
 
 
 def get_message_page_bounds(conv_id, items):
@@ -207,7 +221,7 @@ def get_messages_by_date(conv_id, date_str, tz_hours=8, limit=5000):
         (conv_id, offset_sec, date_str, limit),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return _attach_bubble_ids([dict(r) for r in rows])
 
 
 def get_messages_range(conv_id, start_seq, end_seq, limit=1000):
@@ -221,7 +235,7 @@ def get_messages_range(conv_id, start_seq, end_seq, limit=1000):
         (conv_id, start_seq, end_seq, limit),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return _attach_bubble_ids([dict(r) for r in rows])
 
 
 def get_daily_stats(conv_id, tz_hours=8):
@@ -360,6 +374,7 @@ def search_messages(query="", page=1, page_size=50, *, conv_id=None,
         count_limit = SEARCH_COUNT_LIMIT
 
     def _result(rows, total, capped):
+        _attach_bubble_ids(rows)
         if with_total_capped:
             return rows, total, capped
         return rows, total
@@ -495,7 +510,8 @@ def get_message(msg_id):
         (msg_id,),
     ).fetchone()
     conn.close()
-    return dict(row) if row else None
+    item = dict(row) if row else None
+    return _attach_bubble_ids([item])[0] if item else None
 
 
 def get_user(uid):

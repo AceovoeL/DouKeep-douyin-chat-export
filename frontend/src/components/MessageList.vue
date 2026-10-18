@@ -534,6 +534,7 @@
                 v-else-if="isShareCard(msg)"
                 :message="msg"
                 :loading="imgLoading"
+                :bubble="bubbleFor(msg)"
                 @open="openShare(msg)"
               />
               <!-- 视频消息：本地有 .mp4 → 真播放；否则展示封面 + 时长 -->
@@ -573,6 +574,7 @@
                 v-else-if="isJsonShare(msg)"
                 :message="msg"
                 :loading="imgLoading"
+                :bubble="bubbleFor(msg)"
                 @open="openShare(msg)"
               />
               <!-- 语音消息 -->
@@ -656,8 +658,10 @@
                   <span class="msg-share-card-ref-text">引用的视频</span>
                 </div>
               </div>
-              <!-- 文本消息 -->
-              <div v-else class="msg-bubble" v-html="renderText(msg.content)"></div>
+              <!-- 文本消息：有气泡装饰时加九宫格背景，文字包一层只用于少量偏移 -->
+              <div v-else class="msg-bubble" :class="bubbleClass(msg)" :style="bubbleStyle(msg)">
+                <span class="msg-bubble-inner" v-html="renderText(msg.content)"></span>
+              </div>
               <div class="msg-time">
                 <template v-for="(kind, index) in getModifyKinds(msg)" :key="kind">
                   <span v-if="index" class="msg-modify-sep">/</span>
@@ -707,6 +711,7 @@
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { renderRichText as _renderRichText } from '@/lib/highlight'
 import { resolveAvatarUrl, iconSrc } from '@/lib/media'
+import { loadBubbleCatalog, resolveBubble, bubbleCssVars } from '@/lib/bubbleConfig'
 import MessageLightbox from './MessageLightbox.vue'
 import LivePhoto from './LivePhoto.vue'
 import {
@@ -775,6 +780,7 @@ const props = defineProps({
 const emit = defineEmits(['jumped', 'staticLoaded', 'openConversation'])
 
 const messages = ref([])
+const bubbleCatalog = ref({})
 const total = ref(0)
 const loading = ref(false)
 let scrollLocked = false  // 防止程序化滚动触发无限加载
@@ -994,6 +1000,28 @@ function isSelf(msg) {
   if (peerNotice(msg)) return false
   if (!effectiveSelfUid.value) return false
   return msg.sender_uid === effectiveSelfUid.value
+}
+
+// 当前视角该用的气泡配置。己方/对方图各自带一份文字安全区，切换「我」时
+// resolveBubble 会选另一侧；缺一侧图时用镜像兜底。没有配置就返回 null。
+function bubbleFor(msg) {
+  const bubbleId = msg && msg.bubble_id
+  if (!bubbleId) return null
+  return resolveBubble(bubbleCatalog.value, bubbleId, isSelf(msg))
+}
+
+function bubbleClass(msg) {
+  const bubble = bubbleFor(msg)
+  if (!bubble) return null
+  return {
+    'msg-bubble--decorated': true,
+    'msg-bubble--mirrored': !!bubble.mirrored,
+  }
+}
+
+function bubbleStyle(msg) {
+  const bubble = bubbleFor(msg)
+  return bubble ? bubbleCssVars(bubble) : null
 }
 
 // 表情快捷回复的明细：谁的什么表情。写在「表情快捷回复」标签右边，
@@ -1836,6 +1864,8 @@ function onListScroll() {
 }
 
 onMounted(() => {
+  // 气泡装饰配置：截图 / 合并转发也要用，所以放在最前面；失败就退回普通气泡。
+  loadBubbleCatalog().then(catalog => { bubbleCatalog.value = catalog || {} })
   // 静态渲染（截图 / 合并转发）也要先知道「我是谁」，否则单聊两边会显示成同一个人
   fetchDetectedSelf()
   if (isStatic.value) return
@@ -3273,6 +3303,53 @@ watch(() => props.jumpToSeq, async (seq) => {
   border: none;
   border-top-left-radius: var(--bubble-radius);
   border-top-right-radius: 4px;
+}
+
+/* 气泡装饰：图片自带 FlexData，九宫格切片、边框宽度和文字安全区都换算成
+   下面这些 CSS 变量。背景画在 ::before 上，文字层保持正常排版。 */
+.msg-bubble.msg-bubble--decorated {
+  position: relative;
+  isolation: isolate;
+  box-sizing: border-box;
+  padding: var(--bubble-pad);
+  min-width: min(var(--bubble-min-width, 0px), 100%);
+  min-height: var(--bubble-min-height, 0px);
+  width: fit-content;
+  max-width: 100%;
+  color: var(--bubble-text-color, var(--text-primary));
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow-wrap: anywhere;
+}
+.msg-item.msg-self > .msg-body > .msg-bubble.msg-bubble--decorated {
+  color: var(--bubble-text-color, var(--text-on-self));
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.msg-bubble--decorated::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border: solid transparent;
+  border-width: var(--bubble-border-width);
+  border-image-source: var(--bubble-image);
+  border-image-slice: var(--bubble-slice);
+  border-image-width: var(--bubble-border-width);
+  border-image-repeat: stretch;
+  pointer-events: none;
+}
+.msg-bubble--decorated.msg-bubble--mirrored::before {
+  transform: scaleX(-1);
+}
+.msg-bubble-inner {
+  position: relative;
+  left: var(--bubble-offset-x, 0px);
+  top: var(--bubble-offset-y, 0px);
 }
 
 /* 互相关注提示（「我们已互相关注，可以开始聊天了」）：抖音客户端里这是对方发来的消息，

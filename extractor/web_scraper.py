@@ -25,6 +25,10 @@ if sys.platform == 'win32':
 from playwright.async_api import async_playwright
 
 from common import paths
+from common.bubble_assets import (
+    analyze_bubble_image, bubble_id_from_fields, is_valid_bubble_id,
+    load_catalog, merge_bubble, save_bubble_image,
+)
 from common.message_kinds import daily_share_text, is_daily_share, is_view_once
 from common.message_modify import parse_modify
 from extractor.forwarded import backfill_uploaded_forwards
@@ -264,6 +268,9 @@ class WebChatScraper:
         #: 等满上限都不变的「数字标题」——对方昵称本身就是一串数字，不是 uid 占位。
         #: 记下来，后面的滚动不再为它空等（见 _settle_after_conv_scroll）。
         self._stable_numeric_titles = set()
+        #: 本次采集已经处理过 / 处理失败的气泡 ID，避免每个会话反复请求。
+        self._bubble_done: set[str] = set()
+        self._bubble_failed: set[str] = set()
 
     async def launch(self):
         os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -599,6 +606,12 @@ class WebChatScraper:
             await self._backfill_live_photo_videos()
         except Exception as e:
             print(f"[!] 实况图小视频补全失败（消息与图片已保存）: {type(e).__name__}")
+
+        # 收尾：旧记录里出现过、但还没下载过的气泡装饰。只扫一次整库。
+        try:
+            await self._backfill_bubble_catalog()
+        except Exception as e:
+            print(f"[!] 补旧气泡装饰失败（消息已保存）: {type(e).__name__}")
 
         conn = self._db_conn
         stats = {
@@ -1047,6 +1060,281 @@ class WebChatScraper:
             print(f"  [media] 图片/表情/视频封面 已下载 {ok} 个 (失败 {len(problems)})")
         _report_download_problems(
             "media", "附件", problems, fail_line="  [media] {label} 失败: {exc}")
+
+    # ── 气泡装饰 ─────────────────────────────────────────────────────────
+    # 抖音的气泡图自带 FlexData（切片/文字安全区），采集时把己方/对方两张图
+    # 都存下来，查看器直接照着画。读不到详情接口时不影响消息入库。
+
+    @staticmethod
+    def _bubble_url(value) -> str:
+        """从 {url_list:[...]} 或字符串里取第一个图片地址。"""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            urls = value.get("url_list") or []
+            if urls and isinstance(urls[0], str):
+                return urls[0].strip()
+        return ""
+
+    async def _read_bubble_cache(self, wanted_ids) -> dict:
+        """读浏览器 IndexedDB 里已经画过的气泡图，返回 {id: {side: bytes}}。
+
+        网页把气泡图缓存在库名以 _chat-bubble-persistent-cache 结尾的
+        IndexedDB 里，图片本身是带 FlexData 的 PNG，优先用它比重新下载稳。
+        """
+        wanted = [str(item) for item in (wanted_ids or []) if is_valid_bubble_id(item)]
+        if not wanted:
+            return {}
+        try:
+            rows = await self.page.evaluate("""async (wanted) => {
+                const want = new Set((wanted || []).map(String));
+                const out = [];
+                if (!indexedDB.databases) return out;
+                const dbs = await indexedDB.databases();
+                for (const info of dbs) {
+                    if (!info || !info.name || !info.name.endsWith('_chat-bubble-persistent-cache')) continue;
+                    const db = await new Promise((resolve, reject) => {
+                        const req = indexedDB.open(info.name);
+                        req.onsuccess = () => resolve(req.result);
+                        req.onerror = () => reject(req.error);
+                    });
+                    if (!db.objectStoreNames.contains('bundles')) { db.close(); continue; }
+                    const tx = db.transaction('bundles', 'readonly');
+                    const store = tx.objectStore('bundles');
+                    const values = await new Promise((resolve, reject) => {
+                        const req = store.getAll();
+                        req.onsuccess = () => resolve(req.result || []);
+                        req.onerror = () => reject(req.error);
+                    });
+                    for (const bundle of values) {
+                        const bubbleId = String(bundle && bundle.bubbleId || '');
+                        if (!want.has(bubbleId)) continue;
+                        for (const resource of (bundle.resources || [])) {
+                            const variant = String(resource && resource.variant || '');
+                            if (!/^(self|guest)_(light|dark)$/.test(variant)) continue;
+                            const blob = resource.imageBlob;
+                            if (!blob || typeof blob.arrayBuffer !== 'function') continue;
+                            const buffer = await blob.arrayBuffer();
+                            const bytes = new Uint8Array(buffer);
+                            let binary = '';
+                            for (let i = 0; i < bytes.length; i += 0x8000) {
+                                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+                            }
+                            out.push({
+                                bubbleId,
+                                variant,
+                                image: btoa(binary),
+                            });
+                            if (out.length >= 60) break;
+                        }
+                        if (out.length >= 60) break;
+                    }
+                    db.close();
+                    if (out.length >= 60) break;
+                }
+                return out;
+            }""", wanted)
+        except Exception as exc:
+            print(f"  [bubble] 读取浏览器气泡缓存失败: {type(exc).__name__}")
+            return {}
+
+        cached: dict[str, dict[str, bytes]] = {}
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            bubble_id = str(row.get("bubbleId") or "")
+            variant = str(row.get("variant") or "")
+            side = variant.split("_", 1)[0]
+            if side not in ("self", "guest") or not is_valid_bubble_id(bubble_id):
+                continue
+            encoded = row.get("image")
+            if not encoded:
+                continue
+            try:
+                data = base64.b64decode(encoded)
+            except (ValueError, TypeError):
+                continue
+            if not data:
+                continue
+            # 同一侧优先浅色那张；样本里深浅两张通常就是同一张。
+            if side in cached.setdefault(bubble_id, {}) and variant.endswith("_dark"):
+                continue
+            cached[bubble_id][side] = data
+        return cached
+
+    async def _fetch_bubble_detail(self, bubble_id):
+        """在已登录页面里问一次气泡详情，失败返回 None。"""
+        if not is_valid_bubble_id(bubble_id):
+            return None
+        try:
+            payload = await self.page.evaluate("""async (bubbleId) => {
+                const params = new URLSearchParams({
+                    device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web',
+                    bubble_id: String(bubbleId), need_user_current_bubble: 'true',
+                    update_version_code: '170400', pc_client_type: '1',
+                    pc_libra_divert: 'Windows', support_h265: '1', support_dash: '0',
+                    cpu_core_num: '6', version_code: '170400', version_name: '17.4.0',
+                    cookie_enabled: 'true', screen_width: '1400', screen_height: '900',
+                    browser_language: 'zh-CN', browser_platform: 'Win32',
+                    browser_name: 'Chrome', browser_version: '151.0.0.0',
+                    browser_online: 'true', engine_name: 'Blink',
+                    engine_version: '151.0.0.0', os_name: 'Windows', os_version: '10',
+                    device_memory: '16', platform: 'PC', downlink: '10',
+                    effective_type: '4g', round_trip_time: '50',
+                });
+                const url = 'https://www.douyin.com/aweme/v1/web/im/bubble/detail_list/?' + params.toString();
+                const response = await fetch(url, { credentials: 'include' });
+                if (!response.ok) return { error: 'HTTP ' + response.status };
+                return await response.json();
+            }""", str(bubble_id))
+        except Exception as exc:
+            print(f"  [bubble] 气泡详情请求失败 {bubble_id}: {type(exc).__name__}")
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("error"):
+            print(f"  [bubble] 气泡详情返回错误 {bubble_id}: {payload.get('error')}")
+            return None
+        if payload.get("status_code") not in (None, 0):
+            print(f"  [bubble] 气泡详情状态异常 {bubble_id}: {payload.get('status_code')}")
+            return None
+        items = payload.get("bubble_list") or []
+        return items[0] if items and isinstance(items[0], dict) else None
+
+    async def _download_bubble_bytes(self, url: str):
+        if not url:
+            return None
+        try:
+            data = await asyncio.to_thread(fetch_with_retries, url, 15)
+        except Exception as exc:
+            print(f"  [bubble] 气泡图下载失败: {type(exc).__name__}")
+            return None
+        if not data or len(data) < 32:
+            return None
+        return data
+
+    def _save_bubble_variant(self, bubble_id: str, side: str, data: bytes,
+                             config=None, name: str = "") -> bool:
+        """存一张气泡图并写配置；分析不了就跳过。"""
+        saved = save_bubble_image(bubble_id, side, data)
+        if not saved:
+            return False
+        meta = analyze_bubble_image(data, config=config)
+        if not meta:
+            return False
+        merge_bubble(
+            bubble_id, side, meta, saved[0], name=name, config=config,
+            updated_at=int(time.time()),
+        )
+        return True
+
+    async def _ensure_bubble_assets(self, bubble_ids) -> None:
+        """把本次遇到的气泡图补到本地；失败只记日志，不影响消息保存。"""
+        wanted = []
+        for bubble_id in dict.fromkeys(str(item or "") for item in (bubble_ids or [])):
+            if not is_valid_bubble_id(bubble_id):
+                continue
+            if bubble_id in self._bubble_done or bubble_id in self._bubble_failed:
+                continue
+            wanted.append(bubble_id)
+        if not wanted:
+            return
+
+        catalog = load_catalog()
+        pending = []
+        for bubble_id in wanted:
+            entry = catalog["bubbles"].get(bubble_id) or {}
+            if entry.get("self") and entry.get("guest"):
+                self._bubble_done.add(bubble_id)
+            else:
+                pending.append(bubble_id)
+        if not pending:
+            return
+
+        cached = await self._read_bubble_cache(pending)
+        stats = {"added": 0, "cached": 0, "failed": 0}
+        for bubble_id in pending:
+            entry = (load_catalog()["bubbles"] or {}).get(bubble_id) or {}
+            detail = await self._fetch_bubble_detail(bubble_id)
+            resource = (detail or {}).get("resource") or {}
+            config = resource.get("resource_config")
+            name = str((detail or {}).get("bubble_name") or "")[:120]
+
+            images: dict[str, bytes] = {}
+            for side, key in (
+                ("self", "bubble_resource_url_light_main_state"),
+                ("guest", "bubble_resource_url_light"),
+            ):
+                if entry.get(side):
+                    continue
+                cached_image = cached.get(bubble_id, {}).get(side)
+                if cached_image:
+                    images[side] = cached_image
+                    stats["cached"] += 1
+                    continue
+                url = self._bubble_url(resource.get(key))
+                if not url:
+                    url = self._bubble_url(resource.get(key.replace("_light", "_dark")))
+                if not url:
+                    continue
+                data = await self._download_bubble_bytes(url)
+                if data:
+                    images[side] = data
+
+            if not images:
+                self._bubble_failed.add(bubble_id)
+                stats["failed"] += 1
+                print(f"  [bubble] 气泡 {bubble_id} 没有拿到图片，跳过")
+                continue
+
+            for side, data in images.items():
+                try:
+                    if self._save_bubble_variant(bubble_id, side, data, config, name):
+                        stats["added"] += 1
+                    else:
+                        stats["failed"] += 1
+                except Exception as exc:
+                    stats["failed"] += 1
+                    print(f"  [bubble] 保存气泡失败 {bubble_id}/{side}: {type(exc).__name__}")
+
+            if load_catalog()["bubbles"].get(bubble_id):
+                self._bubble_done.add(bubble_id)
+            else:
+                self._bubble_failed.add(bubble_id)
+            await asyncio.sleep(0.2)
+
+        if stats["added"] or stats["cached"] or stats["failed"]:
+            print(
+                f"  [bubble] 气泡装饰: 新增 {stats['added']}，"
+                f"用缓存 {stats['cached']}，失败 {stats['failed']}"
+            )
+
+    async def _backfill_bubble_catalog(self) -> None:
+        """采集收尾：把旧记录里出现、但还没下载的气泡补一次（最多 100 个）。"""
+        try:
+            rows = self._db_conn.execute(
+                "SELECT fields FROM message_packets WHERE fields LIKE '%a:chat_bubble%'"
+            ).fetchall()
+        except Exception as exc:
+            print(f"  [bubble] 扫描旧气泡失败: {type(exc).__name__}")
+            return
+        ids = set()
+        for row in rows:
+            try:
+                fields = json.loads(row[0] or "{}")
+            except (ValueError, TypeError):
+                continue
+            bubble_id = bubble_id_from_fields(fields)
+            if bubble_id:
+                ids.add(bubble_id)
+        catalog = load_catalog()
+        missing = [bubble_id for bubble_id in sorted(ids)
+                   if bubble_id not in catalog["bubbles"]][:100]
+        if not missing:
+            return
+        print(f"  [bubble] 旧记录里还有 {len(missing)} 个气泡没下载，开始补...")
+        await self._ensure_bubble_assets(missing)
+
 
     async def _backfill_missing_media(self):
         """采集收尾：把库里缺图的小火人表情 / 卡片封面补一次（全库，整轮一次）。
@@ -2083,6 +2371,7 @@ class WebChatScraper:
         batch_num = 0
         zero_saved_streak = 0  # 连续 saved=0 的批次计数
         voice_message_ids = []  # 只转写本次实际新增的语音
+        bubble_ids = set()  # 本次遇到的气泡装饰
         # 每批获取的页数：回填模式带着整包字段，单批体积更大，取小一点。
         pages_per_batch = 4 if refresh else 20
         has_more = True
@@ -2271,6 +2560,10 @@ class WebChatScraper:
             )
             total_updated += updated_rows
             total_saved += newly_inserted
+            for message in converted:
+                bubble_id = message.get("bubble_id")
+                if bubble_id:
+                    bubble_ids.add(bubble_id)
             voice_ids = {
                 self._make_msg_id(conv_id, message)
                 for message in converted
@@ -2308,6 +2601,13 @@ class WebChatScraper:
             if not has_more:
                 print(f"  [*] 已到达聊天记录起点")
                 break
+
+        # 气泡装饰：本会话遇到的全部 bubble_id 统一补一次。失败不影响消息。
+        if bubble_ids:
+            try:
+                await self._ensure_bubble_assets(bubble_ids)
+            except Exception as exc:
+                print(f"  [bubble] 气泡装饰补全失败（消息已保存）: {type(exc).__name__}")
 
         if not refresh:
             # 合并转发资源沿用当前网页登录态；失败不影响已保存的消息。
@@ -2559,6 +2859,12 @@ class WebChatScraper:
                 continue
 
             msg_id = self._make_msg_id(conv_id, msg)
+
+            # 气泡装饰：从原始包 f9 里取 bubble_id，顺手写进 raw_data 顶层。
+            # 不新增数据库列，阅读端按这个轻量字段找配置。
+            bubble_id = bubble_id_from_fields(msg.get("fields") or {})
+            if bubble_id:
+                msg["bubble_id"] = bubble_id
 
             # 整包字段单独留档：raw_data 里只放轻量摘要，避免阅读端加载变慢。
             packet_b64 = msg.pop("_raw_packet", None)

@@ -1562,10 +1562,10 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   </div>
   <div class="section">
     <h2 data-i18n="mediaTitle">媒体下载</h2>
-    <div class="meta" style="margin-bottom:10px" data-i18n="mediaDesc">采集时将图片/表情包下载到本地，避免抖音 CDN 链接过期后无法显示。</div>
+    <div class="meta" style="margin-bottom:10px" data-i18n="mediaDesc">采集时将图片、表情包、实况图和气泡装饰下载到本地，避免链接过期后无法显示。</div>
     <label class="conv-check" style="margin-bottom:10px;cursor:pointer;">
       <input type="checkbox" id="downloadImagesToggle" onchange="toggleDownloadImages()">
-      <span data-i18n="autoDownloadNew">新采集消息自动下载图片到本地</span>
+      <span data-i18n="autoDownloadNew">新采集消息自动下载图片到本地（气泡装饰不受此开关影响）</span>
     </label>
     <div class="row">
       <button class="btn btn-primary" id="backfillBtn" onclick="startBackfill()" data-i18n="backfillBtn">下载历史图片</button>
@@ -2577,8 +2577,8 @@ const T = {
     fullScrapeConfirmOk: '继续采集',
     confirmFullScrape: '全量采集会先删除目标会话的本地消息，再写入抖音当前能提供的记录。抖音通常只保留约一年，超过一年的本地历史可能丢失。建议先导出整库备份。',
     mediaTitle: '媒体下载',
-    mediaDesc: '采集时把图片/表情包/实况图下载到本地，避免抖音 CDN 链接过期后无法显示。',
-    autoDownloadNew: '新采集消息自动下载图片到本地',
+    mediaDesc: '采集时把图片/表情包/实况图/气泡装饰下载到本地，避免抖音 CDN 链接过期后无法显示。',
+    autoDownloadNew: '新采集消息自动下载图片到本地（气泡装饰不受此开关影响）',
     backfillBtn: '下载历史图片',
     backfillRunning: (done, total) => '下载中: ' + done + ' / ' + total,
     backfillDone: (ok, fail) => '完成：成功 ' + ok + '，失败 ' + fail,
@@ -3193,8 +3193,8 @@ const T = {
     fullScrapeConfirmOk: 'Continue scrape',
     confirmFullScrape: 'Full scraping first deletes local messages for the target conversations, then writes back what Douyin currently provides. Douyin usually keeps about one year of history, so older local messages may be lost. Export a full database backup first.',
     mediaTitle: 'Media Download',
-    mediaDesc: 'Download images, emoji and live photos locally so they stay viewable after Douyin CDN URLs expire.',
-    autoDownloadNew: 'Auto-download images to local for newly scraped messages',
+    mediaDesc: 'Download images, emoji, live photos and chat bubble decorations locally so they stay viewable after Douyin CDN URLs expire.',
+    autoDownloadNew: 'Auto-download images for newly scraped messages (bubble decorations always download)',
     backfillBtn: 'Backfill historical images',
     backfillRunning: (done, total) => 'Downloading: ' + done + ' / ' + total,
     backfillDone: (ok, fail) => 'Done: ' + ok + ' succeeded, ' + fail + ' failed',

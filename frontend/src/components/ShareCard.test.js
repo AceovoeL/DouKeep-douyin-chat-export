@@ -19,7 +19,7 @@ let app = null
 let host = null
 let opened = 0
 
-function mount(cj, extra = {}) {
+function mount(cj, extra = {}, props = {}) {
   host = document.createElement('div')
   document.body.appendChild(host)
   opened = 0
@@ -30,7 +30,7 @@ function mount(cj, extra = {}) {
     raw_data: JSON.stringify({ content_json: JSON.stringify({ ...cj, ...extra }) }),
   }
   app = createApp({
-    render: () => h(ShareCard, { message, onOpen: () => { opened += 1 } }),
+    render: () => h(ShareCard, { message, ...props, onOpen: () => { opened += 1 } }),
   })
   app.mount(host)
 }
@@ -156,6 +156,35 @@ describe('分享评论卡（aweType=10500）', () => {
     const order = [...card.children].map(el => el.className)
     expect(order.findIndex(c => c.includes('msg-share-divider')))
       .toBeLessThan(order.findIndex(c => c.includes('msg-share-quote')))
+  })
+
+  it('分享评论带气泡配置时，整张卡使用气泡装饰', () => {
+    mount(comment, {}, {
+      bubble: {
+        image: '/media/bubbles/1234567890123456789/self.png',
+        display: { width: 66, height: 54 },
+        slice: { top: 79.6, right: 39.4, bottom: 18.5, left: 59.1 },
+        border: { top: 42.98, right: 26, bottom: 9.99, left: 39.01 },
+        padding: { top: 19.01, right: 10.03, bottom: 11.02, left: 32.01 },
+        textColor: '#533000',
+        offsetX: 0,
+        offsetY: 0,
+        mirrored: false,
+      },
+    })
+    const card = q('.msg-share-card')
+    expect(card.classList.contains('msg-share-card--decorated')).toBe(true)
+    expect(card.style.getPropertyValue('--bubble-image')).toBe(
+      'url("/media/bubbles/1234567890123456789/self.png")',
+    )
+    expect(card.style.getPropertyValue('--bubble-slice')).toBe(
+      '79.6% 39.4% 18.5% 59.1% fill',
+    )
+  })
+
+  it('普通分享卡不会因为传了 bubble 就套装饰', () => {
+    mount({ aweType: 800, content_title: '示例视频' }, {}, { bubble: { image: '/media/x.png' } })
+    expect(q('.msg-share-card').classList.contains('msg-share-card--decorated')).toBe(false)
   })
 
   it('media_type=2 写「来自图文」，且不画播放三角', () => {

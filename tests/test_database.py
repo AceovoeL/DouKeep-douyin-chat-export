@@ -4,6 +4,8 @@ The before_seq/after_seq branch behavior (incl. the before_seq=0 truthiness
 quirk and after_seq=0 'from the beginning' rule) and the whole-conversation
 `total` are observable behavior the frontend scroller depends on.
 """
+import json
+
 from tests.conftest import insert_conversation, insert_message
 
 
@@ -15,6 +17,26 @@ def _seed(temp_db):
         insert_message(conn, f"m{i}", "c1", i, content=f"msg{i}", timestamp=i)
     conn.commit()
     conn.close()
+
+
+def test_messages_gain_bubble_id_from_raw_data(temp_db):
+    import backend.database as database
+
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话", last_message_time=10)
+    raw = json.dumps({
+        "fields": {
+            "f9": ['a:chat_bubble\x12\x27{"bubble_id":"1234567890123456789"}'],
+        },
+    })
+    insert_message(
+        conn, "m1", "c1", 1, content="你好", timestamp=1, raw_data=raw,
+    )
+    conn.commit()
+    conn.close()
+
+    items, _ = database.get_messages("c1", page_size=100)
+    assert items[0]["bubble_id"] == "1234567890123456789"
 
 
 def test_initial_load_returns_chronological(temp_db):

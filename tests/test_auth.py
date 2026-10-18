@@ -37,7 +37,7 @@ def test_protected_route_blocked_without_token(client, monkeypatch, temp_db):
 def test_public_paths_bypass_auth(client, monkeypatch, temp_db):
     _set_password(monkeypatch, "secret")
     # /media, /assets, /emoji, /favicon.svg, /panel HTML, /api/auth/* are public → not 401
-    for path in ("/api/auth/check", "/panel", "/panel/"):
+    for path in ("/api/auth/check", "/panel", "/panel/", "/api/bubbles"):
         assert client.get(path).status_code != 401
     # /media/<missing> is public: 404 (from StaticFiles), never 401
     assert client.get("/media/nope.png").status_code != 401

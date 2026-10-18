@@ -18,6 +18,7 @@ from .media_files import MediaStaticFiles
 from .access_log import AccessLogMiddleware, configure_logging, log as access_log
 from .panel.access_gate import access_gate_router, gate_middleware as lan_access_middleware
 from common import appearance as appearance_cfg, config, download_mark, paths
+from common.bubble_assets import load_catalog
 from common.version import VERSION as APP_VERSION
 
 configure_logging()
@@ -78,6 +79,9 @@ async def auth_middleware(request: Request, call_next):
     # 外观设置只有一个颜色/字体/尺寸，没有隐私内容；公开它查看器才能在登录前
     # 就把主题套好，不会先闪一下默认样式。写入接口仍然需要登录。
     if path == "/api/appearance" and request.method == "GET":
+        return await call_next(request)
+    # 气泡装饰配置只有外观数据，没有聊天内容；查看器（含截图页）要先拿到它。
+    if path == "/api/bubbles" and request.method == "GET":
         return await call_next(request)
     # Protected paths: /api/* and /panel*
     needs_auth = path.startswith("/api/") or path.startswith("/panel")
@@ -185,6 +189,14 @@ def get_appearance():
         "defaults": appearance_cfg.default_appearance(),
         "fonts": appearance_cfg.font_options(),
     }
+
+
+@app.get("/api/bubbles")
+def get_bubbles():
+    """聊天气泡装饰的九宫格配置（自动下载的素材目录，不含聊天内容）。"""
+    response = JSONResponse(load_catalog())
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/conversations")

@@ -1,7 +1,12 @@
 <template>
   <div
     class="msg-share-card"
-    :class="{ 'msg-share-card-comment': info.isCommentShare }"
+    :class="{
+      'msg-share-card-comment': info.isCommentShare,
+      'msg-share-card--decorated': decorated,
+      'msg-share-card--mirrored': decorated && bubble && bubble.mirrored,
+    }"
+    :style="cardStyle"
     :role="clickable ? 'link' : 'group'"
     :tabindex="clickable ? 0 : undefined"
     :aria-label="ariaLabel"
@@ -111,11 +116,14 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { getShareInfo, shareCardTitle } from '@/lib/douyinMessage'
+import { bubbleCssVars } from '@/lib/bubbleConfig'
 
 const props = defineProps({
   message: { type: Object, required: true },
   // 截图模式要同步加载，平时懒加载（和 MessageList 的 imgLoading 一致）
   loading: { type: String, default: 'lazy' },
+  // 分享评论消息也有 bubble_id：整张卡片的底图换成对应的气泡装饰。
+  bubble: { type: Object, default: null },
 })
 const emit = defineEmits(['open'])
 
@@ -124,6 +132,8 @@ const title = computed(() => shareCardTitle(props.message))
 const clickable = computed(() => !!(info.value.itemId || info.value.productUrl))
 const ariaLabel = computed(() => (title.value ? `打开分享内容：${title.value.slice(0, 80)}` : '打开分享内容'))
 const authorInitial = computed(() => (info.value.author || '?').trim().slice(0, 1))
+const decorated = computed(() => !!(info.value.isCommentShare && props.bubble))
+const cardStyle = computed(() => (decorated.value ? bubbleCssVars(props.bubble) : null))
 
 // 分享评论下方那句小字：抖音客户端写「来自视频」/「来自图文」，载荷里的
 // media_type 是 2 时按图文算，其余（1、缺省）都当视频。
@@ -429,5 +439,54 @@ function onCoverError(event) {
 .msg-share-plain-author {
   font-size: max(9px, calc(var(--share-unit) * 3.8));
   color: var(--text-muted);
+}
+
+/* 分享评论消息也带 bubble_id：整张卡的底图换成气泡装饰。
+
+   和文字气泡用同一套 CSS 变量（切片、边框、文字安全区都来自图片自带的
+   FlexData），文字颜色也跟随气泡配置，避免深色卡片文字落在浅色气泡上看不清。
+   下面这些选择器比 .msg-share-card-comment 的普通 padding 优先级高。 */
+.msg-share-card.msg-share-card--decorated {
+  position: relative;
+  isolation: isolate;
+  box-sizing: border-box;
+  padding: var(--bubble-pad);
+  min-width: min(var(--bubble-min-width, 0px), 100%);
+  min-height: var(--bubble-min-height, 0px);
+  color: var(--bubble-text-color, var(--text-primary));
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.msg-share-card--decorated::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border: solid transparent;
+  border-width: var(--bubble-border-width);
+  border-image-source: var(--bubble-image);
+  border-image-slice: var(--bubble-slice);
+  border-image-width: var(--bubble-border-width);
+  border-image-repeat: stretch;
+  pointer-events: none;
+}
+.msg-share-card--decorated.msg-share-card--mirrored::before {
+  transform: scaleX(-1);
+}
+.msg-share-card--decorated .msg-share-comment-label {
+  color: color-mix(in srgb, currentColor 72%, transparent);
+}
+.msg-share-card--decorated .msg-share-comment-user {
+  color: inherit;
+}
+.msg-share-card--decorated .msg-share-comment-text,
+.msg-share-card--decorated .msg-share-quote-title,
+.msg-share-card--decorated .msg-share-quote-from {
+  color: inherit;
+}
+.msg-share-card--decorated .msg-share-divider {
+  background: color-mix(in srgb, currentColor 20%, transparent);
 }
 </style>
