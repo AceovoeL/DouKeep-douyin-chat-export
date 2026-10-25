@@ -206,7 +206,15 @@ def list_conversations(
     page_size: int = Query(50, ge=1, le=200),
 ):
     items, total = database.get_conversations(search=search, page=page, page_size=page_size)
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    # pending 是「还有几个会话的显示条数在后台算」。前端据此把那一栏显示成
+    # 「正在统计…」而不是一个可能偏大的数字 —— 算完的准确值下一次请求就会生效。
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "display_count_pending": database.display_count_pending(),
+    }
 
 
 @app.get("/api/conversations/{conv_id}")

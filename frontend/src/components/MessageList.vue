@@ -36,7 +36,7 @@
             @click="pickSelf(s.sender_uid)"
           >
             <span class="picker-uid">{{ pickerLabel(s) }}</span>
-            <span class="picker-count">{{ s.discovered ? '本机账号（本会话没有它的消息）' : `${s.msg_count} 条消息` }}</span>
+            <span class="picker-count">{{ s.discovered ? '本机账号' : `${s.msg_count} 条消息` }}</span>
           </div>
           <button v-if="selfUid" class="picker-clear" @click="pickSelf(null)">清除选择</button>
         </div>

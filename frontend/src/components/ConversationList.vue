@@ -12,7 +12,7 @@
       />
     </div>
     <!-- 会话增删走 TransitionGroup：删除时相邻条目平滑上移，新增（如搜索结果）淡入 -->
-    <TransitionGroup name="conv" tag="div" class="conv-items">
+    <TransitionGroup v-if="!loading || conversations.length" name="conv" tag="div" class="conv-items">
       <div
         v-for="conv in conversations"
         :key="conv.conv_id"
@@ -36,10 +36,22 @@
           @click.stop="requestDelete(conv)"
         >×</button>
       </div>
-      <div v-if="conversations.length === 0" key="conv-empty" class="conv-empty">
-        暂无会话数据
+      <div v-if="!loading && !loadError && conversations.length === 0" key="conv-empty" class="conv-empty">
+        {{ searchQuery ? '没有匹配的会话' : '暂无会话数据' }}
       </div>
     </TransitionGroup>
+
+    <!-- 首次加载：只有**确认**一条会话都没有时才显示「暂无会话数据」。
+         数据量大时这一栏要等一会儿（要数每个会话显示出来的条数），
+         以前这段等待也被画成了同一句，看着像数据丢了。 -->
+    <div v-if="loading && conversations.length === 0" class="conv-empty conv-loading" role="status">
+      <span class="ui-spinner" aria-hidden="true"></span>
+      <span>正在加载会话…</span>
+    </div>
+    <div v-else-if="loadError && conversations.length === 0" class="conv-empty conv-error" role="alert">
+      {{ loadError }}
+      <button class="conv-retry" @click="fetchConversations(searchQuery)">重试</button>
+    </div>
 
     <!-- Custom confirm modal -->
     <Transition name="modal">
@@ -51,7 +63,7 @@
             <div class="modal-sub">
               共 {{ rawCount(pendingDelete) }} 条原始记录<template
                 v-if="rawCount(pendingDelete) !== shownCount(pendingDelete)"
-              >（界面上显示 {{ shownCount(pendingDelete) }} 条）</template>，此操作不可恢复。
+              >（实际显示 {{ shownCount(pendingDelete) }} 条）</template>，此操作不可恢复。
             </div>
           </div>
           <div class="modal-actions">
@@ -80,7 +92,14 @@ const conversations = ref([])
 const searchQuery = ref('')
 const pendingDelete = ref(null)
 const deleting = ref(false)
+// 首次加载中：这时候「一条会话都没有」还**不能**断言，界面要画加载态而不是
+// 「暂无会话数据」。抓取刚结束时后端要为每个会话数一遍显示条数，这一等可能是
+// 几秒到几十秒（见 backend/database.py 里 display_count 的说明）。
+const loading = ref(false)
+const loadError = ref('')
 let searchTimeout = null
+// 搜索/重试的并发保护：慢请求后回来时，不能把更新的结果覆盖掉。
+let fetchId = 0
 
 function getConvAvatar(conv) {
   return resolveAvatarUrl(conv.avatar_url)
@@ -99,11 +118,26 @@ function rawCount(conv) {
 }
 
 async function fetchConversations(search = '') {
+  const requestId = ++fetchId
+  loading.value = true
+  loadError.value = ''
   const params = new URLSearchParams({ page_size: '200' })
   if (search) params.set('search', search)
-  const res = await fetch(`/api/conversations?${params}`)
-  const data = await res.json()
-  conversations.value = data.items
+  try {
+    const res = await fetch(`/api/conversations?${params}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    if (!Array.isArray(data.items)) throw new Error('会话列表响应格式错误')
+    if (requestId !== fetchId) return
+    conversations.value = data.items
+  } catch (e) {
+    if (requestId !== fetchId) return
+    // 失败时保留原有列表：宁可显示旧数据，也不要让用户以为会话被清空了。
+    loadError.value = `会话列表加载失败（${e.message || e}）`
+    console.error('加载会话列表失败', e)
+  } finally {
+    if (requestId === fetchId) loading.value = false
+  }
 }
 
 function onSearch() {
@@ -297,6 +331,36 @@ onMounted(() => {
   text-align: center;
   color: var(--text-muted);
   font-size: 14px;
+}
+
+/* 加载中：转圈 + 一句说明。首次加载和「真的没有会话」必须长得不一样，
+   否则慢的时候用户会以为数据没了。 */
+.conv-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.conv-error {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.conv-retry {
+  margin-left: 8px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.conv-retry:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* 会话条目的增删过渡：插入淡入，删除时离场条目脱离文档流、其余条目平滑上移。

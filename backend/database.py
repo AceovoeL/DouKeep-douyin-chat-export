@@ -3,11 +3,11 @@
 The connection factory and schema live in `common.db`; the reader uses
 `connect()` with foreign keys OFF (its two-step delete relies on no cascade).
 """
-import sqlite3
+import threading
 
 from common.bubble_assets import bubble_id_from_raw_data
 from common.db import connect
-from common.display_rules import display_count, sender_display_counts
+from common.display_rules import hidden_message_ids
 from common.owner import detect_owner
 from common.paths import DB_PATH  # re-exported for backward compatibility
 
@@ -41,29 +41,198 @@ def _load_conversation_rows(conn, conv_id):
     )]
 
 
-def resolve_display_count(conn, conversation):
-    """会话里「真正显示出来」的消息条数（算过就写进 conversations.display_count）。
+# ── 「显示条数」的内存缓存 ────────────────────────────────────────────────
+#
+# 为什么要缓存：算一次要把该会话**全部消息连同 raw_data** 读出来再逐条跑
+# common/display_rules（raw_data 平均 1.8KB，实测一个 5 万条的会话要 30 秒以上）。
+# 以前这件事发生在 GET /api/conversations 的请求里 —— 抓取器刚把
+# conversations.display_count 置成 NULL，用户下一次打开查看器就要同步等这么久，
+# 而前端那时还没有加载态，列表是空的，看着就是「暂无会话数据」（2026-10-25 排查）。
+#
+# 缓存键带一个「数据版本号」：抓取器改了数据就会把 display_count 置 NULL，
+# 版本号跟着变，缓存自然失效，不需要谁去通知谁。
+#: 会话超过这么多条就改成后台算显示条数。
+#:
+#: 阈值是按「读 raw_data 的代价」定的：raw_data 平均 1.8KB，几千条也就是几 MB、
+#: 几十毫秒，当场算准反而更简单；上万条就上几百 MB、要几十秒，那种才必须挪到
+#: 后台，绝不能让一个 HTTP 请求等着。
+SYNC_DISPLAY_COUNT_LIMIT = 3000
 
-    数据库里的原始行数和聊天窗口里画出来的条数不一样：抖音对同一次事件会向
-    双方各发一份（互相关注 6 行只显示 2 行），另外还有空载荷、阅读端不认识
-    的载荷等不显示的行。算一次之后缓存进库，`update_conversation_stats`
-    在数据变化时把它清空重算。
+_display_cache: dict[str, tuple[tuple, int]] = {}
+#: 发送者分布也一起缓存（键是同一份数据版本，见 _display_stamp）。
+_senders_cache: dict[str, tuple[tuple, list]] = {}
+_display_cache_lock = threading.Lock()
+#: 已经排进队列、还没算完的会话（同一会话只算一遍，别被并发的几个请求各算一遍）。
+_display_warming: set[str] = set()
+#: 待算队列 + 唯一的那个后台工作线程。
+#:
+#: 为什么只开一个线程：一个 5 万条的会话要把几百 MB 的 raw_data 从磁盘读出来，
+#: 几个会话同时算就是几条这样的读流抢同一块盘，谁都更慢，还会把正常的消息请求
+#: 一起拖慢。串行慢慢算，排在后面的会话只是晚几秒变准，不影响任何请求。
+_display_queue: list[tuple[str, str]] = []
+_display_worker: threading.Thread | None = None
+#: 每清一次缓存就加一。排队时记下当时的代数，算完发现代数变了就丢弃结果 ——
+#: 否则「清空之后重新排队」会被上一个回合遗留的后台任务顶掉（测试里切库时最明显）。
+_display_generation = 0
+
+
+#: 清空内存缓存（换库、跑测试时用）。还没算完的后台任务会作废。
+def clear_display_cache():
+    global _display_generation
+    with _display_cache_lock:
+        _display_cache.clear()
+        _senders_cache.clear()
+        _display_warming.clear()
+        _display_queue.clear()
+        _display_generation += 1
+
+
+def display_count_pending():
+    """还有多少个会话的显示条数在后台算（列表接口用它告诉前端「稍后会变准」）。"""
+    with _display_cache_lock:
+        return len(_display_warming)
+
+
+def _display_stamp(conversation):
+    """这份缓存对应的数据版本：库文件、条数、最后时间、以及库里的 display_count。
+
+    抓取器刷新统计时会把后三样一起改（display_count 置 NULL），所以任何一次
+    数据变动都会让旧缓存对不上号，不会读到过期的条数。库文件也进签名，是为了
+    别让「换了一个库」（测试、导入数据后切换）读到上一个库的条数。
+    """
+    return (
+        DB_PATH,
+        conversation.get("message_count"),
+        conversation.get("last_message_time"),
+        conversation.get("display_count"),
+    )
+
+
+def _count_display_rows(conn, conv_id):
+    """现算「真正显示出来的条数」（贵：要读整个会话的 raw_data）。"""
+    rows = _load_conversation_rows(conn, conv_id)
+    if not rows:
+        return 0
+    return len(rows) - len(hidden_message_ids(rows))
+
+
+def _warm_display_count(conv_id, db_path=None, generation=None):
+    """在后台线程里把某个会话的显示条数算好，塞进内存缓存。
+
+    只写内存，**不写库**：这个函数不该因为抓取器正占着数据库而失败，也不该
+    在阅读端留下写操作。算完就退出，下一份数据变动会换一个缓存键。
+
+    ``db_path`` / ``generation`` 是排队那一刻的库文件和缓存代数：算的是当初那个
+    库，而且只要中途清过缓存（换库、测试），这次的结果就作废。
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    try:
+        if db_path != DB_PATH:
+            return  # 库已经换了：这次排队的活作废
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT * FROM conversations WHERE conv_id = ?", (conv_id,)
+            ).fetchone()
+            if not row:
+                return
+            conversation = dict(row)
+            value = _count_display_rows(conn, conv_id)
+        finally:
+            conn.close()
+        with _display_cache_lock:
+            if db_path != DB_PATH:
+                return
+            if generation is not None and generation != _display_generation:
+                return  # 中途清过缓存：这份结果不算数
+            _display_cache[conv_id] = (_display_stamp(conversation), value)
+    except Exception:  # noqa: BLE001 —— 预热失败不该影响任何请求
+        pass
+
+
+def _display_worker_loop():
+    """一个后台线程，按排队顺序把待算的会话一个个算完。"""
+    while True:
+        with _display_cache_lock:
+            if not _display_queue:
+                global _display_worker
+                _display_worker = None
+                return
+            conv_id, db_path, generation = _display_queue.pop(0)
+        _warm_display_count(conv_id, db_path, generation)
+        with _display_cache_lock:
+            if generation == _display_generation:
+                _display_warming.discard(conv_id)
+
+
+def _start_warm(conv_id):
+    global _display_worker
+    with _display_cache_lock:
+        if conv_id in _display_warming:
+            return
+        _display_warming.add(conv_id)
+        _display_queue.append((conv_id, DB_PATH, _display_generation))
+        if _display_worker is not None and _display_worker.is_alive():
+            return
+        _display_worker = threading.Thread(
+            target=_display_worker_loop, name="display-count-worker", daemon=True,
+        )
+        _display_worker.start()
+
+
+def resolve_display_count(conn, conversation, *, warm=False):
+    """会话里「真正显示出来」的消息条数。
+
+    取值顺序：
+      1. 库里的 ``conversations.display_count`` —— 抓取器算过就是它，最省事；
+      2. 内存缓存 —— 这次运行算过的（含后台预热算好的）；
+      3. 都没有就现算。**小会话当场算准**（几百条只是一瞬间的事，测试和
+         日常小库都靠这条）；只有大会话才退回「先给个估计值 + 后台算」
+         （``warm=True`` 时），绝不在这条路径上同步读几百 MB 的 raw_data。
+
+    Args:
+        warm: 允许大会话改为后台重算。列表接口传 True；只读单个会话的接口
+            也传 True（用户点开的就是它，后台算好之后下一次就准了）。
+
+    Returns:
+        条数。只有「大会话 + ``warm=True`` + 还没算出来」这一种情况下，
+        返回的是估计值（原始条数）。
     """
     stored = conversation.get("display_count")
     if stored is not None:
+        with _display_cache_lock:
+            _display_cache[conversation["conv_id"]] = (
+                _display_stamp(conversation), stored,
+            )
         return stored
+
     conv_id = conversation["conv_id"]
-    value = display_count(_load_conversation_rows(conn, conv_id))
-    try:
-        conn.execute(
-            "UPDATE conversations SET display_count = ? WHERE conv_id = ?",
-            (value, conv_id),
-        )
-        conn.commit()
-    except sqlite3.OperationalError:
-        # 抓取进程正占着库时先返回算好的值，下次请求再补写。
-        pass
-    return value
+    stamp = _display_stamp(conversation)
+    with _display_cache_lock:
+        cached = _display_cache.get(conv_id)
+    if cached and cached[0] == stamp:
+        return cached[1]
+
+    raw = conversation.get("message_count")
+    if raw is None:
+        raw = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE conv_id = ?", (conv_id,)
+        ).fetchone()[0]
+    # 小会话直接算准：读几百条 raw_data 是毫秒级，没必要为了它绕一圈后台，
+    # 也让「打开会话看到的条数」立刻是对的（截图、导出、测试都依赖这个）。
+    if raw <= SYNC_DISPLAY_COUNT_LIMIT:
+        value = _count_display_rows(conn, conv_id)
+        with _display_cache_lock:
+            _display_cache[conv_id] = (stamp, value)
+        return value
+
+    if warm:
+        _start_warm(conv_id)
+
+    # 大会话还没算出来：先按原始条数顶上（界面上是「N 条消息」，比显示 0 条
+    # 更像话），后台算完的准确值会在下一次请求生效。
+    return raw
 
 
 def find_referenced_video(msg_id):
@@ -124,7 +293,7 @@ def get_conversations(search=None, page=1, page_size=50):
 
     items = [dict(r) for r in rows]
     for item in items:
-        item["display_count"] = resolve_display_count(conn, item)
+        item["display_count"] = resolve_display_count(conn, item, warm=True)
     conn.close()
     return items, total
 
@@ -136,7 +305,7 @@ def get_conversation(conv_id):
     ).fetchone()
     item = dict(row) if row else None
     if item:
-        item["display_count"] = resolve_display_count(conn, item)
+        item["display_count"] = resolve_display_count(conn, item, warm=True)
     conn.close()
     return item
 
@@ -174,11 +343,12 @@ def get_messages(conv_id, page_size=100, before_seq=None, after_seq=None):
 
     # total 是「界面上真正显示出来的条数」，不是数据库里的原始行数
     # （原始行数含抖音给双方各发一份的镜像 / 空载荷，见 common/display_rules.py）。
+    # 跟会话列表走同一份缓存：这个数字没变过就不必为它重读整个会话。
     conversation = conn.execute(
         "SELECT * FROM conversations WHERE conv_id = ?", (conv_id,)
     ).fetchone()
     if conversation:
-        total = resolve_display_count(conn, dict(conversation))
+        total = resolve_display_count(conn, dict(conversation), warm=True)
     else:
         total = conn.execute(
             "SELECT COUNT(*) FROM messages WHERE conv_id = ?", (conv_id,)
@@ -255,12 +425,41 @@ def get_daily_stats(conv_id, tz_hours=8):
 
 
 def get_senders(conv_id):
-    """获取会话中的所有发送者 UID 及**显示出来的**消息数量。"""
+    """获取会话中的所有发送者 UID 及**显示出来的**消息数量。
+
+    这个统计和 display_count 走的是同一套「读整个会话 + 跑显示规则」，同样很贵
+    （大群聊实测 1.6～2.5 秒）。它跟着 display_count 的缓存一起记：条数没变过就
+    直接复用，不必每次打开会话都重算一遍。
+    """
     conn = get_db()
-    counts = sender_display_counts(_load_conversation_rows(conn, conv_id))
-    conn.close()
-    return [{"sender_uid": uid, "msg_count": count}
-            for uid, count in sorted(counts.items(), key=lambda kv: -kv[1])]
+    try:
+        row = conn.execute(
+            "SELECT * FROM conversations WHERE conv_id = ?", (conv_id,)
+        ).fetchone()
+        conversation = dict(row) if row else None
+        stamp = _display_stamp(conversation) if conversation is not None else None
+        if stamp is not None:
+            with _display_cache_lock:
+                cached = _senders_cache.get(conv_id)
+            if cached and cached[0] == stamp:
+                return cached[1]
+        rows = _load_conversation_rows(conn, conv_id)
+    finally:
+        conn.close()
+
+    hidden = hidden_message_ids(rows)
+    counts = {}
+    for row in rows:
+        if row.get("msg_id") in hidden:
+            continue
+        uid = row.get("sender_uid")
+        counts[uid] = counts.get(uid, 0) + 1
+    result = [{"sender_uid": uid, "msg_count": count}
+              for uid, count in sorted(counts.items(), key=lambda kv: -kv[1])]
+    if stamp is not None:
+        with _display_cache_lock:
+            _senders_cache[conv_id] = (stamp, result)
+    return result
 
 
 def get_owner():

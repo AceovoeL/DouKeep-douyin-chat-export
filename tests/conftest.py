@@ -31,6 +31,25 @@ def _never_migrate_the_real_project(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_display_count_cache():
+    """清掉阅读端「显示条数 / 发送者分布」的内存缓存。
+
+    它们是进程级的（设计如此：算一次要读整个会话的 raw_data，不能每个请求都算），
+    但测试会不停换临时库，不清的话上一个用例的条数会漏给下一个用例。
+    """
+    import sys
+
+    def clear():
+        module = sys.modules.get("backend.database")
+        if module is not None:
+            module.clear_display_cache()
+
+    clear()
+    yield
+    clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_panel_caches():
     """清掉面板里那几份模块级缓存（「Token 是谁」、「待下载视频条数」）。
 
