@@ -325,6 +325,10 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .pub-url-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .pub-url-row .pub-url-label { min-width: 84px; font-size: calc(12px * var(--font-scale)); color: var(--text3); }
 .pub-url-row code { word-break: break-all; }
+/* 更新弹窗里的「下载太慢？自己下」那块：和上面几条地址一个样子，只是整块带个底 */
+.pub-manual { margin-top: 12px; padding: 10px 12px; border-radius: 9px; background: var(--bg3); border: 1px solid var(--border); }
+.pub-manual .pub-url-row:first-of-type { margin-top: 8px; }
+.pub-manual .pub-url-label { min-width: 64px; }
 .pub-steps { display: flex; flex-direction: column; gap: 7px; margin: 12px 0; }
 .pub-step { display: flex; align-items: flex-start; gap: 8px; font-size: calc(12.5px * var(--font-scale)); color: var(--text3); }
 .pub-step[data-state="done"] { color: var(--text2); }
@@ -1346,6 +1350,28 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
       <div class="pub-steps" id="cfUpdateSteps"></div>
       <div class="pub-bar"><i id="cfUpdateBar"></i></div>
       <div class="meta" id="cfUpdateText" style="margin-top:7px"></div>
+      <!-- 下载太慢时的手动方案：官方 / 镜像两条链接 + 落地文件的绝对路径。用户用自己
+           的下载工具（IDM 等）下好放进去，再点「我已放入指定位置」：项目内的下载会被
+           停下，核对版本号一致后就装他这份。 -->
+      <div class="pub-manual" id="cfUpdateManual" hidden>
+        <div class="meta" data-i18n="pubCfManualHint">下载太慢？用你自己的下载工具（比如 IDM）下好这个文件，放到下面这个位置，再点「我已放入指定位置」。</div>
+        <div class="pub-url-row">
+          <span class="pub-url-label" data-i18n="pubCfManualMirror">镜像链接</span>
+          <code id="cfUpdateManualMirror"></code>
+          <button class="btn btn-outline btn-sm" type="button" onclick="copyCfUpdateManual(this, 'mirror')" data-i18n="pubCopy">复制</button>
+          <button class="btn btn-outline btn-sm" type="button" onclick="openCfUpdateManualUrl('mirror')" data-i18n="pubOpen">打开</button>
+        </div>
+        <div class="pub-url-row">
+          <span class="pub-url-label" data-i18n="pubCfManualOfficial">官方链接</span>
+          <code id="cfUpdateManualOfficial"></code>
+          <button class="btn btn-outline btn-sm" type="button" onclick="copyCfUpdateManual(this, 'official')" data-i18n="pubCopy">复制</button>
+        </div>
+        <div class="pub-url-row">
+          <span class="pub-url-label" data-i18n="pubCfManualPath">放到这里</span>
+          <code id="cfUpdateManualPath"></code>
+          <button class="btn btn-outline btn-sm" type="button" onclick="copyCfUpdateManual(this, 'path')" data-i18n="pubCopy">复制</button>
+        </div>
+      </div>
       <div class="meta" id="cfUpdateLogHint" style="margin-top:10px" hidden data-i18n="pubCfUpdateLogHint">更新过程（也可以看「日志 → 公网挂载」）：</div>
       <pre class="log-box pub-log" id="cfUpdateLog" hidden></pre>
     </div>
@@ -1356,6 +1382,7 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
     </div>
 
     <div class="confirm-actions">
+      <button class="btn btn-outline" id="cfUpdateManualBtn" type="button" onclick="installCloudflaredManual()" hidden></button>
       <button class="btn btn-outline" id="cfUpdateCancelBtn" type="button" onclick="cancelCloudflaredUpdate()" hidden></button>
       <button class="btn btn-primary" id="cfUpdateDoneBtn" type="button" onclick="closeCfUpdateModal()" hidden></button>
     </div>
@@ -2553,6 +2580,16 @@ const T = {
     pubCfUpdateDoneShort: (v) => `cloudflared 已更新到${v ? ' ' + v : '最新版'}。`,
     pubCfUpdateFailedShort: 'cloudflared 更新失败，详情看「日志 → 公网挂载」。',
     pubCfUpdateCancelled: '已取消更新。',
+    pubCfUpdateManualBtn: '我已放入指定位置',
+    pubCfManualStopped: '已停止下载',
+    pubCfManualHint: '下载太慢？用你自己的下载工具（比如 IDM）下好这个文件，放到下面这个位置，再点「我已放入指定位置」：项目内的下载会停下，直接装你放的这份。',
+    pubCfManualMirror: '镜像链接',
+    pubCfManualOfficial: '官方链接',
+    pubCfManualPath: '放到这里',
+    pubCfManualMissing: '指定位置没找到文件。',
+    pubCfManualInvalid: '你放的文件不是能运行的 cloudflared（可能没下完）。',
+    pubCfManualVersion: '你放的版本和最新版对不上，没有安装。',
+    pubCfManualProgressDesc: '正在核对指定位置的文件版本并安装。替换时隧道会短暂断开，完成后自动重连。',
     devModeOffPublicWarn: '公网访问也开着：关掉开发者模式会顺手把公网入口也关掉（域名留着，重新打开开发者模式就能一键挂回去）。',
     notifyTitle: '通知',
     notifyDesc: '采集失败时通过 Server酱 推送到微信。',
@@ -2713,15 +2750,15 @@ const T = {
     aboutChecking: '正在检查更新…',
     aboutViewChanges: '查看变更',
     aboutUpToDate: (v) => `已是最新版本 ${v}。`,
-    aboutHasUpdate: (cur, latest, n) => `发现新版本 ${latest}（当前 ${cur}，落后 ${n} 个 commit）。`,
-    aboutUpdateAvailable: (latest, n) => `发现新版本 ${latest}，共 ${n} 个 commit 可以更新。`,
+    aboutUpdateAvailable: (latest, cur) => `发现新版本 v${latest}（当前 v${cur}）。`,
     aboutCheckFailed: '检查更新失败',
     aboutCheckStillWaiting: (s) => `已经等了 ${s} 秒，网络比较慢，仍在等远端回应…`,
     aboutCheckLogLatest: (v) => `检查结束：已经是最新版本 v${v}`,
-    aboutCheckLogFound: (latest, n) => `检查结束：发现新版本 v${latest}（落后 ${n} 个 commit）`,
+    aboutCheckLogFound: (latest) => `检查结束：发现新版本 v${latest}`,
     aboutCheckLogFailed: (msg) => `检查结束：没有查到结果（${msg}）`,
     aboutUpdateConfirmTitle: '发现新版本',
     aboutUpdateDetailTitle: '各版本更新内容',
+    aboutUpdateNoDetail: '没拿到逐条更新内容（网络或权限原因），仍然可以直接更新。',
     aboutUpdateStepsNote: '依次执行：拉取代码 → 装 Python 依赖 → 构建前端，然后自动重启后端服务。工作区有未提交改动时会先中止，不覆盖本地修改。',
     aboutUpdateAutoRestart: '更新完成后自动重启服务（推荐；取消勾选则需自己重启）',
     aboutUpdateRestarting: '更新完成，正在自动重启服务…',
@@ -2834,7 +2871,7 @@ const T = {
     aboutAutoCheckOff: '定时自动检查已关闭。',
     aboutAutoCheckNext: (when) => `下次自动检查：${when}`,
     aboutAutoCheckNextUnknown: '下次自动检查：时间还没排好，点一下「应用」即可。',
-    aboutAutoCheckFound: (at, v, n) => `上次自动检查 ${at}：发现新版本 v${v}（落后 ${n} 个 commit）`,
+    aboutAutoCheckFound: (at, v) => `上次自动检查 ${at}：发现新版本 v${v}`,
     aboutAutoCheckLatest: (at, v) => `上次自动检查 ${at}：已是最新版本 v${v}`,
     aboutAutoCheckFailed: (at, msg) => `上次自动检查 ${at}：没有查到结果（${msg || '原因不明'}）`,
     aboutAutoCheckSaveFailed: (msg) => `保存失败：${msg || '请稍后再试'}`,
@@ -3166,6 +3203,16 @@ const T = {
     pubCfUpdateDoneShort: (v) => `cloudflared updated to${v ? ' ' + v : ' the latest version'}.`,
     pubCfUpdateFailedShort: 'cloudflared update failed — see Logs → Public tunnel for details.',
     pubCfUpdateCancelled: 'Update cancelled.',
+    pubCfUpdateManualBtn: 'I already saved it',
+    pubCfManualStopped: 'Download stopped',
+    pubCfManualHint: 'Download too slow? Fetch the file with your own downloader (IDM and the like), save it at the path below, then click “I already saved it”: the built-in download stops and this copy is installed.',
+    pubCfManualMirror: 'Mirror link',
+    pubCfManualOfficial: 'Official link',
+    pubCfManualPath: 'Save it here',
+    pubCfManualMissing: 'No file at that path.',
+    pubCfManualInvalid: 'The file you saved is not a runnable cloudflared (probably incomplete).',
+    pubCfManualVersion: 'The version you saved does not match the latest one; nothing was installed.',
+    pubCfManualProgressDesc: 'Checking the file you saved and installing it. The tunnel disconnects briefly while the program is replaced and reconnects automatically.',
     devModeOffPublicWarn: 'Public access is on too: turning off developer mode also closes the public entry point (the domain is kept — switch developer mode back on and mount it again in one click).',
     lanSaved: 'Settings saved.',
     lanDevMode: 'In dev mode (uvicorn --reload) the service is not restarted automatically — restart it once by hand to apply the listening address.',
@@ -3329,15 +3376,15 @@ const T = {
     aboutChecking: 'Checking for updates…',
     aboutViewChanges: 'View changes',
     aboutUpToDate: (v) => `Already on the latest version ${v}.`,
-    aboutHasUpdate: (cur, latest, n) => `New version ${latest} available (currently ${cur}, ${n} commit(s) behind).`,
-    aboutUpdateAvailable: (latest, n) => `New version ${latest} available — ${n} commit(s) to update.`,
+    aboutUpdateAvailable: (latest, cur) => `New version v${latest} available (currently v${cur}).`,
     aboutCheckFailed: 'Update check failed',
     aboutCheckStillWaiting: (s) => `Waited ${s}s already — the network is slow, still waiting for a reply…`,
     aboutCheckLogLatest: (v) => `Done: already on the latest version v${v}`,
-    aboutCheckLogFound: (latest, n) => `Done: new version v${latest} available (${n} commit(s) behind)`,
+    aboutCheckLogFound: (latest) => `Done: new version v${latest} available`,
     aboutCheckLogFailed: (msg) => `Done: no result (${msg})`,
     aboutUpdateConfirmTitle: 'New version available',
     aboutUpdateDetailTitle: 'What changed, per version',
+    aboutUpdateNoDetail: "Couldn't fetch the per-version notes (network or permission) — you can still update.",
     aboutUpdateStepsNote: 'Runs in order: pull code, install Python dependencies, build the frontend, restart the service. Uncommitted changes stop the run before anything is overwritten.',
     aboutUpdateAutoRestart: 'Restart the service automatically after updating (recommended; uncheck to restart it yourself)',
     aboutUpdateRestarting: 'Update finished — restarting the service automatically…',
@@ -3451,7 +3498,7 @@ const T = {
     aboutAutoCheckOff: 'Scheduled check is off.',
     aboutAutoCheckNext: (when) => `Next automatic check: ${when}`,
     aboutAutoCheckNextUnknown: 'Next automatic check: not scheduled yet — hit Apply once.',
-    aboutAutoCheckFound: (at, v, n) => `Last automatic check ${at}: new version v${v} available (${n} commit(s) behind)`,
+    aboutAutoCheckFound: (at, v) => `Last automatic check ${at}: new version v${v} available`,
     aboutAutoCheckLatest: (at, v) => `Last automatic check ${at}: already on the latest version v${v}`,
     aboutAutoCheckFailed: (at, msg) => `Last automatic check ${at}: no result (${msg || 'unknown reason'})`,
     aboutAutoCheckSaveFailed: (msg) => `Save failed: ${msg || 'try again later'}`,
@@ -6135,6 +6182,9 @@ function cfUpdateErrorKey(code) {
     busy: 'pubCfUpdateBusy',
     update_failed: 'pubCfUpdateFailed',
     restart_failed: 'pubCfUpdateRestartFailed',
+    manual_missing: 'pubCfManualMissing',
+    manual_invalid: 'pubCfManualInvalid',
+    manual_version: 'pubCfManualVersion',
   }[code] || 'pubCfUpdateFailed';
 }
 
@@ -6207,7 +6257,9 @@ function startCfUpdatePoll() {
     if (!d) return;                       // 隧道正在重启：请求失败是预期的，继续轮询
     const job = d.update || {};
     if (!publicEl('cfUpdateModal').hidden) await renderCfUpdateModal();
-    if (job.state === 'running') return;
+    // pending_manual：已经点了「我已放入指定位置」，正在等旧的下载线程收工。
+    // 这中间状态可能短暂是 idle，那不算「用户取消」，继续等它变成 running。
+    if (job.state === 'running' || job.pending_manual) return;
     stopCfUpdatePoll();
     if (job.state === 'done') {
       // 检查完发现已经是最新：说「已是最新版」，别谎称刚更新过
@@ -6232,6 +6284,7 @@ async function renderCfUpdateModal() {
   const progress = publicEl('cfUpdateProgress');
   const result = publicEl('cfUpdateResult');
   const cancelBtn = publicEl('cfUpdateCancelBtn');
+  const manualBtn = publicEl('cfUpdateManualBtn');
   const doneBtn = publicEl('cfUpdateDoneBtn');
   if (!progress || !result) return;
 
@@ -6241,7 +6294,8 @@ async function renderCfUpdateModal() {
 
   if (state === 'running') {
     publicEl('cfUpdateModalTitle').textContent = t('pubCfUpdateProgressTitle');
-    publicEl('cfUpdateModalDesc').textContent = t('pubCfUpdateProgressDesc');
+    publicEl('cfUpdateModalDesc').textContent =
+      t(job.mode === 'manual' ? 'pubCfManualProgressDesc' : 'pubCfUpdateProgressDesc');
     publicEl('cfUpdateSteps').innerHTML =
       renderStepList(cfUpdateStepKeys(), job.steps || {}, cfUpdateStepKey);
     const download = job.download;
@@ -6257,9 +6311,18 @@ async function renderCfUpdateModal() {
     }
     renderCfUpdateLog(job, true);
     const cancelling = !!job.cancelled;
+    const waiting = !!job.pending_manual;   // 正在停止项目内的下载
     cancelBtn.hidden = !(job.step === 'check' || job.step === 'download');
-    cancelBtn.disabled = cancelling;
+    cancelBtn.disabled = cancelling || waiting;
     cancelBtn.textContent = cancelling ? t('pubCfUpdateCancelling') : t('pubCfUpdateCancel');
+    // 「我已放入指定位置」只在下载 / 检查这一段有意义：后面已经在换文件了，放文件也没用。
+    const manual = (d.cloudflared || {}).download || null;
+    const manualSteps = job.step === 'check' || job.step === 'download';
+    manualBtn.hidden = !(manual && manual.path) || job.mode === 'manual' || !manualSteps;
+    manualBtn.disabled = cancelling || waiting;
+    // pending_manual 时下载已经叫停，只是还在等它收工：说「已停止下载」，别让人以为还在下。
+    manualBtn.textContent = waiting ? t('pubCfManualStopped') : t('pubCfUpdateManualBtn');
+    renderCfUpdateManual(job, manual);
     doneBtn.hidden = true;
     return;
   }
@@ -6288,8 +6351,67 @@ async function renderCfUpdateModal() {
   detailBox.textContent = detail;
   renderCfUpdateLog(job, false);
   cancelBtn.hidden = true;
+  // 「我已放入指定位置」只在跑的时候出现：结果页把它收起来，并把上一次留下的
+  // 「已停止下载」字样还原，免得结果显示完了、按钮还挂着这句不相干的话。
+  manualBtn.hidden = true;
+  manualBtn.disabled = false;
+  manualBtn.textContent = t('pubCfUpdateManualBtn');
   doneBtn.hidden = false;
   doneBtn.textContent = t('pubCfUpdateDoneBtn');
+}
+
+/* 手动下载区块：官方 / 镜像两条链接 + 落地文件的绝对路径。
+   只在「还能改主意」的阶段显示（检查 / 下载），已经在装手工文件时收起来。 */
+function renderCfUpdateManual(job, manual) {
+  const box = publicEl('cfUpdateManual');
+  if (!box) return;
+  const show = !!(manual && manual.path) && job.mode !== 'manual'
+    && (job.step === 'check' || job.step === 'download');
+  box.hidden = !show;
+  if (!show) return;
+  publicEl('cfUpdateManualMirror').textContent = manual.mirror || '';
+  publicEl('cfUpdateManualOfficial').textContent = manual.official || '';
+  publicEl('cfUpdateManualPath').textContent = manual.path || '';
+}
+
+async function copyCfUpdateManual(button, kind) {
+  const ids = { mirror: 'cfUpdateManualMirror', official: 'cfUpdateManualOfficial',
+                path: 'cfUpdateManualPath' };
+  const box = publicEl(ids[kind] || '');
+  if (!box || !await copyText(box.textContent || '')) return;
+  const before = button.textContent;
+  button.textContent = t('pubCopied');
+  setTimeout(() => { button.textContent = before; }, 1200);
+}
+
+function openCfUpdateManualUrl(kind) {
+  const ids = { mirror: 'cfUpdateManualMirror', official: 'cfUpdateManualOfficial' };
+  const box = publicEl(ids[kind] || '');
+  const url = box ? (box.textContent || '') : '';
+  if (url) window.open(url, '_blank', 'noopener');
+}
+
+/* 「我已放入指定位置」：服务端先停下项目内的下载，再核对版本号、安装那份文件。 */
+async function installCloudflaredManual() {
+  const btn = publicEl('cfUpdateManualBtn');
+  if (btn) { btn.disabled = true; btn.textContent = t('pubCfManualStopped'); }
+  try {
+    const r = await fetch('/panel/api/public/cloudflared/update/manual', { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    publicState = body.payload || publicState;
+    renderPublicAccess();
+    if (!body.ok) {
+      setPublicStatus(cfUpdateErrorKey(body.error));
+      if (!publicEl('cfUpdateModal').hidden) await renderCfUpdateModal();
+      return;
+    }
+    cfUpdatePendingResult = true;
+    publicEl('cfUpdateModal').hidden = false;
+    await renderCfUpdateModal();
+    startCfUpdatePoll();
+  } catch {
+    setPublicStatus('pubErrUnknown');
+  }
 }
 
 function renderCfUpdateLog(job, visible) {
@@ -7702,17 +7824,17 @@ function renderUpdateResult(data, options = {}) {
     if (link) link.hidden = true;
     setUpdateDot(false);
   } else if (data.update_available) {
-    text.textContent = t('aboutUpdateAvailable', data.remote_version, data.behind);
+    text.textContent = t('aboutUpdateAvailable', data.remote_version, data.current_version);
     if (link) {
       link.hidden = false;
-      link.href = data.compare_url || data.repository_url || '#';
+      link.href = data.release_url || data.compare_url || data.repository_url || '#';
     }
     setUpdateDot(true);
   } else {
     text.textContent = t('aboutUpToDate', data.current_version);
     if (link) {
       link.hidden = false;
-      link.href = data.compare_url || data.repository_url || '#';
+      link.href = data.release_url || data.compare_url || data.repository_url || '#';
     }
     setUpdateDot(false);
   }
@@ -7739,7 +7861,7 @@ function renderUpdateResult(data, options = {}) {
   const list = document.createElement('div');
   list.className = 'ab-rels';
   details.appendChild(list);
-  const steps = renderRelList(list, data.versions, 'aboutUpToDate');
+  const steps = renderRelList(list, data.versions, 'aboutUpdateNoDetail');
   if (steps) details.insertBefore(steps, list);
 }
 
@@ -7813,7 +7935,7 @@ async function finishUpdateCheckLog(data) {
   await pullUpdateCheckLog();
   if (!data) return;
   if (!data.ok) appendUpdateCheckLog(t('aboutCheckLogFailed', data.error || t('aboutCheckFailed')));
-  else if (data.update_available) appendUpdateCheckLog(t('aboutCheckLogFound', data.remote_version, data.behind));
+  else if (data.update_available) appendUpdateCheckLog(t('aboutCheckLogFound', data.remote_version));
   else appendUpdateCheckLog(t('aboutCheckLogLatest', data.current_version));
 }
 
@@ -7849,14 +7971,17 @@ function openUpdateModal(data) {
   updateConfirmData = data;
   const modal = document.getElementById('updateModal');
   const range = document.getElementById('updateModalRange');
-  if (range) range.textContent = `v${data.current_version} → v${data.remote_version} · ${data.behind} commit(s)`;
+  if (range) {
+    const behind = Number(data.behind) > 0 ? ' · ' + t('aboutCommits', data.behind) : '';
+    range.textContent = `v${data.current_version} → v${data.remote_version}${behind}`;
+  }
   const stepsBox = document.getElementById('updateModalSteps');
   if (stepsBox) {
     stepsBox.innerHTML = '';
-    const steps = renderRelList(document.getElementById('updateModalRels'), data.versions);
+    const steps = renderRelList(document.getElementById('updateModalRels'), data.versions, 'aboutUpdateNoDetail');
     if (steps) stepsBox.appendChild(steps);
   } else {
-    renderRelList(document.getElementById('updateModalRels'), data.versions);
+    renderRelList(document.getElementById('updateModalRels'), data.versions, 'aboutUpdateNoDetail');
   }
   const ok = document.getElementById('updateModalOk');
   if (ok) ok.disabled = false;
@@ -8596,7 +8721,7 @@ function renderUpdateScheduleInfo(data) {
   if (data.last_run) {
     const at = new Date(data.last_run * 1000).toLocaleString();
     if (last && last.ok && last.update_available) {
-      lines.push(t('aboutAutoCheckFound', at, last.remote_version, last.behind));
+      lines.push(t('aboutAutoCheckFound', at, last.remote_version));
       // 真的比本机版本新才点红点：否则手动更新完、上次的旧结果还挂在那里时，
       // 红点会被每 4 秒一次的轮询重新点亮。
       const current = (aboutInfo && aboutInfo.version) || '0';

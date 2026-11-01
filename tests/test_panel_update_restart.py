@@ -284,6 +284,12 @@ def _commit(sha: str, subject: str) -> dict:
     }
 
 
+def _newer_tag(sha: str) -> list[dict]:
+    """一个比当前版本更新的版本标签（版本号跟着真实 VERSION 走）。"""
+    major, minor, _patch = (int(part) for part in version.VERSION.split("."))
+    return [{"version": f"{major}.{minor + 1}.0", "sha": sha * 7}]
+
+
 @pytest.fixture
 def updatable(monkeypatch, tmp_path):
     """把「检查更新」固定成「远端有一个新版本」，网络一律封死。"""
@@ -294,6 +300,8 @@ def updatable(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(cp, "_fetch_ahead_best_source", fetch)
+    # 版本号从标签读：给一个比本地新的标签，才有「可以更新」这回事
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: _newer_tag("a"))
     monkeypatch.setattr(cp, "_remote_reachable", reachable)
     monkeypatch.setattr(cp, "_git_run", lambda args, **kwargs: None)
     monkeypatch.setattr(cp, "_git_head", lambda: None)
@@ -335,7 +343,7 @@ def test_update_run_plans_the_restart(monkeypatch, updatable, capture_run_update
     assert result["status"] == "started"
     assert result["auto_restart"] is True
     assert capture_run_update == [{
-        "from": version.VERSION, "to": "1.0.8", "allow_dirty": False,
+        "from": version.VERSION, "to": _newer_tag("a")[0]["version"], "allow_dirty": False,
         "restart": {"host": "127.0.0.1", "port": 8123},
     }]
     # 逐版本变更要先记在更新状态里：重启后弹「更新完成」提示要用它显示更新内容

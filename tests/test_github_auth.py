@@ -45,6 +45,12 @@ def _set_developer_mode(panel_config, enabled: bool) -> None:
     panel_config.write_text(json.dumps({"developer_mode": bool(enabled)}), encoding="utf-8")
 
 
+def _newer_tag(sha: str) -> list[dict]:
+    """一个比当前版本更新的版本标签（版本号跟着真实 VERSION 走）。"""
+    major, minor, _patch = (int(part) for part in version.VERSION.split("."))
+    return [{"version": f"{major}.{minor + 1}.0", "sha": sha * 40}]
+
+
 # ── 存取与格式 ──
 
 def test_save_and_load_round_trip(token_file):
@@ -402,15 +408,15 @@ def test_token_present_but_no_repo_access(monkeypatch, token_file):
 
 
 def test_git_auth_failure_maps_to_credentials_missing(monkeypatch, token_file):
-    """git fetch 说缺凭据、API 也用不了时，给出「需要凭据」而不是网络错误。"""
+    """git 读版本标签时说缺凭据、API 也用不了时，给出「需要凭据」而不是网络错误。"""
     async def reachable():
         return True
 
-    def git_needs_auth(branch):
+    def git_needs_auth():
         raise cp._GitFetchAuthError("could not read Username")
 
     monkeypatch.setattr(cp, "_remote_reachable", reachable)
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", git_needs_auth)
+    monkeypatch.setattr(cp, "_fetch_remote_versions_via_git", git_needs_auth)
 
     response = cp.asyncio.run(cp.update_check())
     payload = json.loads(response.body)
@@ -442,6 +448,7 @@ def test_public_repo_without_token_falls_back_to_api(monkeypatch, token_file):
                     "commit": {"message": "公开仓库的新提交", "author": {"date": "2026-10-02T00:00:00Z"}}}]
 
     monkeypatch.setattr(cp, "_remote_reachable", reachable)
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: _newer_tag("c"))
     monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", via_git)
     monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", via_api)
     monkeypatch.setattr(cp, "_order_oldest_first", lambda raw: list(raw))
@@ -493,6 +500,7 @@ def test_api_is_used_first_when_token_present(monkeypatch, token_file):
 
     github_auth.save(TOKEN)
     monkeypatch.setattr(cp, "_remote_reachable", reachable)
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: _newer_tag("a"))
     monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", via_api)
     monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", via_git)
     monkeypatch.setattr(cp, "_order_oldest_first", lambda raw: list(raw))
@@ -519,6 +527,7 @@ def test_git_fallback_when_token_lacks_permission(monkeypatch, token_file):
 
     github_auth.save(TOKEN)
     monkeypatch.setattr(cp, "_remote_reachable", reachable)
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: _newer_tag("b"))
     monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", api_forbidden)
     monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", via_git)
     monkeypatch.setattr(cp, "_order_oldest_first", lambda raw: list(raw))

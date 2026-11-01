@@ -52,6 +52,11 @@ RELEASE_URL = "https://github.com/cloudflare/cloudflared/releases/latest/downloa
 #: GitHub 的「最新发布」接口：只回一小段 JSON，用来在下载前先问一句版本号
 LATEST_API = "https://api.github.com/repos/cloudflare/cloudflared/releases/latest"
 
+#: 镜像站：项目内下载**先走这里**（直连 GitHub 在国内常常只有几十 KB/s，50MB 要下半
+#: 天），镜像都不通再回官方地址。面板的更新弹窗里也会把镜像 / 官方两条链接摆出来，
+#: 下载太慢时用户可以拿自己的下载工具（IDM、浏览器…）去下，再放进指定目录。
+MIRROR_HOSTS = ("https://gh-proxy.com/", "https://ghfast.top/")
+
 #: 下载分块（每读一块更新一次进度）
 _CHUNK = 256 * 1024
 #: 单次网络读取的超时：卡这么久没数据就算这次下载失败（已经下好的那截留着，重试续传）
@@ -66,6 +71,9 @@ _CHECK_TIMEOUT = 10
 _CHECK_TTL = 30 * 60
 #: 检查失败后隔多久再试（秒）：断网时别点一次就等满一个超时
 _CHECK_FAIL_TTL = 5 * 60
+#: 点「我已放入指定位置」后，等旧的下载线程收工的最长时间（秒）：一轮分块最多卡在
+#: 一次网络读取上，留足余量；还没停下就报错让用户重试，不硬闯。
+_MANUAL_TAKEOVER_WAIT = 180
 
 #: cloudflared 自己的凭据目录（cert.pem 与隧道凭据都在这里）
 CRED_DIR = os.path.join(os.path.expanduser("~"), ".cloudflared")
@@ -187,12 +195,81 @@ def _partial_path() -> str:
     return os.path.join(paths.CLOUDFLARED_DIR, binary_name() + ".part")
 
 
-def _release_request(received: int) -> urllib.request.Request:
-    """向 GitHub 要 cloudflared 的发布包；带上 Range 就从 ``received`` 处续传。"""
+def manual_path() -> str:
+    """用户自己下载的 cloudflared 该放进哪个文件（面板把这个绝对路径写出来）。
+
+    刻意不让他直接覆盖正在用的那份：Windows 上跑着的程序改不了名，用户也会白费力气。
+    放进单独的 ``manual/`` 目录，由「我已放入指定位置」接手安装。
+    """
+    return os.path.join(paths.CLOUDFLARED_DIR, "manual", binary_name())
+
+
+def _ensure_manual_dir() -> None:
+    """先把「用户自己下载」那个目录建出来：面板给出的路径照抄就能存进去。"""
+    try:
+        os.makedirs(os.path.dirname(manual_path()), exist_ok=True)
+    except OSError:
+        pass                                       # 建不出来也别拦着更新本身
+
+
+def release_urls() -> list[str]:
+    """一次下载依次尝试的地址：**先镜像站，最后官方**。
+
+    直连 GitHub 在国内常常只有几十 KB/s（50MB 要下很久），镜像站给的是同一份文件；
+    镜像全都不通时才回官方地址。顺序也决定了面板上「镜像链接」是哪一个。
+    """
+    official = RELEASE_URL.format(name=binary_name())
+    return [host + official for host in MIRROR_HOSTS] + [official]
+
+
+def _release_request(url: str, received: int) -> urllib.request.Request:
+    """向 ``url`` 要 cloudflared 的发布包；带上 Range 就从 ``received`` 处续传。"""
     return urllib.request.Request(
-        RELEASE_URL.format(name=binary_name()),
-        headers={"User-Agent": _UA, "Range": f"bytes={received}-"},
+        url, headers={"User-Agent": _UA, "Range": f"bytes={received}-"},
     )
+
+
+def _fetch_into(url: str, part: str, received: int, progress=None, cancelled=None) -> int:
+    """从一个地址把数据写进 ``.part``，返回写完后的字节数。
+
+    416 说明 ``.part`` 已经是完整的一份（上次下完但没替换成功）：删掉从头下，
+    别让「续传」卡在一个永远完不成的状态里。
+    """
+    if cancelled and cancelled():
+        raise TunnelError("cancelled")         # 还没连就先被叫停：一个字节都不碰
+    try:
+        response = urllib.request.urlopen(_release_request(url, received), timeout=_READ_TIMEOUT)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 416 or not received:
+            raise
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        received = 0
+        response = urllib.request.urlopen(_release_request(url, 0), timeout=_READ_TIMEOUT)
+    with response:
+        # 206 = 服务器同意续传；200 = 它不支持，只能从头再来
+        if received and getattr(response, "status", 200) != 206:
+            received = 0
+        total = received + int(response.headers.get("Content-Length") or 0)
+        if progress:
+            progress(received, total)
+        # read1 是「有多少先给多少」：普通 read(n) 要攒满 n 字节才返回，网速慢时攒一个块
+        # 要十几秒，取消也得等它 —— 用户点了「停止」，不该再干等十几秒。
+        reader = getattr(response, "read1", None) or response.read
+        with open(part, "ab" if received else "wb") as handle:
+            while True:
+                if cancelled and cancelled():
+                    raise TunnelError("cancelled")
+                chunk = reader(_CHUNK)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                received += len(chunk)
+                if progress:
+                    progress(received, total)
+    return received
 
 
 def download_binary(progress=None, cancelled=None, *, promote: bool = True) -> str:
@@ -208,42 +285,20 @@ def download_binary(progress=None, cancelled=None, *, promote: bool = True) -> s
     target = os.path.join(paths.CLOUDFLARED_DIR, binary_name())
     part = _partial_path()
     received = os.path.getsize(part) if os.path.isfile(part) else 0
-    try:
-        response = urllib.request.urlopen(_release_request(received), timeout=_READ_TIMEOUT)
-    except urllib.error.HTTPError as exc:
-        if exc.code != 416 or not received:
-            raise TunnelError("download_failed", str(exc)) from exc
-        # 416 通常意味着 .part 已经是完整的一份（上次下完但没替换成功）。
-        # 删掉从头下，别让「续传」卡在一个永远完不成的状态里。
+    if cancelled and cancelled():
+        raise TunnelError("cancelled")         # 一上来就被叫停：连都不连
+    failure = ""
+    for url in release_urls():
         try:
-            os.remove(part)
-        except OSError:
-            pass
-        received = 0
-        try:
-            response = urllib.request.urlopen(_release_request(0), timeout=_READ_TIMEOUT)
-        except OSError as retry_exc:
-            raise TunnelError("download_failed", str(retry_exc)) from retry_exc
-    except OSError as exc:
-        raise TunnelError("download_failed", str(exc)) from exc
-    with response:
-        # 206 = 服务器同意续传；200 = 它不支持，只能从头再来
-        if received and getattr(response, "status", 200) != 206:
-            received = 0
-        total = received + int(response.headers.get("Content-Length") or 0)
-        if progress:
-            progress(received, total)
-        with open(part, "ab" if received else "wb") as handle:
-            while True:
-                if cancelled and cancelled():
-                    raise TunnelError("cancelled")
-                chunk = response.read(_CHUNK)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                received += len(chunk)
-                if progress:
-                    progress(received, total)
+            received = _fetch_into(url, part, received, progress, cancelled)
+            break
+        except TunnelError:
+            raise                          # 用户点了取消：别偷偷换下一个地址接着下
+        except OSError as exc:             # 镜像超时 / 被墙 / 502：换下一个地址
+            failure = str(exc)
+            received = os.path.getsize(part) if os.path.isfile(part) else 0
+    else:
+        raise TunnelError("download_failed", failure or "no download source")
     if received < _MIN_BINARY_SIZE:
         # 没下全，或者服务器回了一页 HTML：这一份不能用，也别留着污染下次续传
         try:
@@ -334,6 +389,24 @@ def cached_latest_version() -> str:
     """上次问到的 cloudflared 最新版本（不联网）；从没问过就是空串。"""
     with _latest_lock:
         return str(_latest_cache["version"] or "")
+
+
+def download_info() -> dict:
+    """手动下载要用的两条链接 + 落地位置（面板的更新弹窗照着显示）。
+
+    下载太慢时用户可以拿自己的工具（IDM、浏览器…）去下这两条里的任意一条，把文件
+    放进 ``path``，再点「我已放入指定位置」——项目内的下载停下，改为装他这份。
+    路径一律给绝对路径：相对路径在别人的下载工具里根本找不到地方。
+    """
+    official = RELEASE_URL.format(name=binary_name())
+    return {
+        "name": binary_name(),
+        "official": official,
+        "mirror": MIRROR_HOSTS[0] + official,
+        "latest": cached_latest_version(),
+        "path": manual_path(),
+        "dir": os.path.dirname(manual_path()),
+    }
 
 
 def invalidate_latest_cache() -> None:
@@ -430,6 +503,28 @@ def _newer_version(latest: str, current: str) -> bool:
     latest_key = _version_key(latest)
     current_key = _version_key(current)
     return bool(latest_key and current_key and latest_key > current_key)
+
+
+def _manual_version_problem(version: str, latest: str) -> str:
+    """手工放进来的版本和线上最新版对不上时回一句人话；对得上（或判断不了）返回空串。
+
+    用户拿自己的下载工具去下，很可能下到的是旧版或者别的架构，装上去还不如现在跑着
+    的那份。所以版本上只认「和最新版同一个版本号」：
+
+    * 问不到最新版（断网 / 限流）：没法核对，认用户这份；
+    * 比线上最新版还新（GitHub 还没刷新）：也认，不能因为线上慢半拍就拦人；
+    * 比线上旧：不装，直接告诉他该下哪个版本。
+    """
+    version_key = _version_key(version)
+    latest_key = _version_key(latest)
+    if not latest_key:
+        return ""
+    if not version_key:
+        return f"认不出指定位置文件的版本号（{version}），请换一个官方发布的文件"
+    if version_key >= latest_key:
+        return ""
+    return (f"指定位置的文件是 {version}，最新版是 {latest}，版本不一致，没有安装。"
+            f"请重新下载 {latest} 再放进去")
 
 
 def update_check(*, refresh: bool = False) -> dict:
@@ -1714,6 +1809,10 @@ class UpdateJob:
             self.started_at = 0
             self.log = []
             self._download_logged = -1
+            #: "download" = 从网上下（默认）；"manual" = 装用户自己放进来的那份
+            self.mode = "download"
+            #: 用户点了「我已放入指定位置」，正等旧的下载线程收工
+            self.pending_manual = False
 
     def _set(self, **fields) -> None:
         with self._lock:
@@ -1780,6 +1879,60 @@ class UpdateJob:
         self._thread = threading.Thread(target=self._run_flow, daemon=True)
         self._thread.start()
 
+    def start_manual(self) -> None:
+        """「我已放入指定位置」：停下项目内的下载，改用用户放到指定目录的那份。
+
+        项目内的下载在后台线程里跑，不能直接把它按死 —— 先置取消标志，等它自己收工
+        （它走完会把状态置成 idle），再把手工文件装上。等待放在后台线程里做，
+        接口立刻返回，面板继续轮询看进度。
+        """
+        with self._lock:
+            if self.state == "running" and self.mode == "manual":
+                return                                 # 已经在装手工文件了
+            worker = self._thread if self.state == "running" else None
+            self.pending_manual = True
+        if worker is None:
+            self._launch_manual()
+            return
+        self._cancel.set()
+        self.add_log("已停止项目内的下载，改用你放进指定位置的文件…")
+        threading.Thread(target=self._take_over, args=(worker,), daemon=True).start()
+
+    def _take_over(self, worker: threading.Thread) -> None:
+        """等旧的下载线程收工，再接手装手工文件。"""
+        try:
+            worker.join(timeout=_MANUAL_TAKEOVER_WAIT)
+        except RuntimeError:
+            pass
+        if worker.is_alive():
+            self._set(pending_manual=False, state="error", error="update_failed",
+                      error_detail="项目内的下载没能停下，请稍后再点一次「我已放入指定位置」")
+            self.add_log("项目内的下载还没停稳，请稍后再试")
+            return
+        self._launch_manual()
+
+    def _launch_manual(self) -> None:
+        """真正起一个装手工文件的流程（此时旧的下载线程已经收工）。"""
+        _recover_interrupted_update()
+        # 先问一次「是不是在挂载」，再进自己的锁：两把锁别套在一起
+        busy = JOB.snapshot()["running"]
+        with self._lock:
+            # reset 与「开始运行」放在同一个锁里：中间不留 idle 的空档，
+            # 否则面板可能把那一瞬当成「用户取消了」。
+            self.reset()
+            if busy:
+                self.state = "error"
+                self.error = "busy"
+                self.error_detail = "正在挂载到公网，等它结束再装指定位置的文件"
+                return
+            self._cancel.clear()
+            self.mode = "manual"
+            self.state = "running"
+            self.pending_manual = False
+            self.started_at = time.time()
+        self._thread = threading.Thread(target=self._run_manual_flow, daemon=True)
+        self._thread.start()
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -1797,6 +1950,8 @@ class UpdateJob:
                 "unchanged": self.unchanged,
                 "warning": self.warning,
                 "cancelled": self._cancel.is_set(),
+                "mode": self.mode,
+                "pending_manual": self.pending_manual,
                 "log": list(self.log),
                 "running": self.state == "running",
             }
@@ -1806,10 +1961,7 @@ class UpdateJob:
     def _run_flow(self) -> None:
         target = _local_target()
         staging = _staging_path()
-        backup = ""
-        stopped = False
-        installed = False
-        skip_recovery = False
+        state = {"backup": "", "stopped": False, "installed": False}
         try:
             self.from_version = version_of(binary_path())
             self.was_running = tunnel_running()
@@ -1833,46 +1985,134 @@ class UpdateJob:
                 self._finish_unchanged(staging)
                 return
 
-            self.begin_step("replace")
-            if self.was_running:
-                pid = read_pid()
-                self.add_log("先停掉正在运行的隧道…")
-                stop_tunnel()
-                stopped = True
-                self._wait_for_exit(pid)
-            backup = self._swap_in(staging, target)
-            installed = True
-            invalidate_version_cache()
-            self.add_log(f"已替换为 {self.to_version or '新版本'}")
-            self.finish_step("replace")
-
-            self.begin_step("restart")
-            self._restart_and_verify(target, backup)
-            self.finish_step("restart")
-
-            self.begin_step("verify")
-            final_version = version_of(target)
-            if not final_version:
-                raise TunnelError("update_failed", "新版本安装后无法运行")
-            self._set(to_version=final_version)
-            invalidate_version_cache()
-            self._cleanup_backup(backup)
-            self.finish_step("verify")
+            final_version = self._install(staging, target, state)
             self._set(state="done", step="", download=None)
             self.add_log(f"更新完成：{self.from_version or '未知'} → {final_version}")
             _append_tunnel_log("INF [panel]",
                                f"cloudflared 已更新：{self.from_version or '未知'} → {final_version}")
-        except TunnelError as exc:
-            if exc.code == "cancelled":
-                self.add_log("已取消")
-                self._set(state="idle", step="", download=None)
-                return
-            if exc.code == "restart_failed":
-                skip_recovery = True
-            self._fail(exc, target, backup, stopped, installed, skip_recovery)
         except Exception as exc:
-            self._fail(TunnelError("unknown", str(exc)), target, backup, stopped, installed,
-                       skip_recovery)
+            self._handle_failure(exc, target, state)
+
+    def _handle_failure(self, exc: Exception, target: str, state: dict) -> None:
+        """两个流程共用的收尾：取消只是回到闲置，其余按情况回滚。"""
+        if isinstance(exc, TunnelError) and exc.code == "cancelled":
+            self.add_log("已取消")
+            self._set(state="idle", step="", download=None)
+            return
+        if not isinstance(exc, TunnelError):
+            exc = TunnelError("unknown", str(exc))
+        self._fail(exc, target, state["backup"], state["stopped"], state["installed"],
+                   exc.code == "restart_failed")
+
+    def _check_manual_source(self) -> str:
+        """核对指定位置的那份文件；版本号和最新版对得上才返回它的绝对路径。
+
+        不合规直接抛 TunnelError（错误码由面板翻成人话）：文件没放 / 跑不起来 /
+        版本对不上三种。问不到最新版本号时认用户这份 —— 那种情况下谁也没法核对。
+        """
+        self.begin_step("check")
+        source = manual_path()
+        if not os.path.isfile(source):
+            raise TunnelError("manual_missing", f"指定位置没有文件：{source}")
+        version = version_of(source)
+        if not version:
+            raise TunnelError("manual_invalid",
+                              f"指定位置的文件不是能运行的 cloudflared：{source}")
+        self._set(to_version=version)
+        latest = latest_version(refresh=True)
+        self._set(latest=latest)
+        if self.cancelled():
+            raise TunnelError("cancelled")
+        problem = _manual_version_problem(version, latest)
+        if problem:
+            raise TunnelError("manual_version", problem)
+        if not latest:
+            self.add_log("查不到最新版本号，跳过版本核对，直接用你放进来的文件")
+        else:
+            self.add_log(f"指定位置的文件是 {version}，和最新版一致")
+        self.finish_step("check")
+        return source
+
+    def _stage_manual(self, source: str, staging: str) -> None:
+        """把指定位置的文件复制成待替换的 staging，再核对一遍能不能跑。
+
+        复制而不是直接搬走：替换失败时用户那份还在原地，不用重新下载。
+        """
+        self.begin_step("download")
+        self.add_log("跳过项目内下载，直接使用你放进指定位置的文件")
+        os.makedirs(os.path.dirname(staging), exist_ok=True)
+        try:
+            shutil.copyfile(source, staging)
+        except OSError as exc:
+            raise TunnelError("manual_invalid", f"读取指定位置的文件失败：{exc}") from exc
+        if os.name != "nt":
+            os.chmod(staging, 0o755)
+        staged = version_of(staging)
+        if not staged:
+            try:
+                os.remove(staging)
+            except OSError:
+                pass
+            raise TunnelError("manual_invalid", "复制过去的文件无法运行，可能下载没完成")
+        self._set(to_version=staged)
+        self.finish_step("download")
+        self.add_log(f"已取用指定位置的文件：{staged}")
+
+    def _run_manual_flow(self) -> None:
+        """装用户自己放进指定位置的那份 cloudflared（不走项目内下载）。"""
+        target = _local_target()
+        staging = _staging_path()
+        state = {"backup": "", "stopped": False, "installed": False}
+        skip_recovery = False
+        source = manual_path()
+        try:
+            self.from_version = version_of(binary_path())
+            self.was_running = tunnel_running()
+            self.add_log(f"改用你放进指定位置的文件（当前 {self.from_version or '未知'}，"
+                         f"隧道{'运行中' if self.was_running else '未运行'}）")
+            _append_tunnel_log("INF [panel]",
+                               f"改用指定位置的 cloudflared 安装（当前 {self.from_version or '未知'}）")
+            self._stage_manual(self._check_manual_source(), staging)
+            final_version = self._install(staging, target, state)
+            self._set(state="done", step="", download=None)
+            self.add_log(f"安装完成：{self.from_version or '未知'} → {final_version}")
+            _append_tunnel_log("INF [panel]",
+                               f"cloudflared 已用指定位置的文件安装：{final_version}")
+        except Exception as exc:
+            self._handle_failure(exc, target, state)
+
+    def _install(self, staging: str, target: str, state: dict) -> str:
+        """把 staging 换上、重启隧道、核对版本，返回装好后的版本号。
+
+        回滚要用到的信息（备份到哪、隧道停过没、装上了没）记在 ``state`` 里，
+        调用方出错时原样交给 ``_fail``。
+        """
+        self.begin_step("replace")
+        if self.was_running:
+            pid = read_pid()
+            self.add_log("先停掉正在运行的隧道…")
+            stop_tunnel()
+            state["stopped"] = True
+            self._wait_for_exit(pid)
+        state["backup"] = self._swap_in(staging, target)
+        state["installed"] = True
+        invalidate_version_cache()
+        self.add_log(f"已替换为 {self.to_version or '新版本'}")
+        self.finish_step("replace")
+
+        self.begin_step("restart")
+        self._restart_and_verify(target, state["backup"])
+        self.finish_step("restart")
+
+        self.begin_step("verify")
+        final_version = version_of(target)
+        if not final_version:
+            raise TunnelError("update_failed", "新版本安装后无法运行")
+        self._set(to_version=final_version)
+        invalidate_version_cache()
+        self._cleanup_backup(state["backup"])
+        self.finish_step("verify")
+        return final_version
 
     def _download(self, staging: str) -> None:
         self.begin_step("download")
@@ -2097,7 +2337,21 @@ def start_update() -> tuple[bool, str]:
     _recover_interrupted_update()
     if not has_binary():
         return False, "binary_missing"
+    _ensure_manual_dir()
     UPDATE_JOB.start()
+    return True, ""
+
+
+def install_manual() -> tuple[bool, str]:
+    """「我已放入指定位置」：停下项目内的下载，装指定目录里的那份 cloudflared。
+
+    和 start_update 的区别只有一处：**不要求本机已经有 cloudflared**（第一次就想用
+    自己的下载工具下，也应该走得通）。返回 (成功, 错误码)。
+    """
+    if JOB.snapshot()["running"]:
+        return False, "busy"
+    _ensure_manual_dir()
+    UPDATE_JOB.start_manual()
     return True, ""
 
 
@@ -2128,7 +2382,8 @@ def mount_status() -> dict:
         "binary": has_binary(),
         "cloudflared": {"version": current_version(),
                         "latest": cached_latest_version(),
-                        "update_available": _update_waiting()},
+                        "update_available": _update_waiting(),
+                        "download": download_info()},
         "update": UPDATE_JOB.snapshot(),
         "job": JOB.snapshot(),
     }

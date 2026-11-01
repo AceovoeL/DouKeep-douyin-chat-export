@@ -1,8 +1,8 @@
-"""更新检测：把远端「落后的 commit」翻译成逐版本更新内容。
+"""更新检测：远端版本号读 GitHub 上的版本标签，commit 条数只用来定位提交。
 
-这里不打网络、也不碰 git：GitHub compare 与本地 git fetch 两条路径都注入假数据，
-只验证版本号换算、分组边界（同一版本号由多个 commit 组成）以及和本地 commit 数
-的衔接。
+这里不打网络、也不碰 git：版本标签、GitHub compare 与本地 git fetch 几条路都注入
+假数据，只验证「最新版本怎么挑、落后的提交怎么挂到各版本上」，以及拿不到提交
+清单时仍然按版本号给出结论。
 """
 import asyncio
 import json
@@ -13,11 +13,24 @@ import pytest
 from backend import control_panel as cp
 from common import paths, version
 
-#: 假装的本地 commit 数（对应版本 1.0.7）
+#: 假装的本地版本号（测试里把 VERSION 换成它，免得跟着真实版本跑）
+LOCAL_VERSION = "1.0.7"
+
+#: 假装的本地 commit 数（对应本地版本 1.0.7，只用来定位落后的提交）
 LOCAL_COUNT = 8
 
 #: 假装的本地 HEAD（比对基准与「查看更新内容」链接都用它）
 LOCAL_SHA = "deadbeef" * 5
+
+
+def _tag(tag_version: str, sha: str) -> dict:
+    """一个版本标签：标签指向的提交 sha 用来给落后的提交分组。"""
+    return {"version": tag_version, "sha": sha * 7}
+
+
+#: 真的「读远端版本标签」函数：autouse 的 offline fixture 会把它换掉，
+#: 想直接测这条路本身的用例得把它放回去。
+_REAL_FETCH_REMOTE_VERSIONS = cp._fetch_remote_versions
 
 
 def _commit(sha: str, subject: str, date: str = "2026-10-02",
@@ -44,7 +57,7 @@ def _fake_fetch(total: int, commits: list[dict]):
 
 @pytest.fixture
 def local_count(monkeypatch, tmp_path):
-    """固定本地 commit 数，免得测试跟着仓库的提交数变化。
+    """固定本地版本号与 commit 数，免得测试跟着仓库走。
 
     注意要打在 ``common.version`` 上，而不是 ``cp._version``：后者是同一个模块
     对象的另一个名字，但那不是 "绑定"，`_collect_update` 调用的是模块里的函数。
@@ -52,6 +65,7 @@ def local_count(monkeypatch, tmp_path):
     并顺手打开开发者模式 —— 存下的 Token 只有开发者模式开着时才会被拿来读私有仓库
     （见 github_auth.load_for_use）。
     """
+    monkeypatch.setattr(version, "VERSION", LOCAL_VERSION)
     monkeypatch.setattr(version, "local_commit_count", lambda: LOCAL_COUNT)
     monkeypatch.setattr(cp, "_remote_repository", lambda: version.REPOSITORY_URL)
     monkeypatch.setattr(cp._github_auth, "TOKEN_PATH", str(tmp_path / "github_token"))
@@ -76,6 +90,10 @@ def offline(monkeypatch):
     monkeypatch.setattr(cp, "_remote_reachable", reachable)
     monkeypatch.setattr(cp, "_git_run", lambda args, **kwargs: None)
     monkeypatch.setattr(cp, "_git_head", lambda: LOCAL_SHA)
+    # 默认：远端只有一个和本地一样的版本标签（也就是「已是最新」）
+    monkeypatch.setattr(
+        cp, "_fetch_remote_versions", lambda: [_tag(LOCAL_VERSION, LOCAL_SHA)]
+    )
     # 每个用例都从空缓存开始，免得互相串味
     monkeypatch.setattr(cp, "_update_cache", None)
 
@@ -158,11 +176,14 @@ def test_git_path_normalises_order_and_parses_parents(monkeypatch):
 
 
 def test_collect_update_falls_back_to_git_without_token(monkeypatch, local_count):
-    """没有 Token 时走本地 git；git 能用就不必打 API。"""
+    """没有 Token 时走本地 git 拿提交清单；git 能用就不必打 API。"""
     async def api_should_not_run():
         raise AssertionError("没有 Token 时不该走 API")
 
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", lambda branch: (1, [_commit("a", "新提交")]))
+    monkeypatch.setattr(cp, "_fetch_remote_versions",
+                        lambda: [_tag("1.0.8", "a"), _tag(LOCAL_VERSION, LOCAL_SHA)])
+    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git",
+                        lambda branch: (1, [_commit("a", "新提交")]))
     monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", api_should_not_run)
     result = asyncio.run(cp._collect_update())
 
@@ -171,96 +192,233 @@ def test_collect_update_falls_back_to_git_without_token(monkeypatch, local_count
 
 
 def test_collect_update_reports_up_to_date(monkeypatch, local_count):
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(0, []))
     result = asyncio.run(cp._collect_update())
 
     assert result["ok"] is True
     assert result["update_available"] is False
     assert result["behind"] == 0
-    assert result["current_version"] == version.VERSION
-    assert result["remote_version"] == version.VERSION
+    assert result["current_version"] == LOCAL_VERSION
+    assert result["remote_version"] == LOCAL_VERSION
     assert result["versions"] == []
 
 
-def test_collect_update_maps_each_commit_to_its_version(monkeypatch, local_count):
-    # 本地是第 8 个 commit（1.0.7），远端一共 11 个 commit（1.1.0）
-    commits = [
-        _commit("c", "第一个提交"),
-        _commit("b", "第二个提交"),
-        _commit("a", "第三个提交"),
-    ]
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(3, commits))
+def test_collect_update_takes_the_remote_version_from_the_tags(monkeypatch, local_count):
+    """远端版本号读的是标签，而且是最新的那个 —— 接口顺序不能当真。"""
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: [
+        _tag("1.0.9", "b"), _tag("1.0.8", "a"), _tag(LOCAL_VERSION, LOCAL_SHA),
+    ])
+    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(2, [
+        _commit("a", "第一个提交"), _commit("b", "第二个提交"),
+    ]))
     result = asyncio.run(cp._collect_update())
 
-    assert result["behind"] == 3
-    assert result["remote_version"] == "1.1.0"
-    # 最新在前：第一条就是远端最新版本
-    assert [(c["version"], c["subject"]) for c in result["versions"]] == [
-        ("1.1.0", "第三个提交"),
-        ("1.0.9", "第二个提交"),
-        ("1.0.8", "第一个提交"),
-    ]
-    assert result["versions"][0]["sha"] == "a" * 7
-    assert result["versions"][0]["date"] == "2026-10-02"
-    assert result["versions"][0]["commit_count"] == 11
+    assert result["update_available"] is True
+    assert result["remote_version"] == "1.0.9"
+    assert result["behind"] == 2
 
 
-def test_collect_update_splits_versions_across_patch_rollover(monkeypatch, local_count):
-    # 本地第 10 个 commit（1.0.9）→ 远端第 12 个（1.1.1）：跨过 1.0.9 → 1.1.0 的进位
-    monkeypatch.setattr(version, "local_commit_count", lambda: 10)
-    commits = [_commit("b", "进位后第一个"), _commit("a", "进位后第二个")]
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(2, commits))
+def test_collect_update_does_not_derive_the_version_from_commit_count(monkeypatch, local_count):
+    """提交再多，版本号也只听标签的：不再拿「第几个 commit」换算。"""
+    commits = [_commit(chr(ord("a") + i), f"第{i + 1}个提交") for i in range(5)]
+    monkeypatch.setattr(cp, "_fetch_remote_versions",
+                        lambda: [_tag("1.0.8", "a"), _tag(LOCAL_VERSION, LOCAL_SHA)])
+    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(5, commits))
     result = asyncio.run(cp._collect_update())
 
-    assert [c["version"] for c in result["versions"]] == ["1.1.1", "1.1.0"]
-    # 「查看更新内容」比的是本地 commit 与远端分支，不再是 vX.Y.Z 标签
-    assert result["compare_url"].endswith(f"compare/{LOCAL_SHA}...main")
+    # 按 commit 数算会是 1.1.2（本地第 8 个 + 落后 5 个），标签说只有 1.0.8
+    assert result["remote_version"] == "1.0.8"
+    assert result["behind"] == 5
 
 
-def test_collect_update_keeps_multiple_commits_of_one_version(monkeypatch, local_count):
-    commits = [_commit("b", "第一个提交"), _commit("a", "第二个提交")]
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(2, commits))
-    result = asyncio.run(cp._collect_update())
-
-    assert [c["version"] for c in result["versions"]] == ["1.0.9", "1.0.8"]
-    assert [c["commit_count"] for c in result["versions"]] == [10, 9]
-
-
-def test_collect_update_pairs_each_version_with_its_own_commit(monkeypatch, local_count):
-    """跨 2 个 commit 的更新里，版本号和更新内容不能张冠李戴。
-
-    这正是面板上出现过的样子：compare 接口按「旧 → 新」返回两条提交，旧的那条
-    对应低一档的版本号；以前一律把列表反过来，于是两条提交各自拿到了隔壁那条的
-    版本号，显示成「v1.2.1 → 修复…（其实是 v1.2.0 的改动）」。
-    """
+def test_collect_update_labels_each_commit_with_its_release_tag(monkeypatch, local_count):
+    """每条提交归到「它之后那次发版」：标签指向的提交就是该版本的最后一个提交。"""
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: [
+        _tag("1.1.0", "b"), _tag("1.0.8", "a"), _tag(LOCAL_VERSION, LOCAL_SHA),
+    ])
     older = _commit("a", "先发布的改动", parents=["cafe" * 7])
     newer = _commit("b", "后发布的改动", parents=[older["sha"]])
     monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(2, [older, newer]))
 
     result = asyncio.run(cp._collect_update())
 
-    # 本地是第 8 个 commit（1.0.7），落后的两条分别是第 9、第 10 个
+    # 最新在前：第一条就是远端最新版本
     assert [(c["version"], c["subject"]) for c in result["versions"]] == [
-        ("1.0.9", "后发布的改动"),
+        ("1.1.0", "后发布的改动"),
         ("1.0.8", "先发布的改动"),
+    ]
+    assert result["versions"][0]["sha"] == "b" * 7
+    assert result["versions"][0]["date"] == "2026-10-02"
+
+
+def test_collect_update_puts_unreleased_commits_under_the_newest_tag(monkeypatch, local_count):
+    """标签之后还没发版的提交归到最新那一组，面板上不会出现没版本号的卡片。"""
+    monkeypatch.setattr(cp, "_fetch_remote_versions",
+                        lambda: [_tag("1.0.8", "a"), _tag(LOCAL_VERSION, LOCAL_SHA)])
+    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(2, [
+        _commit("a", "发版那次"), _commit("b", "发版之后"),
+    ]))
+    result = asyncio.run(cp._collect_update())
+
+    assert [c["version"] for c in result["versions"]] == ["1.0.8", "1.0.8"]
+    assert result["compare_url"].endswith(f"compare/{LOCAL_SHA}...main")
+
+
+def test_collect_update_reports_the_new_version_without_the_commit_list(monkeypatch, local_count):
+    """拿不到提交清单也要说「有新版本」：版本号已经由标签确定了。"""
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: [
+        _tag("1.5.0", "c"), _tag(LOCAL_VERSION, LOCAL_SHA),
+    ])
+
+    async def boom():
+        raise cp._UpdateCheckError("network")
+
+    monkeypatch.setattr(cp, "_fetch_ahead_best_source", boom)
+    result = asyncio.run(cp._collect_update())
+
+    assert result["update_available"] is True
+    assert result["remote_version"] == "1.5.0"
+    assert result["behind"] == 0
+    assert result["versions"] == []
+
+
+def test_collect_update_does_not_offer_an_older_tag(monkeypatch, local_count):
+    """本地版本比所有标签都新（改了代码还没发版）时，不算有更新。"""
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: [_tag("1.0.6", "a")])
+    result = asyncio.run(cp._collect_update())
+
+    assert result["update_available"] is False
+    assert result["remote_version"] == "1.0.6"
+
+
+def test_collect_update_links_to_the_release_page(monkeypatch, local_count):
+    """「查看变更」点开的是这个版本的 Release 发布页，不是 commit 对比页。"""
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: [
+        _tag("1.0.9", "b"), _tag(LOCAL_VERSION, LOCAL_SHA),
+    ])
+    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(1, [_commit("b", "改动")]))
+    result = asyncio.run(cp._collect_update())
+
+    assert result["release_url"] == f"{version.REPOSITORY_URL}/releases/tag/v1.0.9"
+
+
+def test_collect_update_links_the_current_release_when_up_to_date(monkeypatch, local_count):
+    """已是最新时，点「查看变更」看的是本机这一版发的那份说明。"""
+    result = asyncio.run(cp._collect_update())
+
+    assert result["update_available"] is False
+    assert result["release_url"] == f"{version.REPOSITORY_URL}/releases/tag/v{LOCAL_VERSION}"
+
+
+def test_collect_update_release_link_falls_back_to_the_release_list(monkeypatch, local_count):
+    """本机版本还没打标签（提前改好版本号）时退回发布页列表，免得点开是 404。"""
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: [_tag("1.0.6", "a")])
+    result = asyncio.run(cp._collect_update())
+
+    assert result["release_url"] == f"{version.REPOSITORY_URL}/releases"
+
+
+# ── 版本标签：从哪儿读、怎么认出 vX.Y.Z ─────────────────────────────────
+
+def test_tag_version_only_accepts_three_part_versions():
+    """只有 vX.Y.Z / X.Y.Z 形状的标签算版本号，别的标签一律不认。"""
+    assert cp._tag_version("v1.4.2") == "1.4.2"
+    assert cp._tag_version("1.4.2") == "1.4.2"
+    assert cp._tag_version("V2.0.1") == "2.0.1"
+    assert cp._tag_version("release-1.4.2") is None
+    assert cp._tag_version("v1.4") is None
+    assert cp._tag_version("v1.4.2-beta") is None
+    assert cp._tag_version("") is None
+
+
+def test_latest_version_compares_numbers_not_list_order():
+    """最新版本按版本号大小挑，不按接口返回的顺序取第一条。"""
+    tags = [{"version": "1.9.9", "sha": "a"}, {"version": "1.10.0", "sha": "b"},
+            {"version": "1.9.10", "sha": "c"}]
+    assert cp._latest_version(tags) == "1.10.0"
+
+
+def test_fetch_remote_versions_via_api_reads_tags_and_commit_shas(monkeypatch):
+    """GitHub 的 tags 接口：取标签名里的版本号，以及它指向的提交。"""
+    urls: list[str] = []
+
+    def fake_json(url, **kwargs):
+        urls.append(url)
+        return [
+            {"name": "v1.4.2", "commit": {"sha": "c" * 40}},
+            {"name": "v1.4.1", "commit": {"sha": "b" * 40}},
+            {"name": "backup", "commit": {"sha": "a" * 40}},
+        ]
+
+    monkeypatch.setattr(cp, "_github_json", fake_json)
+    versions = cp._fetch_remote_versions_via_api()
+
+    assert [(item["version"], item["sha"]) for item in versions] == [
+        ("1.4.2", "c" * 40), ("1.4.1", "b" * 40),
+    ]
+    assert "/tags?per_page=" in urls[0]
+
+
+def test_fetch_remote_versions_via_git_uses_the_peeled_tag_commit(monkeypatch):
+    """本地 git 那条路：附注标签要用解引用后的那个提交，不是标签对象本身。"""
+    output = (
+        "aaaa refs/tags/v1.4.2\n"
+        "cccc refs/tags/v1.4.2^{}\n"
+        "bbbb refs/tags/v1.4.1\n"
+        "dddd refs/tags/backup\n"
+    )
+
+    class _Result:
+        returncode = 0
+        stdout = output
+        stderr = ""
+
+    monkeypatch.setattr(cp, "_git_run", lambda args, **kwargs: _Result())
+    versions = cp._fetch_remote_versions_via_git()
+
+    assert [(item["version"], item["sha"]) for item in versions] == [
+        ("1.4.2", "cccc"), ("1.4.1", "bbbb"),
     ]
 
 
-def test_collect_update_uses_fallback_when_git_history_missing(monkeypatch):
-    monkeypatch.setattr(version, "local_commit_count", lambda: None)
-    monkeypatch.setattr(cp, "_remote_repository", lambda: version.REPOSITORY_URL)
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(1, [_commit("a", "新提交")]))
-    result = asyncio.run(cp._collect_update())
+def test_fetch_remote_versions_via_git_reports_auth_failure(monkeypatch):
+    class _Result:
+        returncode = 128
+        stdout = ""
+        stderr = "fatal: could not read Username for https://github.com"
 
-    # 没有 git 历史时退回用 VERSION 自身反推的 commit 数，仍然能算出远端版本
-    expected = version.commit_count_for(version.VERSION) + 1
-    assert result["remote_version"] == version.version_string(expected)
+    monkeypatch.setattr(cp, "_git_run", lambda args, **kwargs: _Result())
+
+    with pytest.raises(cp._GitFetchAuthError):
+        cp._fetch_remote_versions_via_git()
 
 
-# ── GitHub API 那条路：不拿 vX.Y.Z 标签当比对基准 ──────────────────────────
+def test_fetch_remote_versions_falls_back_to_the_anonymous_api(monkeypatch):
+    """没 Token、本地 git 也读不到时，最后用不带凭据的 API 兜一次。"""
+    monkeypatch.setattr(cp, "_fetch_remote_versions", _REAL_FETCH_REMOTE_VERSIONS)
+    monkeypatch.setattr(cp, "_github_token", lambda: "")
+    monkeypatch.setattr(cp, "_fetch_remote_versions_via_git", lambda: None)
+    monkeypatch.setattr(cp, "_fetch_remote_versions_via_api",
+                        lambda: [_tag("1.4.2", "a")])
+
+    assert cp._fetch_remote_versions()[0]["version"] == "1.4.2"
+
+
+def test_fetch_remote_versions_reports_when_there_are_no_tags(monkeypatch):
+    """一条 vX.Y.Z 标签都没有时给出专门的错误码，而不是笼统的「检查失败」。"""
+    monkeypatch.setattr(cp, "_fetch_remote_versions", _REAL_FETCH_REMOTE_VERSIONS)
+    monkeypatch.setattr(cp, "_github_token", lambda: "")
+    monkeypatch.setattr(cp, "_fetch_remote_versions_via_git", lambda: [])
+    monkeypatch.setattr(cp, "_fetch_remote_versions_via_api", lambda: [])
+
+    with pytest.raises(cp._UpdateCheckError) as excinfo:
+        cp._fetch_remote_versions()
+    assert str(excinfo.value) == "no_remote_version"
+    assert "版本标签" in cp._update_error_message("no_remote_version")
+
+
+# ── GitHub API 那条路：比对落后提交时用本地 HEAD 当基准 ──────────────────
 #
-# 标签得有人在远端建出来才算数，「检查更新」以前拿它当基准，于是维护者忘了推标签
-# 时永远报「远端没有当前版本对应的标签」。现在改用本地 HEAD 的 commit 比对；
+# 提交清单只用来列出更新内容，所以这条路上仍然拿本地 HEAD 去 compare；
 # 没有 git 记录的副本（整体拷贝、没装 git）则按 commit 条数比对。
 
 def _link(last_page: int) -> str:
@@ -347,6 +505,10 @@ def test_api_counts_commits_when_base_unknown(monkeypatch):
 def test_collect_update_without_git_still_reports_versions(monkeypatch, local_count):
     """整条链路：没有 git 记录的副本 + 已有 Token，也要能算出落后哪几个版本。"""
     cp._github_auth.save("ghp_" + "a" * 36)
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: [
+        _tag("1.1.0", "a"), _tag("1.0.9", "b"), _tag("1.0.8", "c"),
+        _tag(LOCAL_VERSION, LOCAL_SHA),
+    ])
     monkeypatch.setattr(cp, "_git_head", lambda: None)
     monkeypatch.setattr(cp, "_github_read", lambda url, **kw: ([{"sha": "a" * 7}], _headers(11)))
     monkeypatch.setattr(cp, "_github_json", lambda url, **kw: [
@@ -365,9 +527,11 @@ def test_collect_update_without_git_still_reports_versions(monkeypatch, local_co
 
 
 def test_update_check_reports_missing_repo(monkeypatch, local_count):
-    async def boom():
+    def boom():
         raise cp._UpdateCheckError("repo_missing")
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", boom)
+
+    # 版本标签读不到就是「更新源读不到」，不必再去找落后的提交
+    monkeypatch.setattr(cp, "_fetch_remote_versions", boom)
 
     response = asyncio.run(cp.update_check())
     payload = json.loads(response.body)
@@ -398,11 +562,13 @@ def test_update_check_is_cached(monkeypatch, local_count):
     """连续点击「检查更新」时命中缓存，不再重复请求。"""
     calls: list = []
 
-    async def counting():
+    def counting():
         calls.append(1)
-        return 0, []
+        return [_tag("1.0.8", "a"), _tag(LOCAL_VERSION, LOCAL_SHA)]
 
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", counting)
+    monkeypatch.setattr(cp, "_fetch_remote_versions", counting)
+    monkeypatch.setattr(cp, "_fetch_ahead_best_source",
+                        _fake_fetch(1, [_commit("a", "新提交")]))
 
     # 成功时 endpoint 直接返回 dict，出错才返回 JSONResponse
     first = asyncio.run(cp.update_check())
@@ -419,7 +585,10 @@ def test_update_check_is_cached(monkeypatch, local_count):
 
 def test_check_log_records_progress(monkeypatch, local_count):
     """检测过程会写进度日志：面板靠它显示「正在做什么」，免得看着像卡住。"""
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(1, [_commit("a", "新提交")]))
+    monkeypatch.setattr(cp, "_fetch_remote_versions",
+                        lambda: [_tag("1.0.8", "a"), _tag(LOCAL_VERSION, LOCAL_SHA)])
+    monkeypatch.setattr(cp, "_fetch_ahead_best_source",
+                        _fake_fetch(1, [_commit("a", "新提交")]))
 
     asyncio.run(cp.update_check(check_id="c1"))
 
@@ -429,7 +598,7 @@ def test_check_log_records_progress(monkeypatch, local_count):
     assert texts[0] == "开始检查更新…"
     assert texts[-1] == "检查完成"
     assert any("本地版本" in text for text in texts)
-    assert any("落后 1 个 commit" in text for text in texts)
+    assert any("远端比本地多 1 个 commit" in text for text in texts)
     # 每行都带时间戳（epoch 秒），面板按本地时间显示
     assert all(isinstance(item["time"], float) for item in payload["lines"])
 
@@ -478,7 +647,6 @@ def test_update_run_refuses_foreign_remote(monkeypatch):
 
 
 def test_update_run_reports_already_latest(monkeypatch, local_count):
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(0, []))
     result = asyncio.run(cp.update_run())
 
     assert result["status"] == "up-to-date"
@@ -497,7 +665,10 @@ def test_update_run_starts_job(monkeypatch, local_count):
         coro.close()
         return None
 
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(1, [_commit("a", "新提交")]))
+    monkeypatch.setattr(cp, "_fetch_remote_versions",
+                        lambda: [_tag("1.0.8", "a"), _tag(LOCAL_VERSION, LOCAL_SHA)])
+    monkeypatch.setattr(cp, "_fetch_ahead_best_source",
+                        _fake_fetch(1, [_commit("a", "新提交")]))
     monkeypatch.setattr(cp, "_run_update", fake_run_update)
     monkeypatch.setattr(cp, "_scrape_state", {**cp._scrape_state, "status": "idle"})
     monkeypatch.setattr(cp.asyncio, "create_task", fake_create_task)
@@ -507,7 +678,7 @@ def test_update_run_starts_job(monkeypatch, local_count):
 
         assert result["status"] == "started"
         assert result["from_version"] == version.VERSION
-        assert result["to_version"] == "1.0.8"     # 本地 8 个 commit 之后的第 9 个
+        assert result["to_version"] == "1.0.8"     # 远端最新的版本标签
         assert result["allow_dirty"] is False
         assert cp._update_state["status"] == "running"
         assert scheduled, "更新任务应该被调度"
@@ -527,7 +698,10 @@ def test_update_run_passes_allow_dirty(monkeypatch, local_count):
                               notify=False):
         seen.append(allow_dirty)
 
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", _fake_fetch(1, [_commit("a", "新提交")]))
+    monkeypatch.setattr(cp, "_fetch_remote_versions",
+                        lambda: [_tag("1.0.8", "a"), _tag(LOCAL_VERSION, LOCAL_SHA)])
+    monkeypatch.setattr(cp, "_fetch_ahead_best_source",
+                        _fake_fetch(1, [_commit("a", "新提交")]))
     monkeypatch.setattr(cp, "_run_update", fake_run_update)
     monkeypatch.setattr(cp, "_scrape_state", {**cp._scrape_state, "status": "idle"})
     monkeypatch.setattr(cp.asyncio, "create_task", lambda coro, **kw: coro.close())

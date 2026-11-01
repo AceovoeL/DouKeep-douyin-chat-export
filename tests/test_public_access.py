@@ -7,6 +7,8 @@ import json
 import os
 import pathlib
 import sys
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -215,11 +217,15 @@ def test_download_rejects_a_tiny_response(cfg_file, monkeypatch):
 
 
 def test_download_can_be_cancelled(cfg_file, monkeypatch):
+    """下到一半被叫停：已经下好的那截留着，不会接着往下拖。"""
+    state = {"chunks": 0}
+
     class _Response:
         status = 200
         headers = {}
 
         def read(self, size):
+            state["chunks"] += 1
             return b"z" * size
 
         def __enter__(self):
@@ -229,9 +235,9 @@ def test_download_can_be_cancelled(cfg_file, monkeypatch):
             return False
 
     monkeypatch.setattr(cf.urllib.request, "urlopen", lambda req, timeout=None: _Response())
-    # 第一次调用就返回「已取消」：循环应该立刻退出
+    # 写完第一块之后才叫停：循环下一次就该退出（而不是再拖一整块）
     with pytest.raises(cf.TunnelError) as err:
-        cf.download_binary(cancelled=lambda: True)
+        cf.download_binary(cancelled=lambda: state["chunks"] > 0)
     assert err.value.code == "cancelled"
     assert os.path.getsize(cf._partial_path()) <= cf._CHUNK     # 没白下一整份
 
@@ -1492,6 +1498,52 @@ def test_check_endpoint_reports_the_versions_without_downloading(client, monkeyp
     assert body["payload"]["cloudflared"]["version"] == "2026.10.0"
 
 
+
+
+def test_download_uses_read1_so_stopping_is_not_slow(cfg_file, monkeypatch):
+    """一次读多少决定「点了停止要等多久」：read1 有多少给多少，不攒满 256KB。
+
+    以前用 read(n) 要攒满一个块才返回 —— 网速慢时攒一块要十几秒，取消也得跟着等
+    十几秒。这里用假的响应证明走的是 read1（read 一旦被调用就直接失败）。
+    """
+    payload = b"x" * (cf._MIN_BINARY_SIZE + 10)
+    state = {"sent": False}
+
+    class _Response:
+        status = 200
+        headers = {"Content-Length": str(len(payload))}
+
+        def read1(self, size):
+            if state["sent"]:
+                return b""
+            state["sent"] = True
+            return payload
+
+        def read(self, size):
+            raise AssertionError("有 read1 时不该再用 read")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cf.urllib.request, "urlopen",
+                        lambda request, timeout=None: _Response())
+    assert cf.download_binary() == _update_target()
+
+
+def test_download_stops_before_any_request_when_already_cancelled(cfg_file, monkeypatch):
+    """已经点了停止：连网络都不该碰，立刻收工。"""
+    opened = []
+    monkeypatch.setattr(cf.urllib.request, "urlopen",
+                        lambda *args, **kwargs: opened.append(1))
+    with pytest.raises(cf.TunnelError) as err:
+        cf.download_binary(None, lambda: True)
+    assert err.value.code == "cancelled"
+    assert opened == []
+
+
 def test_download_can_keep_the_part_for_an_update(cfg_file, monkeypatch):
     payload = b"x" * (cf._MIN_BINARY_SIZE + 10)
 
@@ -1570,3 +1622,162 @@ def test_panel_wires_the_cloudflared_update_button_and_modal():
     assert "pubCfUpdateBtn: '更新 cloudflared'" in html
     assert "pubCfUpdateBtn: 'Update cloudflared'" in html
     assert "return ['check', 'download', 'replace', 'restart', 'verify']" in html
+
+
+# ── 手动下载 + 「我已放入指定位置」 ──
+
+def _wait_update(timeout: float = 10) -> dict:
+    """等这次更新 / 安装真的结束（done 或 error）。
+
+    「我已放入指定位置」要先把旧的下载线程停下再起新流程，中间状态会短暂变成
+    idle，所以只认 done / error 这两个终点，别被那一瞬骗过去。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        snapshot = cf.UPDATE_JOB.snapshot()
+        if snapshot["state"] in ("done", "error"):
+            return snapshot
+        time.sleep(0.05)
+    return cf.UPDATE_JOB.snapshot()
+
+
+def _place_manual(payload: bytes) -> str:
+    """把一份「用户自己下好的」文件放进指定位置，返回它的绝对路径。"""
+    placed = cf.manual_path()
+    os.makedirs(os.path.dirname(placed), exist_ok=True)
+    with open(placed, "wb") as handle:
+        handle.write(payload)
+    return placed
+
+
+def test_release_urls_try_the_mirror_before_github(cfg_file):
+    """项目内下载先走镜像站，官方地址排最后（国内直连 GitHub 经常慢到不能忍）。"""
+    urls = cf.release_urls()
+    assert len(urls) == len(cf.MIRROR_HOSTS) + 1
+    assert all(url.startswith(host) for url, host in zip(urls, cf.MIRROR_HOSTS))
+    assert urls[-1] == cf.RELEASE_URL.format(name=cf.binary_name())
+    assert urls[-1].startswith("https://github.com/cloudflare/cloudflared/releases/")
+
+
+def test_download_info_gives_both_links_and_an_absolute_path(cfg_file):
+    """面板要显示的两条链接 + 落地位置：路径必须是绝对路径，用户才找得到。"""
+    info = cf.mount_status()["cloudflared"]["download"]
+    assert info["path"] == cf.manual_path()
+    assert os.path.isabs(info["path"]), info["path"]
+    assert info["path"].startswith(os.path.abspath(paths.CLOUDFLARED_DIR))
+    assert info["path"].endswith(cf.binary_name())
+    assert info["official"].startswith("https://github.com/cloudflare/cloudflared/releases/")
+    assert info["mirror"] == cf.MIRROR_HOSTS[0] + info["official"]
+
+
+def test_manual_version_must_match_the_latest(cfg_file):
+    assert cf._manual_version_problem("2026.10.1", "2026.10.1") == ""
+    assert cf._manual_version_problem("2026.10.1", "") == ""            # 问不到最新版：认
+    assert cf._manual_version_problem("2026.11.0", "2026.10.1") == ""   # 比线上还新：认
+    problem = cf._manual_version_problem("2026.10.0", "2026.10.1")
+    assert "2026.10.0" in problem and "2026.10.1" in problem
+
+
+def test_manual_install_uses_the_placed_file_and_skips_the_download(cfg_file, fake_update):
+    """点「我已放入指定位置」：一个字节都不下，直接装用户放好的那份。"""
+    target = _update_target()
+    placed = _place_manual(b"new")
+
+    ok, code = cf.install_manual()
+    assert ok, code
+    snapshot = _wait_update()
+    assert snapshot["state"] == "done", snapshot
+    assert snapshot["mode"] == "manual"
+    assert snapshot["to_version"] == "2026.10.1"
+    assert snapshot["restarted"] is True
+    assert fake_update["downloads"] == 0
+    assert _read_bytes(target) == b"new"
+    assert os.path.isfile(placed)              # 用户放的那份留在原地，没被搬走
+    assert not os.path.exists(cf._staging_path())
+
+
+def test_manual_install_refuses_a_version_that_does_not_match(cfg_file, fake_update, monkeypatch):
+    """放进去的是旧版：版本号对不上就不装，原程序一点不动。"""
+    target = _update_target()
+    _place_manual(b"old")
+    monkeypatch.setattr(cf, "latest_version", lambda *, refresh=False: "2026.10.2")
+
+    ok, code = cf.install_manual()
+    assert ok, code
+    snapshot = _wait_update()
+    assert snapshot["state"] == "error", snapshot
+    assert snapshot["error"] == "manual_version"
+    assert "2026.10.2" in snapshot["error_detail"]
+    assert fake_update["stopped"] == 0
+    assert _read_bytes(target) == b"old"
+
+
+def test_manual_install_reports_a_missing_file(cfg_file, fake_update):
+    """指定位置什么都没有：直接说「没找到」，不去下载、也不停隧道。"""
+    target = _update_target()
+    ok, code = cf.install_manual()
+    assert ok, code
+    snapshot = _wait_update()
+    assert snapshot["state"] == "error"
+    assert snapshot["error"] == "manual_missing"
+    assert cf.manual_path() in snapshot["error_detail"]
+    assert fake_update["stopped"] == 0
+    assert _read_bytes(target) == b"old"
+
+
+def test_manual_install_takes_over_from_a_running_download(cfg_file, fake_update, monkeypatch):
+    """正在下载时点「我已放入指定位置」：先停下下载，再装用户那份。"""
+    target = _update_target()
+    _place_manual(b"new")
+    started = threading.Event()
+    cancelled_seen = threading.Event()
+
+    def slow_download(progress=None, cancelled=None, *, promote=True):
+        started.set()
+        for _ in range(500):
+            if cancelled and cancelled():
+                cancelled_seen.set()
+                raise cf.TunnelError("cancelled")
+            time.sleep(0.01)
+        raise cf.TunnelError("cancelled")
+
+    monkeypatch.setattr(cf, "download_binary", slow_download)
+    ok, code = cf.start_update()
+    assert ok, code
+    assert started.wait(timeout=5), "下载线程没起来"
+
+    ok, code = cf.install_manual()
+    assert ok, code
+    snapshot = _wait_update()
+    assert snapshot["state"] == "done", snapshot
+    assert snapshot["mode"] == "manual"
+    assert cancelled_seen.is_set()                    # 项目内的下载确实被叫停了
+    assert _read_bytes(target) == b"new"
+
+
+def test_manual_update_endpoint_starts_the_manual_install(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(cf, "install_manual",
+                        lambda: calls.append("manual") or (True, ""))
+    body = client.post("/panel/api/public/cloudflared/update/manual").json()
+    assert body["ok"] is True
+    assert calls == ["manual"]
+
+
+def test_panel_wires_the_manual_install_button_and_links():
+    html = open(PANEL_HTML, encoding="utf-8").read()
+    for needle in ("cfUpdateManualBtn", "installCloudflaredManual",
+                   "cloudflared/update/manual", "cfUpdateManualPath",
+                   "cfUpdateManualMirror", "cfUpdateManualOfficial",
+                   "renderCfUpdateManual", "copyCfUpdateManual", "openCfUpdateManualUrl"):
+        assert needle in html, needle
+    assert "pubCfUpdateManualBtn: '我已放入指定位置'" in html
+    assert "pubCfUpdateManualBtn: 'I already saved it'" in html
+    # 点完之后别再写「正在停止下载」：那一刻下载已经停了
+    assert "pubCfManualStopped: '已停止下载'" in html
+    assert "pubCfManualStopped: 'Download stopped'" in html
+    assert 'pubCfManualWaiting' not in html
+    # 结果页要把这个按钮收起来（否则失败后按钮还挂着上一次的「已停止下载」）
+    assert "manualBtn.hidden = true;" in html
+    # 「我已放入指定位置」必须排在「取消更新」左边
+    assert html.index('id="cfUpdateManualBtn"') < html.index('id="cfUpdateCancelBtn"')

@@ -10,8 +10,9 @@
     11          1.1.0
     12          1.1.1
 
-所以「本地版本」和「远端版本」都能由 commit 数唯一推出来：远端最新 commit 数取自
-GitHub API 的提交列表（见 backend/control_panel.py），本地版本就是下面的 VERSION。
+本地版本就是下面的 VERSION。判断「有没有新版本」时，远端版本直接读 GitHub 上最新的
+版本标签（vX.Y.Z，见 backend/control_panel.py），不再按 commit 数推算 —— 攒着几个
+改动一起发版时，commit 条数和真正的发版号会差开，按条数算出来的号也就不作数了。
 
 关于"落后一点"：VERSION 必须是**静态**写在文件里的（面板「关于」页和更新检测都读它），
 它没法自己跟着 commit 数跑。所以约定是：每次提交时，把它写成"这次提交是第几个 commit"
@@ -31,7 +32,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: version_string(commit 数)，攒着改动没发版时会落后若干位（只能落后，不能超前）。
 #: 2026-10-03 迁到新仓库 DouKeep-douyin-chat-export（从空仓库重开、旧历史不带过去），
 #: 版本号随新仓库从 1.0.0 重新开始。
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 
 #: 版本号第一位默认是 1，一个「大版本」内共 100 个小版本（1.0.0 → 1.9.9）。
 _BASE_MAJOR = 1
