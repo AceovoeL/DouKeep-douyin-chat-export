@@ -51,7 +51,8 @@ const EMOJI_TOKEN_RE = /\[[^[\]\n]{1,20}\]/g
 function emojiImgHtml(token, query) {
   const url = emojiUrl(token.slice(1, -1))
   if (!url) return null
-  const label = token.replace(/"/g, '&quot;')
+  // alt/title 是 HTML 属性：完整转义（不只引号），表情名里万一有 < > & 也不会漏出标签
+  const label = escapeHtml(token)
   const img = `<img class="msg-emoji" src="${url}" alt="${label}" title="${label}" draggable="false" onerror="this.replaceWith(this.alt)">`
   // 搜索命中表情名时图片一起高亮，跟文字结果的观感保持一致。
   const hit = !!query && token.toLowerCase().includes(query.toLowerCase())

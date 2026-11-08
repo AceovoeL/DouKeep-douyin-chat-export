@@ -47,8 +47,12 @@ def test_chat_records_live_under_data():
         assert _under(value, paths.DATA_DIR), f"{name} 应该在 data/ 里：{value}"
 
 
-def test_settings_logs_and_state_live_under_config():
+def test_settings_logs_and_state_live_under_config(monkeypatch):
     """设置、凭据、登录态、日志、跨进程状态、调试产物都进 config/。"""
+    # conftest 的 autouse 会把 CONFIG_PATH 指到临时文件；这里测的是模块常量的
+    # 静态值，换回原始定义再断言。
+    monkeypatch.setattr(paths, "CONFIG_PATH",
+                        os.path.join(paths.CONFIG_DIR, "panel_config.json"))
     for name in (
             "CONFIG_PATH", "TOKEN_PATH", "BROWSER_PROFILE",
             "LOG_DIR", "SCRAPE_LOG", "VOICE_TRANSCRIPTION_LOG", "DISCOVER_LOG",

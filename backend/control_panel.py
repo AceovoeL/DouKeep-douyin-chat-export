@@ -1034,16 +1034,40 @@ async def set_panel_appearance(req: AppearanceUpdate):
 
 @control_router.post("/api/password")
 async def set_password(req: PasswordRequest):
+    """设置 / 更换 / 清除面板密码。
+
+    换密码 = 换锁：**两道锁的全部登录态一起清** —— 面板这边已发的登录 token 全部作废
+    （`revoke_all_tokens`），访问密码那道门的信任设备 / 「需手动确认」/ 猜错账本也一并
+    清空（`clear_all_login_states`）。之前登录过的浏览器、手机都要重新输一遍：主人改
+    密码往往正是因为怀疑别人知道了旧密码，留着旧登录态等于白改。
+    """
     import hashlib
+    from backend import main as _main
     cfg = _load_config()
+    # 先数一下要作废几台设备（给提示语用）：两道锁的名单各数一遍（按同一台合并）
+    def _count(rows):
+        return len({_access.device_group_key(row) for row in rows})
+    cleared_devices = (_count(_access.trusted_devices(_access.SCOPE_ACCESS))
+                       + _count(_access.trusted_devices(_access.SCOPE_PANEL)))
+    # 先把密码写进配置，再清登录态 —— clear_all_login_states 自己读最新配置再清，
+    # 顺序反了会把刚清掉的名单又随旧 cfg 写回去。
     if req.password:
         cfg["password_hash"] = hashlib.sha256(req.password.encode()).hexdigest()
         _save_config(cfg)
-        return {"status": "ok", "message": "密码已设置"}
     else:
         cfg.pop("password_hash", None)
         _save_config(cfg)
-        return {"status": "ok", "message": "密码已清除"}
+    _access.clear_all_login_states()
+    revoked = _main.revoke_all_tokens()
+    if req.password:
+        message = "密码已设置" if not cleared_devices else (
+            f"密码已设置：{cleared_devices} 台设备的登录态已清空，都要重新登录")
+    else:
+        message = "密码已清除" if not cleared_devices else (
+            f"密码已清除：{cleared_devices} 台设备的登录态已清空")
+    if revoked:
+        message += f"（{revoked} 个已登录的会话已作废）"
+    return {"status": "ok", "message": message, "cleared_devices": cleared_devices}
 
 
 @control_router.get("/api/password/status")
@@ -1078,10 +1102,27 @@ def _lan_status_payload(request: Request, expect_host: str = "") -> dict:
     host = address[0] if address else _access.LOCAL_HOST
     port = _lan_port()
     expected = _access.normalize_host(expect_host) if expect_host else ""
+    # 访问密码那道门的三个名单，按「从哪儿连进来」分成局域网 / 公网两份
+    def _split(rows):
+        lan = [row for row in rows if row.get("origin") != _access.ORIGIN_PUBLIC]
+        public = [row for row in rows if row.get("origin") == _access.ORIGIN_PUBLIC]
+        return lan, public
+
+    lan_devices, public_devices = _split(_access.list_devices(cookie_id))
+    lan_pending, public_pending = _split(_access.list_pending_devices(
+        client_host, request.headers.get("user-agent")))
+    guard = _access.guard_snapshot()
+    lan_guard_devices, public_guard_devices = _split(guard["devices"])
+    # 面板密码那道门（外来设备输面板密码的记录）同样三个名单
+    panel_guard = _access.guard_snapshot(_access.SCOPE_PANEL)
+    panel_guard_lan, panel_guard_public = _split(panel_guard["devices"])
     return {
         "enabled": _access.lan_enabled(),
         "require_password": _access.password_required(),
         "has_password": bool(cfg.get("lan_password_hash")),
+        # 面板密码设没设（决定「面板密码」那三个名单要不要显示）
+        "has_panel_password": bool(cfg.get("password_hash")) or bool(
+            _access.trusted_devices(_access.SCOPE_PANEL)),
         # 服务**当前**监听在哪儿（切换之后要等重启完成，这里才会跟着变）
         "host": host,
         "port": port,
@@ -1090,12 +1131,23 @@ def _lan_status_payload(request: Request, expect_host: str = "") -> dict:
         "client_host": client_host,
         "restarting": bool(_lan_restart_state["running"]),
         "addresses": _access.access_addresses(port, client_host),
-        "devices": _access.list_devices(cookie_id),
+        # 访问密码那道门：局域网 / 公网各一份（面板分两处显示）
+        "devices": lan_devices,
+        "public_devices": public_devices,
         # 全服务共用的猜密码账本：连着错就会锁住整个登录入口（换网络 / 清 Cookie 躲不开）
-        "guard": _access.guard_snapshot(),
+        "guard": dict(guard, devices=lan_guard_devices),
+        "public_guard": dict(guard, devices=public_guard_devices,
+                             failures=sum(row["failures"] for row in public_guard_devices)),
         # 单独被暂停的设备：要在界面上「手动确认」才放行（理由由面板翻文案）
-        "pending": _access.list_pending_devices(
-            client_host, request.headers.get("user-agent")),
+        "pending": lan_pending,
+        "public_pending": public_pending,
+        # 面板密码那道门（外来设备输面板密码的尝试）：同样三个名单
+        "panel_devices": _access.list_devices(cookie_id, scope=_access.SCOPE_PANEL),
+        "panel_guard": dict(panel_guard, devices=panel_guard_lan),
+        "panel_public_guard": dict(panel_guard, devices=panel_guard_public,
+                                   failures=sum(row["failures"] for row in panel_guard_public)),
+        "panel_pending": _access.list_pending_devices(
+            client_host, request.headers.get("user-agent"), scope=_access.SCOPE_PANEL),
         "max_password_failures": _access.MAX_PASSWORD_FAILURES,
         "max_device_failures": _access.MAX_DEVICE_FAILURES,
         # 公网访问搭在局域网访问上：面板关开关前要据此先问一句（域名会留着）
@@ -1159,21 +1211,27 @@ async def set_lan_access(req: LanAccessRequest, request: Request):
 async def set_lan_password(req: LanPasswordRequest, request: Request):
     """设置 / 更换 / 取消局域网访问密码（不用重启：每次请求都会读配置）。
 
-    换密码 = 换锁：``_access.set_password()`` 会把所有设备的登录态清掉（信任设备手上的
-    Cookie 立刻失效，「需手动确认」和猜密码那本账也一起清），局域网和公网的设备都要拿新
-    密码重新来一次 —— 主人改密码往往正是因为「有别人知道旧密码」。
+    换密码 = 换锁：**两道锁的全部登录态一起清** —— 访问密码的信任设备（Cookie 立刻
+    失效）、「需手动确认」、猜错账本，连同面板那边已登录的 token 全部作废。局域网和公网
+    的设备都要拿新密码重新来一次 —— 主人改密码往往正是因为「有别人知道旧密码」。
 
     取消密码时**不替用户关公网访问**：公网开着又没有密码确实很危险（谁都能看），但那是
     用户的取舍 —— 面板那边如果公网正开着会先弹风险确认，他确认了才走到这里。
     """
     password = req.password or ""
-    cleared = len(_access.list_devices())          # 换 / 清密码会作废这么多台设备
+    # 换 / 清访问密码 = 换锁：两道锁的全部登录态一起清（面板那边已登录的 token 也作废，
+    # 主人改任何一道锁的密码，都该让所有设备重新认证一遍）
+    from backend import main as _main
+    cleared = _access.clear_all_login_states()
+    revoked = _main.revoke_all_tokens()
     _access.set_password(password)
     if password:
         message = f"访问密码已更换：{cleared} 台设备的登录态已清空，都要用新密码重新进" \
             if cleared else "访问密码已设置：局域网里的设备第一次访问时要输入它"
     else:
         message = "访问密码已取消：局域网里的设备都能直接访问"
+    if revoked:
+        message += f"（{revoked} 个已登录的面板会话已作废）"
     return {"ok": True, "message": message, "has_password": bool(password),
             "cleared_devices": cleared,
             "payload": _lan_status_payload(request)}
@@ -1219,6 +1277,112 @@ async def clear_lan_guard(request: Request):
     """
     _access.clear_guard()
     return {"ok": True, "payload": _lan_status_payload(request)}
+
+
+# ── 面板密码那道门的设备管理（外来设备输面板密码的记录）──
+# 接口形状跟访问密码那道门完全一致，只是各管各的名单（scope=panel）。
+
+@control_router.post("/api/panel-auth/devices/forget")
+async def forget_panel_device(req: LanDeviceRequest, request: Request):
+    """不再信任某台设备（面板密码）：它的登录 token 一起作废，立刻要重新输密码。"""
+    from backend import main as _main
+    removed = _access.forget_device(req.id, scope=_access.SCOPE_PANEL)
+    if removed:
+        # 这台设备的 token 全部作废：设备记录 id 存在 token 的第二项里
+        dead = [token for token, (_, device_id) in _main._active_tokens.items()
+                if device_id == req.id]
+        for token in dead:
+            _main._active_tokens.pop(token, None)
+    return {"ok": removed, "removed": removed,
+            "payload": _panel_auth_payload(request)}
+
+
+@control_router.post("/api/panel-auth/devices/forget-all")
+async def forget_all_panel_devices(request: Request):
+    """清空面板密码那道门的信任设备：所有外来设备的登录态全部作废。"""
+    from backend import main as _main
+    count = _access.forget_all_devices(scope=_access.SCOPE_PANEL)
+    _main.revoke_all_tokens()
+    return {"ok": True, "removed": count,
+            "payload": _panel_auth_payload(request)}
+
+
+@control_router.post("/api/panel-auth/pending/forget")
+async def release_panel_pending_device(req: LanDeviceRequest, request: Request):
+    """解除某台设备在面板密码那道门的暂停。"""
+    removed = _access.forget_pending_device(req.id, scope=_access.SCOPE_PANEL)
+    return {"ok": removed, "removed": removed,
+            "payload": _panel_auth_payload(request)}
+
+
+@control_router.post("/api/panel-auth/pending/forget-all")
+async def release_all_panel_pending_devices(request: Request):
+    """把面板密码那道门「需手动确认」里的设备全部解除。"""
+    count = _access.forget_all_pending_devices(scope=_access.SCOPE_PANEL)
+    return {"ok": True, "removed": count,
+            "payload": _panel_auth_payload(request)}
+
+
+@control_router.post("/api/panel-auth/guard/clear")
+async def clear_panel_guard(request: Request):
+    """面板密码那本猜错账清零、立刻解锁。"""
+    _access.clear_guard(scope=_access.SCOPE_PANEL)
+    return {"ok": True, "payload": _panel_auth_payload(request)}
+
+
+def _panel_auth_payload(request: Request) -> dict:
+    """设置页「密码」区块那三个列表要的数据（面板密码这道锁的）。
+
+    跟开发者模式无关：只要设了面板密码就显示（外来设备输过面板密码的记录才有意义）。
+    """
+    client_host = _gate._client_host(request)
+    cookie_id = _access.trusted_device_id(request.cookies.get(_access.COOKIE_NAME))
+    return {
+        "has_password": bool(_load_config().get("password_hash")),
+        "devices": _access.list_devices(cookie_id, scope=_access.SCOPE_PANEL),
+        "guard": _access.guard_snapshot(_access.SCOPE_PANEL),
+        "pending": _access.list_pending_devices(
+            client_host, request.headers.get("user-agent"), scope=_access.SCOPE_PANEL),
+    }
+
+
+@control_router.get("/api/panel-auth/status")
+async def panel_auth_status(request: Request):
+    """「密码」区块的三个列表（面板密码这道锁的设备 / 账本 / 暂停名单）。"""
+    return {"ok": True, "payload": _panel_auth_payload(request)}
+
+
+class CrossScopeDeviceRequest(BaseModel):
+    """跨两份列表删除同一台设备：这一边的设备 id + 另一边同一条的 id 和 scope。"""
+    id: str
+    other_id: str = ""             # 另一份列表里同一条设备的 id（没有就只删这一边）
+    other_scope: str = ""          # access / panel：另一条记在哪道门名下
+
+
+@control_router.post("/api/lan/devices/forget-both")
+async def forget_device_both_lists(req: CrossScopeDeviceRequest, request: Request):
+    """把同一台设备在两份列表里的记录一起删（面板确认过「两边一起删」之后调用）。
+
+    同一台设备可能既出现在「局域网访问」的信任设备里、又出现在「公网访问」的信任
+    设备里（两份列表按来源分开显示，同一条的 ``match_key`` 相同）。面板先按
+    ``match_key`` 认出另一边的 id，用户确认后把两个 id 一起传上来，这里各删各的。
+    """
+    removed_here = _access.forget_device(req.id)
+    removed_other = False
+    other_scope = req.other_scope if req.other_scope in _access.SCOPES else ""
+    if other_scope and req.other_id:
+        removed_other = _access.forget_device(req.other_id, scope=other_scope)
+        # 对面是面板密码那道锁时，被删设备的登录 token 一起作废
+        if removed_other and other_scope == _access.SCOPE_PANEL:
+            from backend import main as _main
+            dead = [token for token, (_, device_id) in _main._active_tokens.items()
+                    if device_id == req.other_id]
+            for token in dead:
+                _main._active_tokens.pop(token, None)
+    return {"ok": removed_here or removed_other,
+            "removed": removed_here, "removed_other": removed_other,
+            "payload": _lan_status_payload(request),
+            "panel_payload": _panel_auth_payload(request)}
 
 
 # ── 公网访问（用 Cloudflare 隧道接到自己的域名）──

@@ -23,7 +23,7 @@ def _set_password(monkeypatch, plaintext):
 def test_no_password_allows_all(client, monkeypatch, temp_db):
     monkeypatch.setattr(main, "_get_password_hash", lambda: None)
     assert client.get("/api/auth/check").json() == {
-        "need_password": False, "authenticated": True}
+        "need_password": False, "authenticated": True, "locked_seconds": 0}
     assert client.get("/api/stats").status_code == 200
 
 
@@ -56,7 +56,7 @@ def test_login_and_token_flow(client, monkeypatch, temp_db):
     assert ok.status_code == 200
     # and auth/check reports authenticated
     chk = client.get("/api/auth/check", headers={"Authorization": f"Bearer {token}"})
-    assert chk.json() == {"need_password": True, "authenticated": True}
+    assert chk.json() == {"need_password": True, "authenticated": True, "locked_seconds": 0}
 
 
 def test_token_accepted_without_bearer_prefix(client, monkeypatch, temp_db):

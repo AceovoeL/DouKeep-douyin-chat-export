@@ -1417,7 +1417,8 @@ def test_latest_version_reads_the_tag_from_the_github_api(monkeypatch):
 
     monkeypatch.setattr(cf.urllib.request, "urlopen",
                         lambda request, timeout=None: _Response())
-    assert cf._latest_from_api() == "2026.10.1"
+    # 发布信息里没有 assets/digest：版本号照常返回，摘要为空串
+    assert cf._latest_from_api() == ("2026.10.1", "")
 
 
 def test_latest_version_falls_back_to_the_download_redirect(monkeypatch):
@@ -1442,16 +1443,18 @@ def test_latest_version_falls_back_to_the_download_redirect(monkeypatch):
                 "2026.10.1/cloudflared-windows-amd64.exe")
             return _Response()
 
-    monkeypatch.setattr(cf, "_latest_from_api", lambda: "")
+    monkeypatch.setattr(cf, "_latest_from_api", lambda: None)
     monkeypatch.setattr(cf.urllib.request, "build_opener",
                         lambda handler: _Opener(handler))
-    assert cf._fetch_latest_version() == "2026.10.1"
+    # 重定向这条备用路问不到官方摘要，第二项为空串
+    assert cf._fetch_latest_version() == ("2026.10.1", "")
 
 
 def test_latest_version_is_cached_until_it_expires_or_is_refreshed(monkeypatch):
     calls = []
+    # _fetch_latest_version 现在返回 (版本号, 官方 SHA-256)：没有摘要就给空串
     monkeypatch.setattr(cf, "_fetch_latest_version",
-                        lambda: calls.append(1) or "2026.10.1")
+                        lambda: calls.append(1) or ("2026.10.1", ""))
     cf.invalidate_latest_cache()
     assert cf.latest_version() == "2026.10.1"
     assert cf.latest_version() == "2026.10.1"

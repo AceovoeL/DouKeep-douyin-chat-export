@@ -31,6 +31,25 @@ def _never_migrate_the_real_project(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_passwords(monkeypatch, tmp_path):
+    """测试默认跑在「没设任何密码」的状态下，配置指到临时文件。
+
+    本机真实运行的 config/panel_config.json 可能设了面板密码 / 访问密码、开着局域网
+    访问（那都是用户自己的设置）—— 测试不该被它影响，更不该把它改掉。这里把配置
+    指到临时空文件、面板密码当成没设；要用例自己 monkeypatch（比如 test_auth 设
+    _get_password_hash、test_lan_access 设 CONFIG_PATH）都会盖过这个默认值。
+    """
+    import backend.main as main
+    import common.access as access
+
+    monkeypatch.setattr(paths, "CONFIG_PATH", str(tmp_path / "panel_config.json"))
+    monkeypatch.setattr(main, "_get_password_hash", lambda: None)
+    access.invalidate_cache()
+    yield
+    access.invalidate_cache()
+
+
+@pytest.fixture(autouse=True)
 def _reset_display_count_cache():
     """清掉阅读端「显示条数 / 发送者分布」的内存缓存。
 

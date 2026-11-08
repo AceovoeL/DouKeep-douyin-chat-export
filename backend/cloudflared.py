@@ -288,15 +288,37 @@ def download_binary(progress=None, cancelled=None, *, promote: bool = True) -> s
     if cancelled and cancelled():
         raise TunnelError("cancelled")         # 一上来就被叫停：连都不连
     failure = ""
+    # 官方发布包的 SHA-256（问 GitHub 拿的）：镜像站给的文件对不上这份摘要就不认。
+    # 问不到（接口不通 / 老版 GitHub 没这个字段）时退回只查大小 —— 跟以前一样。
+    expected_digest = cached_latest_digest()
+    if not expected_digest:
+        # 缓存里还没有摘要：问一次 GitHub（顺带把版本号和摘要一起带回来缓存住）。
+        # 问不到（断网 / 限流 / 测试里的假 urlopen）就退回只查大小 —— 跟以前一样。
+        try:
+            latest_version()
+            expected_digest = cached_latest_digest()
+        except Exception:
+            expected_digest = ""
     for url in release_urls():
         try:
             received = _fetch_into(url, part, received, progress, cancelled)
-            break
         except TunnelError:
             raise                          # 用户点了取消：别偷偷换下一个地址接着下
         except OSError as exc:             # 镜像超时 / 被墙 / 502：换下一个地址
             failure = str(exc)
             received = os.path.getsize(part) if os.path.isfile(part) else 0
+            continue
+        if expected_digest and not _file_matches_digest(part, expected_digest):
+            # 文件下完了但和官方摘要对不上：这份不能要（镜像投毒 / 传坏了），
+            # 删掉从下一个地址重新下 —— 官方地址也一样要过这道校验。
+            failure = "checksum mismatch"
+            try:
+                os.remove(part)
+            except OSError:
+                pass
+            received = 0
+            continue
+        break
     else:
         raise TunnelError("download_failed", failure or "no download source")
     if received < _MIN_BINARY_SIZE:
@@ -314,6 +336,22 @@ def download_binary(progress=None, cancelled=None, *, promote: bool = True) -> s
     if os.name != "nt":
         os.chmod(target, 0o755)
     return target
+
+
+def _file_matches_digest(path: str, expected: str) -> bool:
+    """文件流式算一遍 SHA-256，跟官方摘要比（大小写不敏感）。"""
+    import hashlib
+    expected = str(expected or "").strip().lower()
+    if not expected:
+        return True                         # 没有期望值就无从校验，按通过处理
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return False
+    return digest.hexdigest() == expected
 
 
 def ensure_binary(progress=None, cancelled=None) -> str:
@@ -382,13 +420,24 @@ def invalidate_version_cache() -> None:
 # ── 最新版本：下载之前先问一句「有没有新的」──
 
 _latest_lock = threading.Lock()
-_latest_cache = {"version": "", "at": 0.0}
+_latest_cache = {"version": "", "at": 0.0, "digest": ""}
 
 
 def cached_latest_version() -> str:
     """上次问到的 cloudflared 最新版本（不联网）；从没问过就是空串。"""
     with _latest_lock:
         return str(_latest_cache["version"] or "")
+
+
+def cached_latest_digest() -> str:
+    """上次问到的官方发布包 SHA-256（不联网）；问不到就是空串。
+
+    GitHub 的发布接口（releases/latest）给每个资产带 ``digest`` 字段（``sha256:...``）。
+    下载走的是国内镜像站 —— 镜像只负责传得快，文件真伪由这份官方摘要背书：下完对不上
+    就当这次下载失败，换下一个源重来，绝不拿去运行。
+    """
+    with _latest_lock:
+        return str(_latest_cache["digest"] or "")
 
 
 def download_info() -> dict:
@@ -410,9 +459,10 @@ def download_info() -> dict:
 
 
 def invalidate_latest_cache() -> None:
-    """忘掉上次问到的版本（下次 latest_version 会重新问 GitHub）。"""
+    """忘掉上次问到的版本和摘要（下次 latest_version 会重新问 GitHub）。"""
     with _latest_lock:
         _latest_cache["version"] = ""
+        _latest_cache["digest"] = ""
         _latest_cache["at"] = 0.0
 
 
@@ -421,7 +471,8 @@ def latest_version(*, refresh: bool = False) -> str:
 
     只花几 KB，结果在内存里存 _CHECK_TTL 秒 —— 更新之前先靠它判断「要不要下那
     50MB」。断网 / 接口限流时返回空串，调用方按「不知道」处理（照样能继续更新，
-    下载完会再核对一次版本）。
+    下载完会再核对一次版本）。问版本的同时顺手把官方发布包的 SHA-256 也带回来
+    （见 ``cached_latest_digest``），下载后好校验镜像给的是不是官方那一份。
     """
     now = time.time()
     with _latest_lock:
@@ -431,20 +482,24 @@ def latest_version(*, refresh: bool = False) -> str:
         ttl = _CHECK_TTL if version else _CHECK_FAIL_TTL
         if now - at < ttl:
             return version
-    found = _fetch_latest_version()
+    found, digest = _fetch_latest_version()
     with _latest_lock:
         _latest_cache["version"] = found
+        _latest_cache["digest"] = digest
         _latest_cache["at"] = now
     return found
 
 
-def _fetch_latest_version() -> str:
-    """问 GitHub：先走接口，接口不通（限流 / 被墙）再用下载地址的重定向碰一次。"""
-    return _latest_from_api() or _latest_from_redirect()
+def _fetch_latest_version() -> tuple[str, str]:
+    """问 GitHub：先走接口，接口不通（限流 / 被墙）再用下载地址的重定向碰一次。
+
+    返回 (版本号, 官方 SHA-256)；重定向那条备用路问不到摘要，第二项为空串。
+    """
+    return _latest_from_api() or (_latest_from_redirect(), "")
 
 
-def _latest_from_api() -> str:
-    """接口这条路的答案：{"tag_name": "2026.10.1", ...} 里的版本号。"""
+def _latest_from_api() -> tuple[str, str] | None:
+    """接口这条路的答案：{"tag_name": "2026.10.1", "assets": [...]} 里的版本号和摘要。"""
     request = urllib.request.Request(
         LATEST_API,
         headers={"User-Agent": _UA, "Accept": "application/vnd.github+json"},
@@ -452,11 +507,24 @@ def _latest_from_api() -> str:
     try:
         with urllib.request.urlopen(request, timeout=_CHECK_TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8", "replace"))
-    except (OSError, ValueError):
-        return ""
-    tag = str(payload.get("tag_name") or "") if isinstance(payload, dict) else ""
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    tag = str(payload.get("tag_name") or "")
     match = _VERSION_RE.search(tag)
-    return match.group(1) if match else ""
+    if not match:
+        return None
+    # 官方给每个发布资产带 digest（"sha256:..."）：找到本平台那个文件的摘要
+    name = binary_name()
+    digest = ""
+    for asset in payload.get("assets") or []:
+        if isinstance(asset, dict) and str(asset.get("name") or "") == name:
+            text = str(asset.get("digest") or "")
+            if text.lower().startswith("sha256:"):
+                digest = text.split(":", 1)[1].strip().lower()
+            break
+    return match.group(1), digest
 
 
 class _ReleaseTagRecorder(urllib.request.HTTPRedirectHandler):

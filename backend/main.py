@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import threading
 import time
 from typing import Literal
 
@@ -17,6 +18,7 @@ from .emoji_files import EmojiStaticFiles
 from .media_files import MediaStaticFiles
 from .access_log import AccessLogMiddleware, configure_logging, log as access_log
 from .panel.access_gate import access_gate_router, gate_middleware as lan_access_middleware
+from common import access
 from common import appearance as appearance_cfg, config, download_mark, paths
 from common.bubble_assets import load_catalog
 from common.version import VERSION as APP_VERSION
@@ -34,7 +36,8 @@ app.add_middleware(
 app.add_middleware(AccessLogMiddleware)
 
 # ── Auth system ──
-_active_tokens: dict[str, float] = {}  # token -> expire_timestamp
+#: token -> (过期时间, 设备记录 id)。id 用来在「不再信任这台设备」时把它的登录态一起作废。
+_active_tokens: dict[str, tuple[float, str]] = {}
 _TOKEN_TTL = 7 * 24 * 3600  # 7 days
 
 
@@ -50,11 +53,22 @@ def _hash_password(pw: str) -> str:
 def _verify_token(token: str) -> bool:
     if not token:
         return False
-    exp = _active_tokens.get(token)
-    if exp and time.time() < exp:
+    entry = _active_tokens.get(token)
+    if entry and time.time() < entry[0]:
         return True
     _active_tokens.pop(token, None)
     return False
+
+
+def revoke_all_tokens() -> int:
+    """作废所有已发的登录 token（改密码时用）；返回作废了几个。
+
+    改密码 = 换锁：之前登录过的浏览器 / 设备不该还能靠手里的 token 继续看。这个
+    函数只管内存里的 token；设备名单（面板密码那道门的信任设备）由调用方一并清掉。
+    """
+    count = len(_active_tokens)
+    _active_tokens.clear()
+    return count
 
 
 def _verify_api_token(token: str, path: str, method: str) -> bool:
@@ -133,27 +147,134 @@ class AuthLoginRequest(BaseModel):
 
 @app.get("/api/auth/check")
 def auth_check(request: Request):
-    """Check if password is set and if current token is valid."""
+    """Check if password is set and if current token is valid.
+
+    `locked_seconds` 是面板密码那本猜错账还要锁多久（外来设备才受它管，本机恒为 0），
+    登录框拿它显示「大约还要等多久」。
+    """
     pw_hash = _get_password_hash()
     if not pw_hash:
-        return {"need_password": False, "authenticated": True}
+        return {"need_password": False, "authenticated": True, "locked_seconds": 0}
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     if not token:
         token = request.query_params.get("token", "")
-    return {"need_password": True, "authenticated": _verify_token(token)}
+    origin = _request_origin(request)
+    locked = 0 if origin == "local" else access.guard_locked_seconds(access.SCOPE_PANEL)
+    return {"need_password": True, "authenticated": _verify_token(token),
+            "locked_seconds": locked}
+
+
+def _request_origin(request: Request) -> str:
+    """这次请求是本机 / 局域网 / 公网隧道来的（见 `access.classify_origin`）。"""
+    peer = request.client.host if request.client else ""
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    return access.classify_origin(peer, headers)
+
+
+def _client_host_of(request: Request) -> str:
+    """这次请求算「谁来的」（隧道转来的取真实访客地址）。"""
+    peer = request.client.host if request.client else ""
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    return access.client_host(peer, headers)
+
+
+# 面板密码那道门的「同一台设备连错几次」：只在内存里（重启清零），暂停名单在配置里。
+# 跟访问密码那道门（access_gate.py）同一套逻辑、各自一本账。
+_PANEL_FAILURES_LOCK = threading.Lock()
+_PANEL_FAILURES: dict[tuple[str, str], int] = {}
+
+
+def _panel_device_key(request: Request) -> tuple[str, str]:
+    return _client_host_of(request), access._ua_fingerprint(request.headers.get("user-agent"))
+
+
+def _record_panel_failure(key: tuple[str, str]) -> int:
+    with _PANEL_FAILURES_LOCK:
+        count = int(_PANEL_FAILURES.get(key, 0)) + 1
+        _PANEL_FAILURES[key] = count
+        if len(_PANEL_FAILURES) > 200:
+            for stale in [k for k, v in _PANEL_FAILURES.items() if not v]:
+                _PANEL_FAILURES.pop(stale, None)
+        return count
+
+
+def _clear_panel_failures(key: tuple[str, str]) -> None:
+    with _PANEL_FAILURES_LOCK:
+        _PANEL_FAILURES.pop(key, None)
 
 
 @app.post("/api/auth/login")
-def auth_login(req: AuthLoginRequest):
+def auth_login(req: AuthLoginRequest, request: Request):
+    """面板密码登录：本机直接校验；外来设备（局域网 / 公网）先过防爆破那几道闸。
+
+    防爆破跟访问密码那道门同一套逻辑（见 `common/access.py` 的 guard），只是各记
+    各的账：外来设备连错 `MAX_PASSWORD_FAILURES` 次锁整个登录入口、时间翻倍；同一台
+    设备连错 `MAX_DEVICE_FAILURES` 次单独暂停、要主人在面板上解除。**本机永远不记账、
+    从不受锁影响** —— 本机是主人自己，把自己锁在门外没有道理。
+    """
     pw_hash = _get_password_hash()
     if not pw_hash:
         # Previously `return {...}, 400`, which FastAPI serialized as HTTP 200
         # with a JSON array body. Return a real 400.
         return JSONResponse({"error": "no password set"}, status_code=400)
+    origin = _request_origin(request)
+    if origin != "local":
+        client_host = _client_host_of(request)
+        user_agent = request.headers.get("user-agent")
+        key = (client_host, access._ua_fingerprint(user_agent))
+        if access.is_pending(client_host, user_agent, scope=access.SCOPE_PANEL):
+            return JSONResponse(
+                {"error": "device_paused",
+                 "message": "这台设备因多次输错密码已被暂停，请在控制面板解除"},
+                status_code=429)
+        locked = access.guard_locked_seconds(access.SCOPE_PANEL)
+        if locked:
+            return JSONResponse(
+                {"error": "login_locked", "locked_seconds": locked,
+                 "message": "连续输错次数过多，登录已暂时锁定"},
+                status_code=429)
+        if not hmac.compare_digest(_hash_password(req.password), pw_hash):
+            count = _record_panel_failure(key)
+            state = access.record_guard_failure(
+                ip=client_host, user_agent=user_agent,
+                scope=access.SCOPE_PANEL,
+                origin=access.ORIGIN_PUBLIC if origin == "public" else access.ORIGIN_LAN)
+            access_log.info(
+                "面板密码错误（来自 %s，这台设备连续第 %d 次，全服务累计第 %d 次）",
+                client_host or "?", count, state["failures"])
+            if count >= access.MAX_DEVICE_FAILURES:
+                access.remember_pending_device(
+                    client_host, user_agent,
+                    reason=access.PENDING_TOO_MANY_FAILURES, failures=count,
+                    scope=access.SCOPE_PANEL,
+                    origin=access.ORIGIN_PUBLIC if origin == "public" else access.ORIGIN_LAN)
+                _clear_panel_failures(key)
+                return JSONResponse(
+                    {"error": "device_paused",
+                     "message": "这台设备因多次输错密码已被暂停，请在控制面板解除"},
+                    status_code=429)
+            if access.guard_locked_seconds(access.SCOPE_PANEL):
+                return JSONResponse(
+                    {"error": "login_locked",
+                     "locked_seconds": access.guard_locked_seconds(access.SCOPE_PANEL),
+                     "message": "连续输错次数过多，登录已暂时锁定"},
+                    status_code=429)
+            raise HTTPException(403, "密码错误")
+        # 输对了：这本账清零，这台设备记进「面板密码的信任设备」（主人可随时踢下线）
+        _clear_panel_failures(key)
+        access.clear_guard(access.SCOPE_PANEL)
+        token = secrets.token_urlsafe(32)
+        device_id, _ = access.remember_device(
+            client_host, user_agent, scope=access.SCOPE_PANEL,
+            origin=access.ORIGIN_PUBLIC if origin == "public" else access.ORIGIN_LAN,
+            token=token) or ("", "")
+        _active_tokens[token] = (time.time() + _TOKEN_TTL, device_id)
+        return {"token": token}
+    # 本机：不记账、不受锁，但密码照样要校验（设备记录 id 留空，不进设备名单）
     if not hmac.compare_digest(_hash_password(req.password), pw_hash):
         raise HTTPException(403, "密码错误")
     token = secrets.token_urlsafe(32)
-    _active_tokens[token] = time.time() + _TOKEN_TTL
+    _active_tokens[token] = (time.time() + _TOKEN_TTL, "")
     return {"token": token}
 
 # Serve media files. A request with `?tc=1` asks for an H.264 rendition of a

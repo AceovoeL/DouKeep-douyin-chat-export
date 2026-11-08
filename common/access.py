@@ -1,40 +1,62 @@
 """局域网访问：监听地址、访问密码与信任设备。
 
-控制面板在「设置」里有一个「向局域网开放」开关。打开之后，服务会监听 ``0.0.0.0``，
+控制面板在「设置」里有一个「向局域网开放」开关。打开之后，服务会监听 ```0.0.0.0```，
 同一个局域网里的其它设备就能用自己的 IP 访问：
 
-* ``http://<这台电脑的 IP>:8000/panel`` —— 控制面板
-* ``http://<这台电脑的 IP>:8000/``      —— 聊天查看器
+* ```http://<这台电脑的 IP>:8000/panel``` —— 控制面板
+* ```http://<这台电脑的 IP>:8000/```      —— 聊天查看器
 
 默认谁都能看；不想这样的话，可以再给局域网访问单独设一个「访问密码」。这个密码跟
 控制面板自己那个密码是**两回事**：面板密码保护的是「打开面板 / 查看器要登录」，
 访问密码保护的是「只有知道密码的设备才连得上」。两个都设了，别的设备就要先过访问
 密码、再输面板密码。
 
-本模块是这些设置的唯一实现处，配置都存在 ``config/panel_config.json`` 里：
+本模块是这些设置的唯一实现处，配置都存在 ```config/panel_config.json``` 里：
 
     lan_access            : true  = 允许局域网访问（默认 false，只监听 127.0.0.1）
     lan_password_hash     : 访问密码的 sha256；空/没有 = 不要访问密码
-    access_trusted_devices: 被信任的设备列表，见 ``remember_device()``
+    access_trusted_devices: 被信任的设备列表，见 ```remember_device()```
 
-「信任设备」是怎么认的：第一次在 ``/access`` 输入访问密码成功后，服务随机会发一个
-设备 id + token，用 Cookie 放在那台设备上（``access_token``），同时把 token 的
+「信任设备」是怎么认的：第一次在 ```/access``` 输入访问密码成功后，服务随机会发一个
+设备 id + token，用 Cookie 放在那台设备上（```access_token```），同时把 token 的
 sha256 记进配置。之后这台设备再访问就凭 Cookie 通过，不用再输密码。用户可以在面板
 里对某台设备点「不信任」—— 那一行从配置里删掉，那台设备手上的 Cookie 立刻失效。
-**主人换了访问密码，这些记录会全部清掉**（见 ``set_password()``）：局域网和公网的设备
+**主人换了访问密码，这些记录会全部清掉**（见 ```set_password()```）：局域网和公网的设备
 都要拿新密码重新来一次。
 
 **这块 Cookie 只是「省得重输密码」，不是安全凭据。** 它放在对方手里，人家清掉浏览器
 数据就没了、也能整个复制走；IP 同样不算凭据（换个网络、开个热点就变了）。所以真正
 管住「有人在猜密码」的是下面这本账：
 
-    全服务共用一本「猜错了几次」的账（``access_guard``，存在配置里、重启也在）。
+    全服务共用一本「猜错了几次」的账（```guard```，存在配置里、重启也在）。
     连续错 MAX_PASSWORD_FAILURES 次 → 整个登录入口先锁 LOCK_STEP_SECONDS；解禁之后
     再错一次，锁的时间翻倍，直到 LOCK_MAX_SECONDS 封顶。谁输对了、或者主人点了面板上
     的「立即解锁」，这本账才清零。
 
 账记在**服务端**，跟「谁来的、有没有 Cookie」全都无关：换网络、清 Cookie、换浏览器、
 直接上脚本，都改不了这本账里的数字，能多猜的次数也就被卡死了。
+
+两道锁、各记一本账
+------------------
+服务有两道要密码的门：**访问密码**（连得上连不上，本模块）和**面板密码**（进得了
+进不了面板与查看器，```backend/main.py``` 的 /api/auth/login）。两道门各有自己的一本
+猜错账、一份「需手动确认」名单和一份「信任设备」名单，互不共用 —— 参数 ```scope```
+就是选这本账记在哪道门名下的：
+
+    scope="access"  访问密码那道门（配置键 access_guard / access_trusted_devices /
+                    access_pending_devices，与旧版本完全一致）
+    scope="panel"   面板密码那道门（panel_guard / panel_trusted_devices /
+                    panel_pending_devices）
+
+面板密码那本账只记**外来设备**（局域网 / 公网隧道转进来的）的尝试：本机永远是主人
+自己，主人输错几下不该把自己锁在门外，所以本机的面板登录从不记账、也从不受锁影响。
+
+设备从哪儿连进来（origin）
+--------------------------
+开了公网访问之后，同一台手机在家用 WiFi 直连是一个来源、在外面走域名进来是另一个
+来源。设备记录里用 ```origin``` 区分（```"lan"``` 局域网直连 / ```"public"``` 公网隧道），
+面板据此把「信任设备」「需手动确认」「输错密码」各分成两份列表显示。旧版本写下的
+记录没有这个字段，一律当作局域网（```"lan"```）。
 """
 from __future__ import annotations
 
@@ -60,10 +82,20 @@ DEFAULT_PORT = 8000
 LAN_HOST = "0.0.0.0"
 LOCAL_HOST = "127.0.0.1"
 
+#: 两道锁各自的「账本归属」：访问密码 / 面板密码（决定配置键前缀，见 _guard_key 等）
+SCOPE_ACCESS = "access"
+SCOPE_PANEL = "panel"
+#: 所有合法的 scope（校验用，防手滑传错字符串把配置写花）
+SCOPES = (SCOPE_ACCESS, SCOPE_PANEL)
+
+#: 设备记录的「来源」：局域网直连 / 公网隧道转进来（本机不算设备，不进名单）
+ORIGIN_LAN = "lan"
+ORIGIN_PUBLIC = "public"
+
 #: 信任设备最多留这么多台，超了就丢掉最早信任的那台（配合界面上的手动移除）
 MAX_TRUSTED_DEVICES = 50
 
-#: 全服务共用一本账：连续输错这么多次访问密码，就把整个登录入口锁住（见 ``guard``）
+#: 全服务共用一本账：连续输错这么多次访问密码，就把整个登录入口锁住（见 ```guard```）
 MAX_PASSWORD_FAILURES = 5
 
 #: 第 MAX_PASSWORD_FAILURES 次错误先锁这么久；之后再错一次翻一倍
@@ -110,6 +142,25 @@ _OS_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 _AUTO_CHECK = ("curl", "wget", "python-requests", "python-urllib", "httpx")
 
+
+def _check_scope(scope: str) -> str:
+    """把 scope 收拾成合法值：认不出的按访问密码那道门处理（老调用方的默认）。"""
+    text = str(scope or SCOPE_ACCESS)
+    return text if text in SCOPES else SCOPE_ACCESS
+
+
+def _guard_key(scope: str) -> str:
+    return f"{_check_scope(scope)}_guard"
+
+
+def _devices_key(scope: str) -> str:
+    return f"{_check_scope(scope)}_trusted_devices"
+
+
+def _pending_key(scope: str) -> str:
+    return f"{_check_scope(scope)}_pending_devices"
+
+
 # ── 配置读写 ──
 # 读配置带了 mtime 缓存：鉴权路径上每个请求都要看一次配置（局域网开关 / 访问密码），
 # 每次都开文件太浪费；缓存跟着文件的修改时间失效，所以手改文件或别的进程写了都会
@@ -144,7 +195,7 @@ def invalidate_cache() -> None:
 
 
 def update_config(mutate) -> dict:
-    """改配置：``mutate(cfg)`` 原地修改，改完原子写回，返回改完的配置。
+    """改配置：```mutate(cfg)``` 原地修改，改完原子写回，返回改完的配置。
 
     读写全程持锁，所以两个请求同时改配置不会丢掉对方那一次修改。
     """
@@ -180,7 +231,7 @@ PUBLIC_TUNNEL_NAME = "doukeep"
 
 
 def public_access() -> dict:
-    """公网访问的设置（``domain`` / ``enabled`` / ``tunnel``）；没配过时是空字典。"""
+    """公网访问的设置（```domain``` / ```enabled``` / ```tunnel```）；没配过时是空字典。"""
     value = load_config_cached().get("public_access")
     return dict(value) if isinstance(value, dict) else {}
 
@@ -224,7 +275,7 @@ def public_ready() -> tuple[bool, str]:
     （见 panel.html 的 publicRiskConfirm），所以后端不再堵死这条路 —— 否则用户想
     「先挂上再补密码」就只能去改配置文件了。
 
-    返回 ``(能不能, 原因代码)``；原因代码由面板翻译成提示语。
+    返回 ```(能不能, 原因代码)```；原因代码由面板翻译成提示语。
     """
     if not lan_enabled():
         return False, "lan_off"
@@ -248,7 +299,7 @@ def password_required() -> bool:
     """要不要过访问密码：局域网和公网只要开了一个、而且设了密码，就要。
 
     没设密码时是 False —— 那会儿局域网里谁都能直接进（面板上会把后果写在明处）；
-    「没设密码就不许挂到公网」由 ``public_ready()`` 拦着，见它的说明。
+    「没设密码就不许挂到公网」由 ```public_ready()``` 拦着，见它的说明。
     """
     return open_to_outsiders() and password_hash() is not None
 
@@ -289,11 +340,13 @@ def set_password(password: str) -> bool:
       信任设备、或者让一台早该被忘掉的设备继续被暂停。
 
     清掉之后，之前被信任的设备再访问就会重新看到解锁页；面板上「信任设备」列表也一起空掉。
+    面板密码那道门的登录态**不在这里动**：两道锁一起清由面板的改密码接口统一安排
+    （见 ```clear_all_login_states()```）。
     """
     def mutate(cfg: dict) -> None:
-        cfg.pop("access_guard", None)
-        cfg.pop("access_trusted_devices", None)
-        cfg.pop("access_pending_devices", None)
+        cfg.pop(_guard_key(SCOPE_ACCESS), None)
+        cfg.pop(_devices_key(SCOPE_ACCESS), None)
+        cfg.pop(_pending_key(SCOPE_ACCESS), None)
         if password:
             cfg["lan_password_hash"] = hash_password(password)
         else:
@@ -303,22 +356,58 @@ def set_password(password: str) -> bool:
     return bool(password)
 
 
+def clear_login_states(scope: str) -> None:
+    """把一道锁的全部登录状态清空（信任设备 / 需手动确认 / 猜错账本）。"""
+    scope = _check_scope(scope)
+
+    def mutate(cfg: dict) -> None:
+        cfg.pop(_devices_key(scope), None)
+        cfg.pop(_pending_key(scope), None)
+        cfg.pop(_guard_key(scope), None)
+
+    update_config(mutate)
+
+
+def clear_all_login_states() -> int:
+    """两道锁的登录状态**全部**清空；返回清掉了多少台设备（按「同一台设备」合并计数）。
+
+    主人改**任何一道**锁的密码时都该走到这里：改密码说明主人怀疑凭据泄露，最稳妥的
+    做法是让两边（访问密码的 Cookie、面板密码的登录 token）全部重新认证一遍。
+    """
+    total = {"n": 0}
+
+    def mutate(cfg: dict) -> None:
+        for scope in SCOPES:
+            devices = cfg.get(_devices_key(scope))
+            if isinstance(devices, list):
+                total["n"] += len({device_group_key(row) for row in devices
+                                   if isinstance(row, dict)})
+            cfg.pop(_devices_key(scope), None)
+            cfg.pop(_pending_key(scope), None)
+            cfg.pop(_guard_key(scope), None)
+
+    update_config(mutate)
+    return total["n"]
+
+
 # ── 猜密码账本（全服务共用，换网络 / 清 Cookie 都躲不开）──
 #
 # 以前是「按来源 IP + 浏览器型号」数错误次数，换个网络就成了一台「新设备」，错误次数
 # 重新从 0 开始；Cookie 也一样能清。任何放在来访者手里、或者跟着网络变的东西都算不上
 # 凭据。所以决定性的那本账改成**只记在服务端**：不看到来人是谁，只看「一共猜错了几次」。
+# 两道锁（访问密码 / 面板密码）各有一本，互不共用 —— scope 选账本记在哪道门名下。
 
-def guard() -> dict:
-    """猜密码账本：``{"failures": 连续错了几次, "locked_until": 解禁时间戳, "devices": [...]}``。
+def guard(scope: str = SCOPE_ACCESS) -> dict:
+    """猜密码账本：```{"failures": 连续错了几次, "locked_until": 解禁时间戳, "devices": [...]}```。
 
-    ``devices`` 是「是哪几台设备在猜」（名字 / 来源地址 / 各自错了几次 / 最近一次什么时候），
-    只用来显示给主人看 —— 决定锁不锁的只有 ``failures`` 那一个数字，它跟「谁来的」无关。
+    ```devices``` 是「是哪几台设备在猜」（名字 / 来源地址 / 各自错了几次 / 最近一次什么时候），
+    只用来显示给主人看 —— 决定锁不锁的只有 ```failures``` 那一个数字，它跟「谁来的」无关。
 
     读不到、或者配置被手改坏了，都当成「干干净净的一本账」，绝不让脏数据把主人挡在外面。
     """
+    scope = _check_scope(scope)
     empty = {"failures": 0, "locked_until": 0, "devices": []}
-    raw = load_config_cached().get("access_guard")
+    raw = load_config_cached().get(_guard_key(scope))
     if not isinstance(raw, dict):
         return empty
     try:
@@ -335,6 +424,7 @@ def guard() -> dict:
                 "name": str(row.get("name") or "未知设备"),
                 "ip": str(row.get("ip") or ""),
                 "ua_hash": str(row.get("ua_hash") or ""),
+                "origin": str(row.get("origin") or ORIGIN_LAN),
                 "failures": max(0, int(row.get("failures") or 0)),
                 "first_at": max(0, int(row.get("first_at") or 0)),
                 "last_at": max(0, int(row.get("last_at") or 0)),
@@ -344,7 +434,7 @@ def guard() -> dict:
     return {"failures": failures, "locked_until": locked_until, "devices": devices}
 
 
-def guard_devices() -> list[dict]:
+def guard_devices(scope: str = SCOPE_ACCESS) -> list[dict]:
     """「正在猜密码的设备」清单（最近一次在猜的排最前；不含内部指纹，界面用不上）。
 
     先倒过来再按时间排：「同一秒里猜的」很常见（连着试几次），配置里最后写进去的那台
@@ -353,19 +443,21 @@ def guard_devices() -> list[dict]:
     rows = [{
         "name": device["name"],
         "ip": device["ip"],
+        "origin": device["origin"],
+        "match_key": _match_key(device["ip"], device["ua_hash"]),
         "failures": device["failures"],
         "first_at": device["first_at"],
         "last_at": device["last_at"],
-    } for device in guard()["devices"]]
+    } for device in guard(scope)["devices"]]
     rows.reverse()
     rows.sort(key=lambda row: row["last_at"], reverse=True)
     return rows
 
 
-def guard_locked_seconds(now: float | None = None) -> int:
+def guard_locked_seconds(scope: str = SCOPE_ACCESS, now: float | None = None) -> int:
     """还要等多少秒才受理密码（没锁时是 0）；不足一秒也算 1 秒。"""
     moment = time.time() if now is None else float(now)
-    remaining = guard()["locked_until"] - moment
+    remaining = guard(scope)["locked_until"] - moment
     if remaining <= 0:
         return 0
     seconds = int(remaining)
@@ -373,28 +465,32 @@ def guard_locked_seconds(now: float | None = None) -> int:
 
 
 def record_guard_failure(now: float | None = None, ip: str = "",
-                         user_agent: str | None = None) -> dict:
+                         user_agent: str | None = None, *,
+                         scope: str = SCOPE_ACCESS,
+                         origin: str = ORIGIN_LAN) -> dict:
     """又错了一次：记进账本，错够了就锁住（解禁之后每再错一次，时间翻倍）。
 
     每次点着都是「**从现在起**再锁这么久」（不是往上一段锁的尾巴上叠）—— 这样不管被
-    点着几次，最多也就等到 ``LOCK_MAX_SECONDS`` 之后，不会越叠越远。
+    点着几次，最多也就等到 ```LOCK_MAX_SECONDS``` 之后，不会越叠越远。
 
-    ``ip`` / ``user_agent`` 只影响「是哪台设备在猜」那份清单（给主人看的），跟锁不锁
-    完全无关：锁的是 ``failures`` 那一个数字。同一台设备（来源地址 + 浏览器指纹，跟信任
-    设备用同一把尺子）重复猜只累积次数，不会把清单刷满。
+    ```ip``` / ```user_agent``` 只影响「是哪台设备在猜」那份清单（给主人看的），跟锁不锁
+    完全无关：锁的是 ```failures``` 那一个数字。同一台设备（来源地址 + 浏览器指纹，跟信任
+    设备用同一把尺子）重复猜只累积次数，不会把清单刷满。```origin``` 同样只管清单分组。
     """
+    scope = _check_scope(scope)
     moment = int(time.time() if now is None else now)
     state = {"failures": 0, "locked_until": 0}
     record = {
         "name": device_name(user_agent, ip),
         "ip": str(ip or ""),
         "ua_hash": _ua_fingerprint(user_agent),
+        "origin": origin if origin in (ORIGIN_LAN, ORIGIN_PUBLIC) else ORIGIN_LAN,
         "last_at": moment,
     }
     key = device_group_key(record)
 
     def mutate(cfg: dict) -> None:
-        raw = cfg.get("access_guard")
+        raw = cfg.get(_guard_key(scope))
         raw = dict(raw) if isinstance(raw, dict) else {}
         try:
             failures = max(0, int(raw.get("failures") or 0)) + 1
@@ -415,35 +511,35 @@ def record_guard_failure(now: float | None = None, ip: str = "",
         entry = dict(record, failures=previous + 1, first_at=first_at)
         kept = [row for row in rows if device_group_key(row) != key]
         kept.append(entry)
-        cfg["access_guard"] = {"failures": failures, "locked_until": locked_until,
-                               "devices": kept[-MAX_GUARD_DEVICES:]}
+        cfg[_guard_key(scope)] = {"failures": failures, "locked_until": locked_until,
+                                  "devices": kept[-MAX_GUARD_DEVICES:]}
         state.update({"failures": failures, "locked_until": locked_until})
 
     update_config(mutate)
     return state
 
 
-def clear_guard() -> None:
+def clear_guard(scope: str = SCOPE_ACCESS) -> None:
     """把账本清零、立刻解锁（面板上的「立即解锁」按钮、主人改密码时用）。"""
-    update_config(lambda cfg: cfg.pop("access_guard", None))
+    scope = _check_scope(scope)
+    update_config(lambda cfg: cfg.pop(_guard_key(scope), None))
 
 
-def guard_snapshot() -> dict:
+def guard_snapshot(scope: str = SCOPE_ACCESS) -> dict:
     """给面板看的状态（剩余秒数由界面自己换算成「到几点几分」，设备清单从最近一次排起）。"""
-    state = guard()
     return {
-        "failures": state["failures"],
-        "locked_seconds": guard_locked_seconds(),
-        "locked_until": state["locked_until"],
+        "failures": guard(scope)["failures"],
+        "locked_seconds": guard_locked_seconds(scope),
+        "locked_until": guard(scope)["locked_until"],
         "lock_after": MAX_PASSWORD_FAILURES,
         "lock_step_seconds": LOCK_STEP_SECONDS,
         "lock_max_seconds": LOCK_MAX_SECONDS,
-        "devices": guard_devices(),
+        "devices": guard_devices(scope),
     }
 
 
 def set_lan_access(enabled: bool) -> None:
-    """打开 / 关闭局域网访问（下次启动服务时生效，见 ``tools/restart_server.py``）。"""
+    """打开 / 关闭局域网访问（下次启动服务时生效，见 ```tools/restart_server.py```）。"""
     update_config(lambda cfg: cfg.__setitem__("lan_access", bool(enabled)))
 
 
@@ -452,7 +548,7 @@ def set_lan_access(enabled: bool) -> None:
 def normalize_host(value) -> str:
     """把命令行 / 配置里的监听地址整理成能比较的形式。
 
-    ``[::]`` → ``::``、``::ffff:127.0.0.1`` → ``127.0.0.1``，空字符串按 127.0.0.1。
+    ```[::]``` → ```::```、```::ffff:127.0.0.1``` → ```127.0.0.1```，空字符串按 127.0.0.1。
     """
     text = str(value or "").strip()
     if text.startswith("[") and text.endswith("]"):
@@ -490,7 +586,7 @@ CLIENT_HOST_HEADERS = ("cf-connecting-ip", "x-forwarded-for")
 
 
 def _first_header_value(headers: Mapping | None, name: str) -> str:
-    """从头里取一个值（``x-forwarded-for`` 这种可能有好几段时只取第一段）。"""
+    """从头里取一个值（```x-forwarded-for``` 这种可能有好几段时只取第一段）。"""
     if not headers:
         return ""
     try:
@@ -504,18 +600,18 @@ def _first_header_value(headers: Mapping | None, name: str) -> str:
 
 
 def client_host(peer: str, headers: Mapping | None = None) -> str:
-    """这次请求在服务看来是「谁来的」（``headers`` 的键必须是小写）。
+    """这次请求在服务看来是「谁来的」（```headers``` 的键必须是小写）。
 
     对端**不是**本机 —— 局域网里的设备直连 —— 就只用对端地址，一个头都不看：那台设备
-    能自己编 ``X-Forwarded-For``，认它等于让人随便冒充。uvicorn 自带的反代处理也是这个
-    原则（只信 ``127.0.0.1`` 这种可信对端转发的头），这里再兜一层。
+    能自己编 ```X-Forwarded-For```，认它等于让人随便冒充。uvicorn 自带的反代处理也是这个
+    原则（只信 ```127.0.0.1``` 这种可信对端转发的头），这里再兜一层。
 
-    对端是本机（``127.0.0.1``）时有两种可能：真的是本机浏览器，或者 cloudflared 隧道把
+    对端是本机（```127.0.0.1```）时有两种可能：真的是本机浏览器，或者 cloudflared 隧道把
     外面的请求转进来了。后者带着隧道写的真实访客地址，**必须**认出来 —— 隧道连的就是
     本机回环地址，不认这些头的话，公网访客在服务看来全是「本机」，访问密码那道门等于
     没关。区分这两种也没有风险：能连上回环的本来就只有这台电脑上的程序。
 
-    （正常情况下 uvicorn 的 ``--proxy-headers`` 已经把头换算成 ``request.client.host``
+    （正常情况下 uvicorn 的 ```--proxy-headers``` 已经把头换算成 ```request.client.host```
     了，这里只是不依赖那个开关 —— 少一个「换个启动方式就漏」的坑。）
     """
     address = normalize_host(peer)
@@ -528,9 +624,24 @@ def client_host(peer: str, headers: Mapping | None = None) -> str:
     return address
 
 
-def trusted_devices() -> list[dict]:
+def classify_origin(peer: str, headers: Mapping | None = None) -> str:
+    """这次请求是「谁、从哪儿」连进来的：本机 / 局域网直连 / 公网隧道。
+
+    返回 ```"local"```（本机，不进任何设备名单）、```"lan"```（局域网里直连的设备）或
+    ```"public"```（cloudflared 隧道转进来的公网访客）。判定跟 ```client_host()``` 同一把
+    尺子：对端不是本机就是局域网直连；对端是本机但带着隧道头的真实访客地址，就是公网。
+    """
+    address = normalize_host(peer)
+    client = client_host(peer, headers)
+    if is_local_address(client):
+        return "local"
+    return ORIGIN_PUBLIC if is_local_address(address) else ORIGIN_LAN
+
+
+def trusted_devices(scope: str = SCOPE_ACCESS) -> list[dict]:
     """当前被信任的设备（返回副本，调用方改它不会影响缓存里的配置）。"""
-    devices = load_config_cached().get("access_trusted_devices")
+    scope = _check_scope(scope)
+    devices = load_config_cached().get(_devices_key(scope))
     if not isinstance(devices, list):
         return []
     return [dict(row) for row in devices if isinstance(row, dict)]
@@ -556,16 +667,25 @@ def device_group_key(device: dict) -> tuple[str, str]:
     """一条设备记录属于哪一台设备：来源 IP + 浏览器指纹。
 
     同一个浏览器重试、旧标签页又提交一次密码，都会各自留下一条记录（见
-    ``remember_device()``）。它们其实是同一台设备，这里给它们同一个键，界面据此
-    合并成一行。升级前写下的老记录里没有 ``ua_hash``，退回用显示名当指纹。
+    ```remember_device()```）。它们其实是同一台设备，这里给它们同一个键，界面据此
+    合并成一行。升级前写下的老记录里没有 ```ua_hash```，退回用显示名当指纹。
     """
     ip = str(device.get("ip") or "")
     fingerprint = str(device.get("ua_hash") or device.get("name") or "")
     return ip, fingerprint
 
 
+def _match_key(ip: str, ua_hash: str) -> str:
+    """给界面用的「同一台设备」标记：来源地址 + 浏览器指纹的短摘要。
+
+    面板把「局域网访问」和「公网访问」两份设备列表分开画，但同一台设备可能两边都
+    登录过。删除一边时要用它认出另一边那条，好先弹窗告诉主人「两边会一起删」。
+    """
+    return hashlib.sha256(f"{ip}|{ua_hash}".encode("utf-8")).hexdigest()[:12]
+
+
 def parse_cookie(raw: str | None) -> tuple[str, str] | None:
-    """把 ``access_token`` 的值拆成 (设备 id, token)；格式不对返回 None。"""
+    """把 ```access_token``` 的值拆成 (设备 id, token)；格式不对返回 None。"""
     if not raw:
         return None
     value = unquote(str(raw)).strip()
@@ -577,7 +697,7 @@ def parse_cookie(raw: str | None) -> tuple[str, str] | None:
     return device_id, token
 
 
-def trusted_device_id(raw: str | None) -> str | None:
+def trusted_device_id(raw: str | None, scope: str = SCOPE_ACCESS) -> str | None:
     """这个 Cookie 对应哪台被信任的设备；不信任（或已被移除）时返回 None。
 
     只有两边都对得上才算数：设备 id 在列表里，并且 Cookie 里的 token 的 sha256
@@ -586,12 +706,13 @@ def trusted_device_id(raw: str | None) -> str | None:
     """
     import hmac
 
+    scope = _check_scope(scope)
     parsed = parse_cookie(raw)
     if not parsed:
         return None
     device_id, token = parsed
     presented = _device_token_hash(token)
-    for device in trusted_devices():
+    for device in trusted_devices(scope):
         if str(device.get("id") or "") != device_id:
             continue
         stored = str(device.get("token_hash") or "")
@@ -601,8 +722,8 @@ def trusted_device_id(raw: str | None) -> str | None:
     return None
 
 
-def is_trusted(raw: str | None) -> bool:
-    return trusted_device_id(raw) is not None
+def is_trusted(raw: str | None, scope: str = SCOPE_ACCESS) -> bool:
+    return trusted_device_id(raw, scope) is not None
 
 
 def device_name(user_agent: str | None, ip: str = "") -> str:
@@ -621,15 +742,22 @@ def device_name(user_agent: str | None, ip: str = "") -> str:
     return f"{name}（{ip}）" if ip else name
 
 
-def remember_device(ip: str = "", user_agent: str | None = None) -> tuple[str, str] | None:
+def remember_device(ip: str = "", user_agent: str | None = None, *,
+                    scope: str = SCOPE_ACCESS, origin: str = ORIGIN_LAN,
+                    token: str | None = None) -> tuple[str, str] | None:
     """把这次的设备记进信任列表，返回 (设备 id, token)；配置不可写时返回 None。
 
     同一台设备重复登录（浏览器重试、旧标签页又提交一次密码）会留下多条记录，这是
     允许的：每条记录各有自己的 token，谁都不会把谁挤下线。界面按
-    ``device_group_key()`` 把同一台设备的记录合并成一行显示，删除时也一起删。
+    ```device_group_key()``` 把同一台设备的记录合并成一行显示，删除时也一起删。
+
+    ```origin``` 记这台设备从哪儿连进来（局域网 / 公网隧道），只用来在面板上分成两份
+    列表显示。```token``` 可以由调用方指定（面板密码那道门拿登录 token 兼当设备凭据，
+    这样主人删掉这台设备时能顺手把它的登录态一起作废）。
     """
+    scope = _check_scope(scope)
     device_id = secrets.token_hex(8)
-    token = secrets.token_urlsafe(32)
+    token = token if token is not None else secrets.token_urlsafe(32)
     record = {
         "id": device_id,
         #: 只存 token 的摘要：配置泄漏也换不来一台被信任的设备
@@ -638,13 +766,14 @@ def remember_device(ip: str = "", user_agent: str | None = None) -> tuple[str, s
         #: 完整 UA 的摘要，只用于「这是不是同一台设备」的判断
         "ua_hash": _ua_fingerprint(user_agent),
         "ip": str(ip or ""),
+        "origin": origin if origin in (ORIGIN_LAN, ORIGIN_PUBLIC) else ORIGIN_LAN,
         "trusted_at": int(time.time()),
     }
     try:
         def mutate(cfg: dict) -> None:
-            devices = [row for row in cfg.get("access_trusted_devices") or [] if isinstance(row, dict)]
+            devices = [row for row in cfg.get(_devices_key(scope)) or [] if isinstance(row, dict)]
             devices.append(record)
-            cfg["access_trusted_devices"] = devices[-MAX_TRUSTED_DEVICES:]
+            cfg[_devices_key(scope)] = devices[-MAX_TRUSTED_DEVICES:]
 
         update_config(mutate)
     except OSError as exc:                       # 磁盘写不进去：这次先放行，别把用户挡在外面
@@ -652,66 +781,79 @@ def remember_device(ip: str = "", user_agent: str | None = None) -> tuple[str, s
     return device_id, token
 
 
-def forget_device(device_id: str) -> bool:
+def forget_device(device_id: str, scope: str = SCOPE_ACCESS) -> bool:
     """不再信任某台设备；返回是否真的删掉了一台。
 
     界面上同一台设备是合并成一行显示的，所以这里把属于同一台设备的记录一起删
-    （见 ``device_group_key()``）——否则用户点一次「不再信任」，列表里还会剩一条
+    （见 ```device_group_key()```）——否则用户点一次「不再信任」，列表里还会剩一条
     长得一模一样的，看着像没删掉。去掉这一行 = 那台设备下次要重新输访问密码。
+
+    注意「同一台设备」不看 origin：一台手机既从局域网登录过、又从公网登录过，两条
+    记录各在一份列表里，这里一次删掉**两条** —— 面板在删除前会先告诉主人这件事。
     """
+    scope = _check_scope(scope)
     removed = {"ok": False}
     target = str(device_id)
 
     def mutate(cfg: dict) -> None:
-        devices = [row for row in cfg.get("access_trusted_devices") or [] if isinstance(row, dict)]
+        devices = [row for row in cfg.get(_devices_key(scope)) or [] if isinstance(row, dict)]
         key = next((device_group_key(row) for row in devices
                     if str(row.get("id") or "") == target), None)
         kept = devices if key is None else [row for row in devices if device_group_key(row) != key]
         removed["ok"] = len(kept) != len(devices)
-        cfg["access_trusted_devices"] = kept
+        cfg[_devices_key(scope)] = kept
 
     update_config(mutate)
     return removed["ok"]
 
 
-def forget_all_devices() -> int:
+def forget_all_devices(scope: str = SCOPE_ACCESS) -> int:
     """把信任设备全部清掉；返回清掉了几台（按「同一台设备」合并后计数）。
 
     计数按界面上看到的一行一台来算：同一台设备遗留的多条记录只算一台，不然提示里
     的数字会比列表里的行数还大，看着像有设备没删掉。
     """
+    scope = _check_scope(scope)
     count = {"n": 0}
 
     def mutate(cfg: dict) -> None:
-        devices = [row for row in cfg.get("access_trusted_devices") or [] if isinstance(row, dict)]
+        devices = [row for row in cfg.get(_devices_key(scope)) or [] if isinstance(row, dict)]
         count["n"] = len({device_group_key(row) for row in devices})
-        cfg["access_trusted_devices"] = []
+        cfg[_devices_key(scope)] = []
 
     update_config(mutate)
     return count["n"]
 
 
-def list_devices(current_id: str | None = None) -> list[dict]:
+def list_devices(current_id: str | None = None, scope: str = SCOPE_ACCESS) -> list[dict]:
     """给面板用的设备清单（token 摘要绝不返回给界面）。
 
     同一台设备的记录会合并成一行：代表 id 取最新那条（界面上「不再信任」用的就是
-    它，``forget_device()`` 会按同一台把所有记录一起删掉），时间显示最近一次登录的。
-    ``current`` 表示正在看面板的这台设备是不是这一组里的。
+    它，```forget_device()``` 会按同一台把所有记录一起删掉），时间显示最近一次登录的。
+    ```current``` 表示正在看面板的这台设备是不是这一组里的。
+
+    合并键带上了 origin（局域网 / 公网）：同一台设备从两个来源都登录过时，两份列表
+    里各有一行（```match_key``` 相同），面板删除前据此提示「两边会一起删」。
     """
-    groups: dict[tuple[str, str], dict] = {}
-    for device in trusted_devices():
+    scope = _check_scope(scope)
+    groups: dict[tuple[str, str, str], dict] = {}
+    for device in trusted_devices(scope):
         device_id = str(device.get("id") or "")
+        origin = str(device.get("origin") or ORIGIN_LAN)
         trusted_at = int(device.get("trusted_at") or 0)
-        entry = groups.get(device_group_key(device))
+        group = (origin, *device_group_key(device))
+        entry = groups.get(group)
         if entry is None:
             entry = {
                 "id": device_id,
                 "name": str(device.get("name") or "未知设备"),
                 "ip": str(device.get("ip") or ""),
+                "origin": origin,
+                "match_key": _match_key(*device_group_key(device)),
                 "trusted_at": trusted_at,
                 "current": False,
             }
-            groups[device_group_key(device)] = entry
+            groups[group] = entry
         if device_id and device_id == str(current_id or ""):
             entry["current"] = True
         if trusted_at >= entry["trusted_at"]:          # 留最近那一次的信息
@@ -726,6 +868,8 @@ def list_devices(current_id: str | None = None) -> list[dict]:
             "id": entry["id"],
             "name": entry["name"],
             "ip": entry["ip"],
+            "origin": entry["origin"],
+            "match_key": entry["match_key"],
             "trusted_at": entry["trusted_at"],
             "index": index,
             "current": entry["current"],
@@ -734,41 +878,48 @@ def list_devices(current_id: str | None = None) -> list[dict]:
 
 
 # ── 需手动确认（连续输错密码的设备）──
-# 连续输错 MAX_DEVICE_FAILURES 次访问密码之后，这台设备被**暂停**：不能继续输密码，
+# 连续输错 MAX_DEVICE_FAILURES 次密码之后，这台设备被**暂停**：不能继续输密码，
 # 要在面板的「需手动确认」里点「解除」才重新放行。判断「是不是同一台设备」跟信任设备
 # 用同一把尺子（来源 IP + 浏览器指纹，见 device_group_key）。
 #
 # 这只是**额外**一层：它认的是 IP + 浏览器指纹，被换网络 / 关掉无痕绕过去都正常 ——
-# 真正卡住「换个网络接着猜」的是上面那本全服务共用的账（``guard``），这本账不看到来
+# 真正卡住「换个网络接着猜」的是上面那本全服务共用的账（```guard```），这本账不看到来
 # 的人是谁。设备这一条的价值在于「把正在猜的那台单独按下暂停」，并让主人在面板上看到
 # 是哪台设备在猜。
 #
 # 记录写进配置（重启也在），而"错了几次"只记在内存里（见 access_gate.py）——
 # 重启服务会把计数清零，但已经暂停的设备不会因此被放出来。
+# 两道锁（访问密码 / 面板密码）各有各的名单，scope 选记在哪道门名下。
 
-def pending_devices() -> list[dict]:
+def pending_devices(scope: str = SCOPE_ACCESS) -> list[dict]:
     """当前「需手动确认」的设备（返回副本）。"""
-    rows = load_config_cached().get("access_pending_devices")
+    scope = _check_scope(scope)
+    rows = load_config_cached().get(_pending_key(scope))
     if not isinstance(rows, list):
         return []
     return [dict(row) for row in rows if isinstance(row, dict)]
 
 
-def is_pending(ip: str = "", user_agent: str | None = None) -> bool:
+def is_pending(ip: str = "", user_agent: str | None = None, *,
+               scope: str = SCOPE_ACCESS) -> bool:
     """这台设备是不是已经被暂停输入密码。"""
+    scope = _check_scope(scope)
     key = (str(ip or ""), _ua_fingerprint(user_agent))
-    return any(device_group_key(row) == key for row in pending_devices())
+    return any(device_group_key(row) == key for row in pending_devices(scope))
 
 
 def remember_pending_device(ip: str = "", user_agent: str | None = None, *,
                             reason: str = PENDING_TOO_MANY_FAILURES,
-                            failures: int = 0) -> dict:
+                            failures: int = 0, scope: str = SCOPE_ACCESS,
+                            origin: str = ORIGIN_LAN) -> dict:
     """把一台设备记进「需手动确认」；同一台设备只留一条，原因刷新成最新的。"""
+    scope = _check_scope(scope)
     record = {
         "id": secrets.token_hex(8),
         "name": device_name(user_agent, ip),
         "ip": str(ip or ""),
         "ua_hash": _ua_fingerprint(user_agent),
+        "origin": origin if origin in (ORIGIN_LAN, ORIGIN_PUBLIC) else ORIGIN_LAN,
         "reason": str(reason or PENDING_TOO_MANY_FAILURES),
         "failures": int(failures or 0),
         "added_at": int(time.time()),
@@ -776,7 +927,7 @@ def remember_pending_device(ip: str = "", user_agent: str | None = None, *,
     key = device_group_key(record)
     try:
         def mutate(cfg: dict) -> None:
-            rows = [row for row in cfg.get("access_pending_devices") or [] if isinstance(row, dict)]
+            rows = [row for row in cfg.get(_pending_key(scope)) or [] if isinstance(row, dict)]
             existing = next((row for row in rows if device_group_key(row) == key), None)
             if existing is not None:
                 # 同一台设备又犯：沿用原来的 id 和「什么时候进来的」，界面上那一行不会跳
@@ -784,7 +935,7 @@ def remember_pending_device(ip: str = "", user_agent: str | None = None, *,
                 record["added_at"] = int(existing.get("added_at") or record["added_at"])
             kept = [row for row in rows if device_group_key(row) != key]
             kept.append(record)
-            cfg["access_pending_devices"] = kept[-MAX_PENDING_DEVICES:]
+            cfg[_pending_key(scope)] = kept[-MAX_PENDING_DEVICES:]
 
         update_config(mutate)
     except OSError as exc:
@@ -792,49 +943,55 @@ def remember_pending_device(ip: str = "", user_agent: str | None = None, *,
     return record
 
 
-def forget_pending_device(device_id: str) -> bool:
+def forget_pending_device(device_id: str, scope: str = SCOPE_ACCESS) -> bool:
     """解除某台设备的暂停；返回是否真的解除了一台。
 
-    界面上同一台设备是一行，所以属于同一台设备的记录一起删（跟 ``forget_device()``
-    一个道理）；删掉之后那台设备可以重新输访问密码。
+    界面上同一台设备是一行，所以属于同一台设备的记录一起删（跟 ```forget_device()```
+    一个道理）；删掉之后那台设备可以重新输密码。
     """
+    scope = _check_scope(scope)
     removed = {"ok": False}
     target = str(device_id)
 
     def mutate(cfg: dict) -> None:
-        rows = [row for row in cfg.get("access_pending_devices") or [] if isinstance(row, dict)]
+        rows = [row for row in cfg.get(_pending_key(scope)) or [] if isinstance(row, dict)]
         key = next((device_group_key(row) for row in rows
                     if str(row.get("id") or "") == target), None)
         kept = rows if key is None else [row for row in rows if device_group_key(row) != key]
         removed["ok"] = len(kept) != len(rows)
-        cfg["access_pending_devices"] = kept
+        cfg[_pending_key(scope)] = kept
 
     update_config(mutate)
     return removed["ok"]
 
 
-def forget_all_pending_devices() -> int:
+def forget_all_pending_devices(scope: str = SCOPE_ACCESS) -> int:
     """把「需手动确认」里的设备全部解除；返回解除了几台（同一台设备的记录算一台）。"""
+    scope = _check_scope(scope)
     count = {"n": 0}
 
     def mutate(cfg: dict) -> None:
-        rows = [row for row in cfg.get("access_pending_devices") or [] if isinstance(row, dict)]
+        rows = [row for row in cfg.get(_pending_key(scope)) or [] if isinstance(row, dict)]
         count["n"] = len({device_group_key(row) for row in rows})
-        cfg["access_pending_devices"] = []
+        cfg[_pending_key(scope)] = []
 
     update_config(mutate)
     return count["n"]
 
 
-def list_pending_devices(current_ip: str = "", current_agent: str | None = None) -> list[dict]:
+def list_pending_devices(current_ip: str = "", current_agent: str | None = None, *,
+                         scope: str = SCOPE_ACCESS) -> list[dict]:
     """给面板「需手动确认」用的清单：一台设备一行，带上原因和进来时间。"""
+    scope = _check_scope(scope)
     current = (str(current_ip or ""), _ua_fingerprint(current_agent))
     rows: list[dict] = []
-    for index, device in enumerate(pending_devices(), start=1):
+    for index, device in enumerate(pending_devices(scope), start=1):
         rows.append({
             "id": str(device.get("id") or ""),
             "name": str(device.get("name") or "未知设备"),
             "ip": str(device.get("ip") or ""),
+            "origin": str(device.get("origin") or ORIGIN_LAN),
+            "match_key": _match_key(*device_group_key(device)),
             "reason": str(device.get("reason") or PENDING_TOO_MANY_FAILURES),
             "failures": int(device.get("failures") or 0),
             "added_at": int(device.get("added_at") or 0),

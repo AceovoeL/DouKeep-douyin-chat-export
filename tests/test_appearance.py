@@ -286,8 +286,11 @@ def test_saving_appearance_keeps_other_config(config_path):
     assert saved["appearance"]["panel"]["theme"] == "light"
 
 
-def test_appearance_endpoint_is_public_but_writes_are_not(config_path):
+def test_appearance_endpoint_is_public_but_writes_are_not(config_path, monkeypatch):
     """查看器要在登录前就把主题套好，所以读接口公开；写接口仍然要登录。"""
+    # conftest 的 autouse 默认把面板密码当成「没设」；这个用例要测的恰恰是设了密码的
+    # 行为，换回「读配置」的原始实现（main._get_password_hash 就是 config.get_password_hash）。
+    monkeypatch.setattr(main, "_get_password_hash", panel_config.get_password_hash)
     panel_config.save_config({"password_hash": "abc"})
     client = TestClient(main.app)
 

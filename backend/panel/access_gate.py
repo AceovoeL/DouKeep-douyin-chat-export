@@ -127,6 +127,16 @@ def _client_host(request: Request) -> str:
     return access.client_host(peer, headers)
 
 
+def _request_origin(request: Request) -> str:
+    """这次请求是局域网直连还是公网隧道转进来的（见 ``access.classify_origin``）。
+
+    只用来给设备记录标「来源」，面板据此分成两份列表显示；不影响任何判定。
+    """
+    peer = request.client.host if request.client else ""
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    return access.classify_origin(peer, headers)
+
+
 def route_label(path: str) -> str | None:
     """``/access*`` 这几个地址在访问日志里叫什么（其它请求返回 None）。"""
     if path in _ACCESS_LOG_HINT:
@@ -526,13 +536,16 @@ async def access_login(request: Request):
     if not access.verify_password(str(payload.get("password") or "")):
         key = _device_key(client_host, user_agent)
         count = _record_device_failure(key)
-        state = access.record_guard_failure(ip=client_host, user_agent=user_agent)
+        origin = _request_origin(request)
+        state = access.record_guard_failure(ip=client_host, user_agent=user_agent,
+                                            origin=origin)
         log.info("访问密码错误（来自 %s，这台设备连续第 %d 次，全服务累计第 %d 次）",
                  client_host or "?", count, state["failures"])
         if count >= access.MAX_DEVICE_FAILURES:
             # 这台设备错得实在太多：单独记进「需手动确认」，等主机上的人来解除
             access.remember_pending_device(
-                client_host, user_agent, reason=access.PENDING_TOO_MANY_FAILURES, failures=count)
+                client_host, user_agent, reason=access.PENDING_TOO_MANY_FAILURES,
+                failures=count, origin=origin)
             _clear_device_failures(key)
             log.info("设备连错 %d 次访问密码，已单独暂停（%s）", count, client_host)
             return back_to_login
@@ -545,7 +558,8 @@ async def access_login(request: Request):
         )
     _clear_device_failures(_device_key(client_host, user_agent))
     access.clear_guard()
-    remembered = access.remember_device(client_host, user_agent)
+    remembered = access.remember_device(client_host, user_agent,
+                                        origin=_request_origin(request))
     if not remembered:
         return RedirectResponse(
             f"/access?err=1&next={quote(next_path, safe='')}", status_code=303,

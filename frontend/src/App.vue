@@ -70,7 +70,17 @@ async function doLogin() {
       body: JSON.stringify({ password: loginPassword.value }),
     })
     if (!res.ok) {
-      loginError.value = '密码错误'
+      const data = await res.json().catch(() => ({}))
+      if (data.error === 'login_locked' && data.locked_seconds) {
+        // 连续输错太多次：整个登录入口锁住了（本机不会走到这里，外来设备才会）
+        const at = new Date(Date.now() + data.locked_seconds * 1000)
+        const when = data.locked_seconds > 3600 ? at.toLocaleString() : at.toLocaleTimeString()
+        loginError.value = '尝试次数过多，登录已暂时锁定，大约 ' + when + ' 后可以再试'
+      } else if (data.error === 'device_paused') {
+        loginError.value = '这台设备因多次输错密码已被暂停，请在运行服务的那台电脑上解除'
+      } else {
+        loginError.value = '密码错误'
+      }
       return
     }
     const data = await res.json()
@@ -82,7 +92,9 @@ async function doLogin() {
   }
 }
 
-// Inject auth token into all fetch requests
+// Inject auth token into all fetch requests; a 401 means the token is no
+// longer valid (e.g. the password was changed): drop back to the login screen
+// right away instead of letting every request fail silently.
 const _origFetch = window.fetch
 window.fetch = function(url, opts = {}) {
   if (authToken.value && typeof url === 'string' && url.startsWith('/api/')) {
@@ -93,7 +105,25 @@ window.fetch = function(url, opts = {}) {
       opts.headers['Authorization'] = `Bearer ${authToken.value}`
     }
   }
-  return _origFetch.call(this, url, opts)
+  const promise = _origFetch.call(this, url, opts)
+  if (typeof url === 'string' && url.startsWith('/api/')) {
+    promise.then(async response => {
+      if (response.status !== 401 || !authenticated.value) return
+      // 分清是哪道锁出了问题：访问密码失效去解锁页，面板密码失效弹登录框
+      try {
+        const data = await response.clone().json()
+        if (data && data.error === 'lan_access_password_required') {
+          location.href = '/access?next=' + encodeURIComponent('/')
+          return
+        }
+      } catch { /* body 不是 JSON：按面板密码失效处理 */ }
+      // 登录态作废（多半是主人改了密码）：清 token、回登录框重新输
+      authToken.value = ''
+      localStorage.removeItem('authToken')
+      authenticated.value = false
+    }).catch(() => {})
+  }
+  return promise
 }
 
 onMounted(async () => {

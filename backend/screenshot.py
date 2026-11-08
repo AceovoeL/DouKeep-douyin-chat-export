@@ -33,7 +33,8 @@ def _mint_ephemeral_token() -> str:
     from backend import main  # lazy: avoid circular import at module load
 
     token = secrets.token_urlsafe(24)
-    main._active_tokens[token] = time.time() + _EPHEMERAL_TOKEN_TTL
+    # (过期时间, 设备记录 id)：截图是一次性短命钥匙，不进任何设备名单，id 留空
+    main._active_tokens[token] = (time.time() + _EPHEMERAL_TOKEN_TTL, "")
     return token
 
 

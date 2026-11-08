@@ -1064,4 +1064,4 @@ def test_tracked_device_still_needs_the_panel_password_for_the_viewer(remote, cf
     assert remote.get("/", headers=cookie).status_code == 200
     assert remote.get("/api/stats", headers=cookie).status_code == 401
     check = remote.get("/api/auth/check", headers=cookie).json()
-    assert check == {"need_password": True, "authenticated": False}
+    assert check == {"need_password": True, "authenticated": False, "locked_seconds": 0}

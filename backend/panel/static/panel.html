@@ -1842,6 +1842,38 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
       <button class="btn" onclick="clearPassword()" data-i18n="clearBtn">清除</button>
     </div>
     <div class="meta" id="pwStatus" style="margin-top:6px"></div>
+
+    <!-- 面板密码这道锁的三个名单：哪些设备用面板密码登录着（可随时踢下线）、
+         哪些因连错密码被暂停、输错过几次。没设面板密码时整块不显示。 -->
+    <div class="lan-devices" id="panelGuardBox" hidden>
+      <div class="lan-devices-head">
+        <span data-i18n="panelGuardTitle">登录保护</span>
+        <span class="spacer"></span>
+        <button class="btn btn-outline btn-sm" onclick="clearPanelGuard()" data-i18n="lanGuardClear">立即解锁</button>
+      </div>
+      <div class="meta" id="panelGuardNote"></div>
+      <div class="lan-device-list" id="panelGuardList"></div>
+    </div>
+
+    <div class="lan-devices" id="panelDevicesBox" hidden>
+      <div class="lan-devices-head">
+        <span data-i18n="panelDevicesTitle">信任设备</span>
+        <span class="spacer"></span>
+        <button class="btn btn-outline btn-sm" onclick="forgetAllPanelDevices()" data-i18n="lanForgetAll">全部取消信任</button>
+      </div>
+      <div class="meta" style="margin-bottom:8px" data-i18n="panelDevicesHint">这些设备输对过面板密码，登录着面板和查看器。点「不再信任」会让它们立刻退出、重新输密码。</div>
+      <div class="lan-device-list" id="panelDeviceList"></div>
+    </div>
+
+    <div class="lan-devices" id="panelPendingBox" hidden>
+      <div class="lan-devices-head">
+        <span data-i18n="panelPendingTitle">需手动确认</span>
+        <span class="spacer"></span>
+        <button class="btn btn-outline btn-sm" onclick="releaseAllPanelPendingDevices()" data-i18n="lanPendingReleaseAll">全部解除</button>
+      </div>
+      <div class="meta" style="margin-bottom:8px" data-i18n="panelPendingHint">这些设备连续输错面板密码，已经被停下：确认是本人的设备后点「解除」，该设备才能重新登录。</div>
+      <div class="lan-device-list lan-pending-list" id="panelPendingList"></div>
+    </div>
   </div>
   <!-- 局域网访问：让同一个局域网里的其它设备也能打开面板和查看器。
        开关（监听 127.0.0.1 还是 0.0.0.0）要重启服务才生效，所以打开/关闭后会
@@ -2421,6 +2453,17 @@ const T = {
     lanForgetHint: (name) => `不再信任「${name}」？这台设备下次访问要重新输入访问密码。`,
     lanForgetAllConfirm: (n) => `取消信任全部 ${n} 台设备？它们下次访问都要重新输入访问密码。`,
     lanForgotten: '已取消信任，这台设备下次访问要重新输入访问密码。',
+    lanForgetBothHint: (name) => `「${name}」在「访问密码」和「面板密码」两份名单里都有记录：两边会一起删，这台设备下次要重新输两个密码。确定吗？`,
+    lanForgetBothTitle: '两边一起删除',
+    lanForgetBothOk: '两边一起删',
+    lanForgottenBoth: '两份列表里的这台设备都已取消信任。',
+    panelGuardTitle: '登录保护',
+    panelDevicesTitle: '信任设备',
+    panelDevicesHint: '这些设备输对过面板密码，登录着面板和查看器。点「不再信任」会让它们立刻退出、重新输密码。',
+    panelPendingTitle: '需手动确认',
+    panelPendingHint: '这些设备连续输错面板密码，已经被停下：确认是本人的设备后点「解除」，该设备才能重新登录。',
+    loginLockedWait: (when) => `连续输错次数过多，登录已锁定，大约 ${when} 后可以再试。`,
+    loginDevicePaused: '这台设备因多次输错密码已被暂停，请在运行服务的那台电脑上解除。',
     lanForgetAllDone: (n) => `已取消信任 ${n} 台设备。`,
     lanNoDevicesYet: '还没有被信任的设备。',
     lanGuardTitle: '登录保护',
@@ -3047,6 +3090,17 @@ const T = {
     lanForgetHint: (name) => `Forget "${name}"? It will be asked for the access password again.`,
     lanForgetAllConfirm: (n) => `Forget all ${n} device(s)? They will all be asked for the access password again.`,
     lanForgotten: 'Forgotten. That device will be asked for the access password again.',
+    lanForgetBothHint: (name) => `"${name}" appears in both the access-password and panel-password lists: both entries will be removed together, and the device will be asked for both passwords again. Continue?`,
+    lanForgetBothTitle: 'Remove from both lists',
+    lanForgetBothOk: 'Remove both',
+    lanForgottenBoth: 'Both entries for that device have been forgotten.',
+    panelGuardTitle: 'Login protection',
+    panelDevicesTitle: 'Trusted devices',
+    panelDevicesHint: 'These devices entered the correct panel password and are signed in. Forgetting one signs it out immediately.',
+    panelPendingTitle: 'Needs manual confirmation',
+    panelPendingHint: 'These devices entered the wrong panel password too many times and are paused. Confirm and release one to let it try again.',
+    loginLockedWait: (when) => `Too many failed attempts. Login is locked until about ${when}.`,
+    loginDevicePaused: 'This device is paused after too many wrong passwords. Release it on the host machine.',
     lanForgetAllDone: (n) => `Forgot ${n} device(s).`,
     lanNoDevicesYet: 'No trusted devices yet.',
     lanGuardTitle: 'Login protection',
@@ -3629,6 +3683,8 @@ function showPage(id) {
     loadServerLog(false);
   }
   if (id === 'settings') {
+    // 面板密码的三个名单（信任设备 / 需手动确认 / 登录保护）：每次进设置页取一次
+    loadPanelAuth();
     // 局域网开关 / 访问密码 / 信任设备：每次进设置页都取一次最新的
     loadLanAccess();
     // 公网访问（Cloudflare 隧道）的状态与挂载进度
@@ -5316,6 +5372,9 @@ async function setPassword() {
   const d = await r.json();
   setDynText(document.getElementById('pwStatus'), d.message);
   document.getElementById('pwInput').value = '';
+  // 改密码会清掉两道锁的全部登录态：两边的名单都要重新取一次
+  loadPanelAuth();
+  loadLanAccess();
 }
 async function clearPassword() {
   const r = await fetch('/panel/api/password', {
@@ -5324,6 +5383,8 @@ async function clearPassword() {
   });
   const d = await r.json();
   setDynText(document.getElementById('pwStatus'), d.message);
+  loadPanelAuth();
+  loadLanAccess();
 }
 
 /* ── LAN access（局域网访问） ──
@@ -5404,7 +5465,7 @@ function renderLanAccess() {
   const devicesBox = document.getElementById('lanDevicesBox');
   const devices = d.devices || [];
   devicesBox.hidden = !(showOn && d.has_password);
-  document.getElementById('lanDeviceList').innerHTML = renderLanDevices(devices);
+  document.getElementById('lanDeviceList').innerHTML = renderLanDevices(devices, 'access');
 
   // 需手动确认（连续输错访问密码被暂停的设备）
   const pendingBox = document.getElementById('lanPendingBox');
@@ -5422,6 +5483,48 @@ function renderLanAccess() {
       ? t('lanGuardLocked', lanGuardWhen(guard.locked_until, guardLocked))
       : t('lanGuardCounting', guardFailures, Number(guard.lock_after || 5)));
     document.getElementById('lanGuardList').innerHTML =
+      renderLanGuardDevices(guard.devices || []);
+  }
+
+}
+
+/* ── 面板密码这道锁的三个名单（设置页「密码」区块里那三个列表）──
+   数据来自 /panel/api/panel-auth/status，跟开发者模式无关：只要设了面板密码就显示。
+   本机不算设备（主人自己），所以这里永远只有外来设备。 */
+let panelAuth = null;
+
+async function loadPanelAuth() {
+  try {
+    const r = await fetch('/panel/api/panel-auth/status', { cache: 'no-store' });
+    if (!r.ok) return null;
+    panelAuth = await r.json();
+    renderPanelAuth();
+    return panelAuth;
+  } catch { return null; }
+}
+
+function renderPanelAuth() {
+  const d = panelAuth;
+  if (!d) return;
+  const on = !!d.has_password;
+  // 信任设备：登录着的设备（没有设备时也显示空列表，让主人知道这块在哪）
+  document.getElementById('panelDevicesBox').hidden = !on;
+  document.getElementById('panelDeviceList').innerHTML =
+    renderLanDevices(d.devices || [], 'panel');
+  // 需手动确认
+  document.getElementById('panelPendingBox').hidden = !on;
+  document.getElementById('panelPendingList').innerHTML = renderLanPending(d.pending || [], 'panel');
+  // 登录保护：有输错记录或正锁着时显示
+  const guard = d.guard || {};
+  const locked = Number(guard.locked_seconds || 0);
+  const failures = Number(guard.failures || 0);
+  const guardOn = on && (failures > 0 || locked > 0);
+  document.getElementById('panelGuardBox').hidden = !guardOn;
+  if (guardOn) {
+    setDynText(document.getElementById('panelGuardNote'), locked > 0
+      ? t('lanGuardLocked', lanGuardWhen(guard.locked_until, locked))
+      : t('lanGuardCounting', failures, Number(guard.lock_after || 5)));
+    document.getElementById('panelGuardList').innerHTML =
       renderLanGuardDevices(guard.devices || []);
   }
 }
@@ -5448,7 +5551,7 @@ function renderLanGuardDevices(devices) {
   return head + rows;
 }
 
-function renderLanDevices(devices) {
+function renderLanDevices(devices, scope) {
   if (!devices.length) {
     return `<div class="lan-device-empty">${lanEscape(t('lanDevicesEmpty'))}</div>`;
   }
@@ -5456,19 +5559,22 @@ function renderLanDevices(devices) {
   const rows = devices.map(dev => {
     const when = dev.trusted_at ? new Date(dev.trusted_at * 1000).toLocaleString() : '';
     const tag = dev.current ? `<span class="lan-device-tag">${lanEscape(t('lanDeviceCurrent'))}</span>` : '';
+    // 删除按钮带上 match_key：点击时先查另一份列表里有没有同一台设备（有就先弹窗确认）
+    const mk = lanEscape(String(dev.match_key || ''));
     return `<div class="lan-device">
       <div class="lan-device-main">
         <div class="lan-device-name">${lanEscape(dev.name)}${tag}</div>
         <div class="lan-device-meta">${when ? lanEscape(t('lanDeviceTrustedAt', when)) : ''}</div>
       </div>
-      <button class="btn btn-outline btn-sm" onclick="forgetLanDevice('${lanEscape(dev.id)}')">${lanEscape(t('lanForget'))}</button>
+      <button class="btn btn-outline btn-sm" onclick="forgetLanDevice('${lanEscape(dev.id)}', '${mk}', '${scope === 'panel' ? 'panel' : 'access'}')">${lanEscape(t('lanForget'))}</button>
     </div>`;
   }).join('');
   return head + rows;
 }
 
 /* 需手动确认：设备信息跟信任设备一样，右侧多一句"为什么要手动确认"；一行只放一台设备 */
-function renderLanPending(devices) {
+function renderLanPending(devices, scope) {
+  scope = scope === 'panel' ? 'panel' : 'access';
   if (!devices.length) {
     return `<div class="lan-device-empty">${lanEscape(t('lanPendingEmpty'))}</div>`;
   }
@@ -5482,7 +5588,7 @@ function renderLanPending(devices) {
         <div class="lan-device-meta">${when ? lanEscape(t('lanPendingAt', when)) : ''}</div>
       </div>
       <span class="lan-pending-reason">${lanEscape(lanPendingReason(dev))}</span>
-      <button class="btn btn-outline btn-sm" onclick="releasePendingDevice('${lanEscape(dev.id)}')">${lanEscape(t('lanPendingRelease'))}</button>
+      <button class="btn btn-outline btn-sm" onclick="releasePendingDevice('${lanEscape(dev.id)}', '${scope}')">${lanEscape(t('lanPendingRelease'))}</button>
     </div>`;
   }).join('');
   return head + rows;
@@ -5591,6 +5697,7 @@ async function saveLanPassword() {
   lanAccess = d.payload || lanAccess;
   document.getElementById('lanPwInput').value = '';
   renderLanAccess();
+  loadPanelAuth();                    // 改访问密码也清面板那道锁的名单
   setLanStatus(d.cleared_devices ? 'lanPwSavedLoggedOut' : 'lanSaved', d.cleared_devices || 0);
 }
 
@@ -5612,24 +5719,97 @@ async function clearLanPassword() {
   lanAccess = d.payload || lanAccess;
   renderLanAccess();
   loadPublicAccess();                    // 公网那块也要跟着刷新（红字警告会出现）
+  loadPanelAuth();                       // 清访问密码也清面板那道锁的名单
   setLanStatus('lanSaved');
   return true;
 }
 
-async function forgetLanDevice(id) {
-  const device = (lanAccess && lanAccess.devices || []).find(x => x.id === id);
+/* 删除一台信任设备。同一台设备可能在两道锁里各有一条记录（既输过访问密码、又输过
+   面板密码）：先按 match_key 找出另一道锁里的同一条，找到了就先弹窗说清楚
+   「两边会一起删」（访问密码的 Cookie 和面板登录态一起作废），确认后再一起删。 */
+async function forgetLanDevice(id, matchKey, scope) {
+  scope = scope === 'panel' ? 'panel' : 'access';
+  const lists = scope === 'panel'
+    ? { self: (panelAuth && panelAuth.devices) || [], other: (lanAccess && lanAccess.devices) || [], otherScope: 'access' }
+    : { self: (lanAccess && lanAccess.devices) || [], other: (panelAuth && panelAuth.devices) || [], otherScope: 'panel' };
+  const device = lists.self.find(x => x.id === id);
   const name = device ? device.name : id;
-  // 确认框正文是拼出来的（带设备名），所以用 setDynText 填，别让它去找 i18n key
-  const ok = await lanConfirm(t('lanForgetHint', name));
-  if (!ok) return;
-  const r = await fetch('/panel/api/lan/devices/forget', {
+  const twin = matchKey ? lists.other.find(x => String(x.match_key || '') === String(matchKey)) : null;
+  let url, body;
+  if (twin) {
+    // 两道锁里都有这台设备：确认「两边一起删」，然后一次请求删两条
+    const ok = await lanConfirm(t('lanForgetBothHint', name),
+                               'lanForgetBothTitle', 'lanForgetBothOk');
+    if (!ok) return;
+    url = '/panel/api/lan/devices/forget-both';
+    body = { id, other_id: twin.id, other_scope: lists.otherScope };
+  } else {
+    // 只在这一道锁里：普通的确认框 + 单删
+    const ok = await lanConfirm(t('lanForgetHint', name));
+    if (!ok) return;
+    url = scope === 'panel' ? '/panel/api/panel-auth/devices/forget' : '/panel/api/lan/devices/forget';
+    body = { id };
+  }
+  const r = await fetch(url, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ id }),
+    body: JSON.stringify(body),
   });
   const d = await r.json();
-  lanAccess = d.payload || lanAccess;
-  renderLanAccess();
-  setLanStatus('lanForgotten');
+  if (twin) {
+    // forget-both 返回两道锁各自的最新数据，两边一起刷新
+    lanAccess = d.payload || lanAccess;
+    panelAuth = d.panel_payload || panelAuth;
+    renderLanAccess();
+    renderPanelAuth();
+  } else if (scope === 'panel') {
+    panelAuth = d.payload || panelAuth;
+    renderPanelAuth();
+  } else {
+    lanAccess = d.payload || lanAccess;
+    renderLanAccess();
+  }
+  setLanStatus(twin ? 'lanForgottenBoth' : 'lanForgotten');
+}
+
+/* 面板密码那道门的三个名单的批量操作（接口跟访问密码那套一一对应）。 */
+async function forgetAllPanelDevices() {
+  const count = (panelAuth && panelAuth.devices || []).length;
+  if (!count) { setLanStatus('lanNoDevicesYet'); return; }
+  if (!await lanConfirm(t('lanForgetAllConfirm', count))) return;
+  const r = await fetch('/panel/api/panel-auth/devices/forget-all', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+  });
+  const d = await r.json();
+  panelAuth = d.payload || panelAuth;
+  renderPanelAuth();
+  setLanStatus('lanForgetAllDone', d.removed || 0);
+}
+
+async function releaseAllPanelPendingDevices() {
+  const count = (panelAuth && panelAuth.pending || []).length;
+  if (!count) { setLanStatus('lanPendingEmptyStatus'); return; }
+  if (!await lanConfirm(t('lanPendingReleaseAllConfirm', count),
+                        'lanPendingReleaseAllTitle', 'lanPendingReleaseAllOk')) return;
+  const r = await fetch('/panel/api/panel-auth/pending/forget-all', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+  });
+  const d = await r.json();
+  panelAuth = d.payload || panelAuth;
+  renderPanelAuth();
+  setLanStatus('lanPendingReleasedAll', d.removed || 0);
+}
+
+async function clearPanelGuard() {
+  const failures = Number(((panelAuth && panelAuth.guard) || {}).failures || 0);
+  if (!await lanConfirm(t('lanGuardClearHint', failures),
+                        'lanGuardClearTitle', 'lanGuardClearOk')) return;
+  const r = await fetch('/panel/api/panel-auth/guard/clear', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+  });
+  const d = await r.json();
+  panelAuth = d.payload || panelAuth;
+  renderPanelAuth();
+  setLanStatus('lanGuardCleared');
 }
 
 async function forgetAllLanDevices() {
@@ -5647,20 +5827,31 @@ async function forgetAllLanDevices() {
 
 /* ── 需手动确认：连续输错访问密码被暂停的设备 ── */
 
-async function releasePendingDevice(id) {
-  const device = (lanAccess && lanAccess.pending || []).find(x => x.id === id);
+async function releasePendingDevice(id, scope) {
+  scope = scope === 'panel' ? 'panel' : 'access';
+  const rows = scope === 'panel'
+    ? (panelAuth && panelAuth.pending) || []
+    : (lanAccess && lanAccess.pending) || [];
+  const device = rows.find(x => x.id === id);
   const name = device ? device.name : id;
   // 标题和确认按钮要按「解除」来说，不能沿用默认的「不再信任设备」
   const ok = await lanConfirm(t('lanPendingReleaseHint', name),
                               'lanPendingReleaseTitle', 'lanPendingReleaseOk');
   if (!ok) return;
-  const r = await fetch('/panel/api/lan/pending/forget', {
+  const r = await fetch(scope === 'panel'
+    ? '/panel/api/panel-auth/pending/forget'
+    : '/panel/api/lan/pending/forget', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ id }),
   });
   const d = await r.json();
-  lanAccess = d.payload || lanAccess;
-  renderLanAccess();
+  if (scope === 'panel') {
+    panelAuth = d.payload || panelAuth;
+    renderPanelAuth();
+  } else {
+    lanAccess = d.payload || lanAccess;
+    renderLanAccess();
+  }
   setLanStatus('lanPendingReleased');
 }
 
@@ -9220,7 +9411,7 @@ async function panelAuthCheck() {
       loadGithubTokenStatus();
       // 第一次进来（本机还没有文字式表情的图片）时间一句要不要下资源包
       checkEmojiPack();
-      setInterval(loadStatus, 5000);
+      _startStatusPolling();
     } else {
       document.getElementById('loginOverlay').style.display = 'flex';
       document.getElementById('mainContainer').style.display = 'none';
@@ -9230,9 +9421,24 @@ async function panelAuthCheck() {
   }
 }
 
+/* 状态轮询（loadStatus 每 5 秒一次）。定时器存全局：改密码后旧登录态作废，
+   下一次轮询撞上 401 → _markLoggedOut 弹出登录框并停表；重新登录后
+   panelAuthCheck 再开一张新的，不会越叠越多。 */
+let _statusPollTimer = null;
+
+function _startStatusPolling() {
+  if (_statusPollTimer) return;
+  _statusPollTimer = setInterval(loadStatus, 5000);
+}
+
+function _stopStatusPolling() {
+  if (_statusPollTimer) { clearInterval(_statusPollTimer); _statusPollTimer = null; }
+}
+
 async function panelLogin() {
   const pw = document.getElementById('panelPwInput').value;
   if (!pw) return;
+  const errEl = document.getElementById('panelLoginErr');
   try {
     const r = await fetch('/api/auth/login', {
       method: 'POST',
@@ -9244,17 +9450,57 @@ async function panelLogin() {
       panelToken = d.token;
       localStorage.setItem('panel_token', panelToken);
       setCookie('auth_token', panelToken, 7);
-      document.getElementById('panelLoginErr').textContent = '';
+      errEl.textContent = '';
       panelAuthCheck();
+    } else if (d.error === 'login_locked' && d.locked_seconds) {
+      // 连续输错太多次：整个登录入口锁住了，显示还要等多久（本机不会走到这里）
+      errEl.textContent = t('loginLockedWait', panelGuardWhen(d.locked_seconds));
+    } else if (d.error === 'device_paused') {
+      // 这台设备被单独暂停：要去主机上的面板里解除
+      errEl.textContent = t('loginDevicePaused');
     } else {
-      document.getElementById('panelLoginErr').textContent = t('wrongPassword');
+      errEl.textContent = t('wrongPassword');
     }
   } catch(e) {
-    document.getElementById('panelLoginErr').textContent = t('loginFailed');
+    errEl.textContent = t('loginFailed');
   }
 }
 
-// Inject token cookie on every fetch for panel API calls
+/* 锁到什么时候：跟设置页 lanGuardWhen 同一个规则（一小时以内只报时刻）。 */
+function panelGuardWhen(seconds) {
+  const at = new Date(Date.now() + Number(seconds || 0) * 1000);
+  if (isNaN(at.getTime())) return '';
+  return Number(seconds) > 3600 ? at.toLocaleString() : at.toLocaleTimeString();
+}
+
+/* 登录态作废时的处理：面板密码失效 → 弹面板自己的登录框；访问密码失效 →
+   送去解锁页（/access）。改密码会作废全部登录态，但还停在页面上的设备不知道 ——
+   它下一次操作（切页面、点按钮）就会撞上 401，这里统一接住。 */
+function _markLoggedOut(reason) {
+  if (reason === 'access') {
+    // 访问密码那道门的锁：去解锁页重新输（回来时还是面板）
+    location.href = '/access?next=' + encodeURIComponent('/panel');
+    return;
+  }
+  // 面板密码失效：清掉本地存的 token，把登录框弹出来；
+  // 状态轮询也停掉（登录框弹着的时候不用再刷，重新登录后会自己重启）
+  panelToken = '';
+  localStorage.removeItem('panel_token');
+  _stopStatusPolling();
+  document.getElementById('loginOverlay').style.display = 'flex';
+  document.getElementById('mainContainer').style.display = 'none';
+}
+
+/* 面板接口的 401：按 body 里给的错误分清是哪道锁出了问题。 */
+async function _handleAuthFailure(response) {
+  try {
+    const data = await response.clone().json();
+    if (data && data.error === 'lan_access_password_required') return _markLoggedOut('access');
+  } catch (e) { /* body 不是 JSON：按面板密码失效处理 */ }
+  _markLoggedOut('panel');
+}
+
+// Inject token cookie on every fetch for panel API calls；顺带接住 401（登录态作废）
 const _origFetch = window.fetch;
 window.fetch = function(url, opts) {
   if (panelToken && typeof url === 'string' && url.startsWith('/panel/')) {
@@ -9266,7 +9512,14 @@ window.fetch = function(url, opts) {
       if (!opts.headers['Authorization']) opts.headers['Authorization'] = 'Bearer ' + panelToken;
     }
   }
-  return _origFetch.call(this, url, opts);
+  const promise = _origFetch.call(this, url, opts);
+  // 只盯面板相关的接口：别的路径（静态资源等）的 401 与登录态无关
+  if (typeof url === 'string' && (url.startsWith('/panel/') || url.startsWith('/api/'))) {
+    promise.then(response => {
+      if (response.status === 401) _handleAuthFailure(response);
+    }).catch(() => {});
+  }
+  return promise;
 };
 
 // 各个部件分开兜底：某个小部件出错（例如时间表画不出来）也不该把整页脚本打断 ——
