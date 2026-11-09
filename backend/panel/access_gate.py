@@ -179,7 +179,7 @@ _TEXTS = {
         "placeholder": "访问密码",
         "button": "进入",
         "error": "访问密码不对，请再试一次。",
-        "tip": "访问密码在运行这台电脑的面板里设置：先在「关于」页打开开发者模式，再到「设置 → 局域网访问」。",
+        "tip": "访问密码在运行这台电脑的面板里设置：「设置 → 局域网访问」。",
         "blockedTitle": "这台设备已被暂停",
         "blockedPageTitle": "这台设备已被暂停 · 抖音聊天记录",
         "blockedDesc": "这台设备连续输错访问密码 {n} 次，已经被单独暂停输入密码。",
@@ -199,8 +199,7 @@ _TEXTS = {
         "placeholder": "Access password",
         "button": "Enter",
         "error": "Wrong access password. Try again.",
-        "tip": "The access password is set on the host machine: turn on developer mode "
-               "(About page) first, then Settings → LAN access.",
+        "tip": "The access password is set on the host machine: Settings → LAN access.",
         "blockedTitle": "This device is paused",
         "blockedPageTitle": "This device is paused - Douyin chat export",
         "blockedDesc": "This device entered the wrong access password {n} times in a row and "
@@ -398,13 +397,11 @@ _DENIAL_TEXTS = {
     "lan_off": {
         "zh": ("未开放局域网访问",
                "服务目前只监听本机（127.0.0.1）。要允许局域网里的其它设备访问，"
-               "请在运行这台电脑上的控制面板里：先在「关于」页打开开发者模式，"
-               "再到「设置 → 局域网访问」打开那一项。"),
+               "请在运行这台电脑上的控制面板里打开「设置 → 局域网访问」。"),
         "en": ("LAN access is off",
                "The service is only listening on 127.0.0.1. To allow other devices on "
-               "this network, turn on developer mode on the About page of the control "
-               "panel on the host machine, then turn on \"LAN access\" "
-               "(Settings → LAN access)."),
+               "this network, turn on \"LAN access\" in the control panel on the host "
+               "machine (Settings → LAN access)."),
     },
 }
 

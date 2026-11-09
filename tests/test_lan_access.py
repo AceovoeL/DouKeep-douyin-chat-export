@@ -376,6 +376,17 @@ def test_panel_orders_public_access_above_the_device_lists():
     assert public_at < guard_at < trusted_at < pending_at
 
 
+def test_lan_and_credential_sections_are_always_available():
+    """「局域网访问」和「私有仓库凭据」对所有人开放，不再收在开发者模式后面。"""
+    with open(os.path.join(paths.REPO_ROOT, "backend", "panel", "static", "panel.html"),
+              encoding="utf-8") as handle:
+        html = handle.read()
+    assert '<div class="section" id="lanSection">' in html
+    assert '<div class="ab-token" id="abTokenBox">' in html
+    assert "devModeSection" not in html, "开发者模式开关已经删掉"
+    assert "developer-mode" not in html, "这个开关的接口也一起删掉了"
+
+
 def test_panel_shows_the_login_guard_and_can_clear_it():
     """面板接线：登录保护那一块要有状态、要接到清零接口上。"""
     with open(os.path.join(paths.REPO_ROOT, "backend", "panel", "static", "panel.html"),

@@ -8,9 +8,8 @@
 既不会混进配置的读写逻辑，也省得万一有人在接口里整包返回配置时把 Token 带出去。
 ``config/`` 本来就在 .gitignore 里，不会被提交。
 
-**什么时候用它**：只有面板打开「开发者模式」时才用（``load_for_use``）。关着时
-Token 文件仍然留着，但不再拿去读私有仓库 —— 用户重新打开开发者模式就能接着用，
-不用重新粘贴。
+**什么时候用它**：保存过就一直用（检查更新、一键更新、git 取代码都走它）。
+不想继续用时，在面板「关于 → 私有仓库凭据」里点「清除」。
 
 文件权限：POSIX 上设成 0600；Windows 上由用户目录的 ACL 保护（不做额外处理）。
 """
@@ -19,7 +18,7 @@ from __future__ import annotations
 import os
 import stat
 
-from common import config, paths
+from common import paths
 
 #: 路径的单一来源在 common/paths.py（config/github_token）；留一个模块级名字，
 #: 一来面板那边一直这么引用，二来测试可以把它指到临时文件、不碰真实凭据。
@@ -53,19 +52,6 @@ def load() -> str:
             return normalize(handle.read())
     except OSError:
         return ""
-
-
-def load_for_use() -> str:
-    """**真正拿去用**的 Token：开发者模式关着时一律当没有。
-
-    文件本身不动（用户不用重新粘贴，重新打开开发者模式就能接着用），只是不再拿它去读
-    私有仓库、也不再交给 git 和更新脚本 —— 那是「从私有仓库获取项目代码」这项功能，
-    跟着开发者模式一起开关。想彻底删掉 Token 只有 ``clear()`` 一条路（面板上凭据框
-    右边的「清除」按钮）。
-    """
-    if not config.developer_mode_enabled():
-        return ""
-    return load()
 
 
 def save(token: str) -> None:

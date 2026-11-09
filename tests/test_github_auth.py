@@ -3,8 +3,7 @@
 关键约束（这里都钉住）：
 * Token 只落在 config/github_token，不进 panel_config.json，也不进代码仓库；
 * 任何接口都不返回 Token 本身，只说「有没有、是谁」；
-* **只有开发者模式开着时它才会被用到**：关着时 API 不带 Authorization 头、git 也拿不到
-  凭据助手，但 Token 文件留着（重新打开开关就能接着用，不用重新粘贴）；
+* **保存过就一直用**：检查更新、一键更新、git 取代码都用它，直到用户点「清除」；
 * Token 无效 / 没法读仓库时给出能对症的错误码，而不是笼统的「仓库不存在」。
 """
 import io
@@ -30,19 +29,11 @@ def token_file(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def panel_config(tmp_path, monkeypatch):
-    """把面板配置也指到临时文件，并默认**打开**开发者模式。
-
-    这个文件里的用例验的是「Token 怎么被用」，而 Token 只在开发者模式开着时才参与
-    检查更新；「关着时一律不用」那一条单独有用例（见下面「开发者模式关着时」一节）。
-    """
+    """把面板配置指到临时文件，别碰真实 config/。"""
     path = tmp_path / "panel_config.json"
-    path.write_text(json.dumps({"developer_mode": True}), encoding="utf-8")
+    path.write_text(json.dumps({}), encoding="utf-8")
     monkeypatch.setattr(paths, "CONFIG_PATH", str(path))
     return path
-
-
-def _set_developer_mode(panel_config, enabled: bool) -> None:
-    panel_config.write_text(json.dumps({"developer_mode": bool(enabled)}), encoding="utf-8")
 
 
 def _newer_tag(sha: str) -> list[dict]:
@@ -254,16 +245,13 @@ def test_warm_github_login_is_done_at_startup(token_file, monkeypatch):
     assert asked == [TOKEN]
 
 
-def test_warm_github_login_does_nothing_without_a_token(token_file, panel_config,
-                                                        monkeypatch):
-    _set_developer_mode(panel_config, False)
-    github_auth.save(TOKEN)
+def test_warm_github_login_does_nothing_without_a_token(token_file, monkeypatch):
     asked = []
     _forbid_sync_github(monkeypatch, asked)
 
     cp.warm_github_login()
 
-    assert asked == [], "开发者模式关着时连「是谁」都不问"
+    assert asked == [], "没存过 Token 时连「是谁」都不问"
 
 
 def test_scheduling_a_refresh_without_a_token_does_nothing(monkeypatch, token_file):
@@ -595,13 +583,12 @@ def test_git_run_keeps_the_parent_environment_when_prompts_are_off(monkeypatch, 
     assert seen["env"]["GIT_ASKPASS"] == ""
 
 
-# ── 开发者模式关着时：一律不用它 ──────────────────────────────────────────
+# ── 存过就一直用：没有额外的开关再把它关掉 ────────────────────────────────
 #
-# 「关掉开发者模式」= 关掉「从私有仓库获取项目代码」这项功能：检查更新不再带 Token、
-# git 不再拿凭据助手。Token 文件留着 —— 重新打开开关就接着用（见上面 re-enable 的用例
-# 在 test_panel_developer_mode.py 里），要删只能用凭据框右边的「清除」。
+# 「私有仓库凭据」保存后就一直参与检查更新和一键更新，git 也拿得到凭据助手；
+# 要停用只有凭据框右边的「清除」一条路。
 
-def test_token_is_not_used_while_developer_mode_is_off(monkeypatch, token_file, panel_config):
+def test_saved_token_is_used_without_any_extra_switch(monkeypatch, token_file):
     seen = {}
 
     def fake_urlopen(request, timeout=None):
@@ -612,25 +599,10 @@ def test_token_is_not_used_while_developer_mode_is_off(monkeypatch, token_file, 
     monkeypatch.setattr(cp, "_remote_repository", lambda: version.REPOSITORY_URL)
     monkeypatch.setattr(cp, "_CREDENTIAL_HELPER_SCRIPT", __file__)
     github_auth.save(TOKEN)
-    _set_developer_mode(panel_config, False)
 
     cp._github_json("https://api.github.com/user")
 
-    assert "authorization" not in seen["headers"]
-    assert github_auth.load() == TOKEN, "文件要留着，用户不用重新粘贴"
-    assert cp._github_token() == ""
-    assert cp._git_env(with_token=True) is None, "git 也不该拿到凭据助手"
+    assert seen["headers"]["authorization"] == f"Bearer {TOKEN}"
+    assert cp._github_token() == TOKEN
+    assert cp._git_env(with_token=True) is not None, "git 要拿得到凭据助手"
 
-
-def test_token_status_does_not_ask_github_while_developer_mode_is_off(monkeypatch, token_file,
-                                                                     panel_config):
-    """关着时连「这个 Token 是谁」都不去问：那一步会拿 Token 发请求。"""
-    github_auth.save(TOKEN)
-    _set_developer_mode(panel_config, False)
-    monkeypatch.setattr(cp, "_github_account",
-                        lambda token: pytest.fail("开发者模式关着时不该拿 Token 去问 GitHub"))
-
-    payload = cp.asyncio.run(cp.update_token_status())
-
-    assert payload["configured"] is True, "存过就是存过，面板要知道"
-    assert payload["login"] == ""

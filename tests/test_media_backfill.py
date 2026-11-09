@@ -15,6 +15,7 @@ import pytest
 
 from backend import database
 from common import card_icons
+from common.message_kinds import share_cover_url
 from extractor import media_backfill, web_scraper
 from tests.conftest import insert_conversation, insert_message
 
@@ -381,3 +382,216 @@ def test_easter_redpack_card_is_a_backfill_candidate(temp_db, media_dirs, monkey
     assert path.startswith("card_icons/")
     assert card_icons.find_card_icon(EASTER_COVER) == path
     conn.close()
+
+# ── 分享卡封面（视频 / 图文 / 动图 / 文章）────────────────────────────────
+# 用户 2026-11-08 报的问题：分享卡显示「封面已失效」，点进去抖音官网视频却能播。
+# 原因是封面只是一条**带签名的临时链接**（约一年过期），以前只记链接不下载；
+# 视频靠作品 id 现场换新地址，所以还能播。现在封面也存进 card_icons/。
+SHARE_COVER = (
+    "https://p3-sign.douyinpic.com/obj/tos-cn-i-example/share-cover.jpeg"
+    "?lk3s=example&x-expires=1799999999&x-signature=example"
+)
+
+
+def _share_row(cj=None):
+    return _raw(cj or {
+        "aweType": 800,
+        "content_title": "示例作品标题",
+        "content_name": "示例作者",
+        "itemId": "1000000000000000009",
+        "cover_width": 576,
+        "cover_height": 1128,
+        "cover_url": {"url_list": [SHARE_COVER]},
+    })
+
+
+def test_share_cover_url_reads_every_payload_shape():
+    """封面可能藏在四个字段里，外加 11054 这类排版卡的 top.content。"""
+    assert share_cover_url({"aweType": 800, "cover_url": {"url_list": [SHARE_COVER]}}) == SHARE_COVER
+    # cover_info.resource_url
+    assert share_cover_url({
+        "aweType": 801, "cover_info": {"resource_url": {"url_list": [SHARE_COVER]}},
+    }) == SHARE_COVER
+    # content_thumb
+    assert share_cover_url({
+        "aweType": 803, "content_thumb": {"url_list": [SHARE_COVER]},
+    }) == SHARE_COVER
+    # 动态排版卡（11054）：封面在 im_dynamic_patch.raw_data 的 top.content 里
+    assert share_cover_url({
+        "aweType": 11054,
+        "im_dynamic_patch": {"raw_data": json.dumps({"top": {"content": SHARE_COVER}})},
+    }) == SHARE_COVER
+
+
+def test_share_cover_url_ignores_non_work_shares():
+    """商品卡 / 评论卡 / 群邀请卡不是「大封面」卡，不该被这里认领。"""
+    payload = {"cover_url": {"url_list": [SHARE_COVER]}}
+    assert share_cover_url({"aweType": 11029, **payload}) == ""      # 商品
+    assert share_cover_url({"aweType": 10500, **payload}) == ""      # 分享评论
+    assert share_cover_url({"aweType": 6001, **payload}) == ""       # 豆包卡（另有通道）
+    assert share_cover_url({"aweType": 800}) == ""                   # 没有封面
+    assert share_cover_url(None) == ""
+
+
+def test_share_cover_is_a_backfill_candidate(temp_db, media_dirs):
+    """库里缺封面的分享消息要进待补清单（老库里的那些）。"""
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_share", "c1", 1, msg_type=4, content="",
+                   media_url=SHARE_COVER, raw_data=_share_row())
+    assert [r["msg_id"] for r in media_backfill.iter_media_rows(conn)] == ["srv_share"]
+    conn.close()
+
+
+def test_share_cover_backfill_saves_into_card_icons(temp_db, media_dirs, monkeypatch):
+    """补下来之后存进 card_icons/，并记上路径，下次不再当成缺图。"""
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_share", "c1", 1, msg_type=4, content="",
+                   raw_data=_share_row())
+
+    monkeypatch.setattr(card_icons, "_fetch_icon",
+                        lambda url: (b"\xff\xd8\xff" + b"x" * 200, "image/jpeg"))
+    stats = media_backfill.backfill_media(conn)
+    assert stats["total"] == 1 and stats["ok"] == 1
+
+    path = conn.execute(
+        "SELECT media_local_path FROM messages WHERE msg_id='srv_share'").fetchone()[0]
+    assert path.startswith("card_icons/")
+    # .jpeg 统一规范成 .jpg（见 card_icons.icon_extension）
+    assert path.endswith(".jpg")
+    # 文件真的落地了，并且 find_card_icon 认得同一个链接
+    assert card_icons.find_card_icon(SHARE_COVER) == path
+    # 再跑一次不再出现（不会每轮采集都白扫）
+    assert media_backfill.iter_media_rows(conn) == []
+    conn.close()
+
+
+def test_expired_share_cover_link_counts_as_failed(temp_db, media_dirs, monkeypatch):
+    """链接已经过期（403）的补不回来：算一次失败，但别把整轮打断。"""
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_share", "c1", 1, msg_type=4, content="",
+                   raw_data=_share_row())
+    monkeypatch.setattr(card_icons, "_fetch_icon", lambda url: (None, ""))
+    stats = media_backfill.backfill_media(conn)
+    assert stats["total"] == 1 and stats["ok"] == 0 and stats["failed"] == 1
+    conn.close()
+
+
+def test_scrape_downloads_the_share_cover_inline(temp_db, media_dirs, monkeypatch):
+    """采集转换时就把封面存下来（不等收尾），并写进 media_local_path。"""
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    monkeypatch.setattr(card_icons, "_fetch_icon",
+                        lambda url: (b"\xff\xd8\xff" + b"x" * 200, "image/jpeg"))
+
+    scraper = object.__new__(web_scraper.WebChatScraper)
+    scraper._db_conn = conn
+    msg = {
+        "server_id": "1000000000000000051",
+        "content": "",
+        "msg_type": "share",
+        "sender_uid": "u1",
+        "sender_name": "",
+        "is_self": False,
+        "created_at": "2026-11-08T12:00:00Z",
+        "order_high": 1,
+        "order_low": 1,
+        "content_json": json.dumps({"aweType": 800, "cover_url": {"url_list": [SHARE_COVER]}}),
+        # 真实采集里这两项都由转换循环填：image_src 记原始链接（进 media_url），
+        # share_cover_dir 是 _download_share_cover 存下来的本地路径。
+        "image_src": SHARE_COVER,
+        "share_cover_dir": card_icons.save_card_icon(SHARE_COVER),
+    }
+    inserted, ids, _ = scraper._store_messages([msg], "c1")
+    assert inserted == 1
+    row = conn.execute(
+        "SELECT media_local_path, media_url FROM messages WHERE msg_id = ?", (ids[0],)
+    ).fetchone()
+    assert row["media_local_path"].startswith("card_icons/")
+    assert row["media_url"] == SHARE_COVER
+    conn.close()
+
+
+def test_share_cover_backfill_runs_only_once(temp_db, media_dirs, monkeypatch):
+    """全库回填**只做一次**：标记文件写下去之后，下一轮采集直接跳过。"""
+    from common import paths as common_paths
+
+    marker = tmp_path_marker = media_dirs / "share_cover_backfill_done"
+    monkeypatch.setattr(common_paths, "SHARE_COVER_BACKFILL_DONE", str(tmp_path_marker))
+
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_share", "c1", 1, msg_type=4, content="",
+                   raw_data=_share_row())
+    conn.commit()
+
+    monkeypatch.setattr(card_icons, "_fetch_icon",
+                        lambda url: (b"\xff\xd8\xff" + b"x" * 200, "image/jpeg"))
+
+    scraper = web_scraper.WebChatScraper()
+    scraper._db_conn = conn
+    asyncio.run(scraper._backfill_share_covers_once())
+    # 第一次：补下来了，标记也写了
+    assert marker.exists()
+    assert conn.execute(
+        "SELECT media_local_path FROM messages WHERE msg_id='srv_share'"
+    ).fetchone()[0].startswith("card_icons/")
+
+    # 第二次：新加一条缺封面的，回填不该再跑（标记文件在）
+    insert_message(conn, "srv_share2", "c1", 2, msg_type=4, content="",
+                   media_url=SHARE_COVER,
+                   raw_data=_raw({"aweType": 800, "cover_url": {"url_list": [SHARE_COVER + "&n=2"]}}))
+    conn.commit()
+    asyncio.run(scraper._backfill_share_covers_once())
+    assert conn.execute(
+        "SELECT media_local_path FROM messages WHERE msg_id='srv_share2'"
+    ).fetchone()[0] is None      # 没被回填（只做一次）
+    conn.close()
+
+def test_share_cover_logs_are_not_scrape_errors():
+    """新加的日志不能被面板当成采集出错。
+
+    面板把「[media] … 失败」当错误弹框、并把这轮采集暂停两分钟
+    （backend/control_panel.py 的 _MEDIA_FAILURE_PATTERNS）。补不上的封面
+    多半是链接早就过期，属于正常情况，日志里不能出现会命中规则的字样。
+    """
+    from backend.control_panel import classify_scrape_log_line
+
+    lines = [
+        "  [media] 分享卡封面回填完成: 待补 5 条，已补 4 条，另有 1 张链接已过期没能补",
+        "  [media] 分享卡封面回填完成: 老库里没有缺封面的消息",
+        "  [media] 已存到本地: 卡片图 2 张，分享卡封面 3 张",
+        "  [media] 首次升级：开始全库补齐分享卡封面（只补这一次）...",
+    ]
+    for line in lines:
+        assert classify_scrape_log_line(line) is None, line
+
+
+def test_share_cover_backfill_prints_progress(temp_db, media_dirs, monkeypatch, capsys):
+    """回填时日志里要能看见「开始」和「完成」，用户才知道它在干活。"""
+    from common import paths as common_paths
+
+    marker = media_dirs / "share_cover_backfill_done"
+    monkeypatch.setattr(common_paths, "SHARE_COVER_BACKFILL_DONE", str(marker))
+
+    conn = database.get_db()
+    insert_conversation(conn, "c1", "会话")
+    insert_message(conn, "srv_share", "c1", 1, msg_type=4, content="",
+                   raw_data=_share_row())
+    conn.commit()
+
+    monkeypatch.setattr(card_icons, "_fetch_icon",
+                        lambda url: (b"\xff\xd8\xff" + b"x" * 200, "image/jpeg"))
+
+    scraper = web_scraper.WebChatScraper()
+    scraper._db_conn = conn
+    asyncio.run(scraper._backfill_share_covers_once())
+
+    out = capsys.readouterr().out
+    assert "开始全库补齐分享卡封面" in out
+    assert "分享卡封面回填完成" in out
+    conn.close()
+
+

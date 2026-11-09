@@ -29,7 +29,9 @@ from common.bubble_assets import (
     analyze_bubble_image, bubble_id_from_fields, is_valid_bubble_id,
     load_catalog, merge_bubble, save_bubble_image,
 )
-from common.message_kinds import daily_share_text, is_daily_share, is_view_once
+from common.message_kinds import (
+    daily_share_text, is_daily_share, is_view_once, share_cover_url,
+)
 from common.message_modify import parse_modify
 from extractor.forwarded import backfill_uploaded_forwards
 from extractor.im_media import (  # noqa: F401 — re-exported for tools/control_panel
@@ -143,6 +145,26 @@ def _share_cover(cj):
         if urls and isinstance(urls[0], str):
             return urls[0]
     return None
+
+
+def _download_share_cover(cj):
+    """分享卡（视频/图文/动图/文章）的封面图顺手存一份，返回相对路径或 None。
+
+    封面和群头像、豆包卡封面一样是**带签名的临时链接**（约一年过期），以前只把
+    链接记进 media_url 直接给 <img> 用，过期后卡片就显示「封面已失效」。现在
+    采集时就落进 data/media/card_icons/（common/card_icons.py），阅读端走
+    iconSrc() 取本地那份。下载失败（网络抖动 / 链接已过期）不报错：下次采集
+    收尾的回填还会再试一次。
+    """
+    from common.card_icons import save_card_icon
+
+    url = share_cover_url(cj)
+    if not url:
+        return None
+    try:
+        return save_card_icon(url)
+    except OSError:
+        return None
 
 
 def _report_download_problems(prefix, what, problems, *, fail_line):
@@ -599,6 +621,12 @@ class WebChatScraper:
             await self._backfill_missing_media()
         except Exception as e:
             print(f"[!] 补齐历史表情/卡片图失败（消息已保存）: {type(e).__name__}")
+
+        # 收尾：分享卡封面的全库回填只做一次（标记文件见 common/paths.py）。
+        try:
+            await self._backfill_share_covers_once()
+        except Exception as e:
+            print(f"[!] 分享卡封面回填失败（消息已保存）: {type(e).__name__}")
 
         # 收尾：实况图里那段小视频要在这个已登录的页面里换签名地址，所以放在
         # 「会话都抓完了、浏览器还开着」的时候统一补一次（含以前漏掉的老消息）。
@@ -1366,6 +1394,57 @@ class WebChatScraper:
                 f"  [media] 补齐缺图的消息: 需要 {stats['total']} 条，"
                 f"成功 {stats['ok']}，失败 {stats['failed']}"
             )
+
+    async def _backfill_share_covers_once(self):
+        """采集收尾：把老库里分享卡的封面全库补一次 —— **只做一次**。
+
+        分享卡（视频/图文/动图/文章）的封面以前只记链接不下载，链接是带签名的
+        临时地址（约一年过期），过期后卡片就显示「封面已失效」。这个回填把还没
+        过期的那些封面抢救下来存进 data/media/card_icons/。
+
+        用户要求它**不管这轮采集勾了哪些会话**都补全库，且**只在第一次跑**：
+        data/share_cover_backfill_done 这个标记文件存在就跳过（回填跑完就写上，
+        跟着数据库走）。之后新消息的封面由采集转换时顺手下载，不再扫旧数据。
+        """
+        from extractor.media_backfill import backfill_media
+
+        if os.path.exists(paths.SHARE_COVER_BACKFILL_DONE):
+            # 只在第一次采集时补，之后静默跳过（不刷日志，免得每轮都留一行废话）。
+            return
+        print("  [media] 首次升级：开始全库补齐分享卡封面（只补这一次）...")
+        # 先把标记写上再干活：万一中途断电 / 报错，也别让下一轮采集把全库
+        # 重扫一遍（能补的这次已经补了，补不下的多半是链接过期，重试也没用）。
+        try:
+            os.makedirs(os.path.dirname(paths.SHARE_COVER_BACKFILL_DONE), exist_ok=True)
+            with open(paths.SHARE_COVER_BACKFILL_DONE, "w", encoding="utf-8") as handle:
+                handle.write(str(int(time.time())))
+        except OSError as exc:
+            print(f"  [!] 分享封面回填标记写不上，这次先跳过: {exc}")
+            return
+
+        def _run():
+            own = get_db()      # 连接必须在用它自己的线程里创建
+            try:
+                return backfill_media(own)
+            finally:
+                own.close()
+
+        try:
+            stats = await asyncio.to_thread(_run)
+        except Exception as e:
+            print(f"  [!] 补齐分享卡封面失败（消息已保存）: {type(e).__name__}")
+            return
+        # 这行**不能带「失败」二字**：面板把「[media] … 失败」当成采集出错，
+        # 会弹框并把这轮采集暂停两分钟（见 backend/control_panel.py 的
+        # _MEDIA_FAILURE_PATTERNS）。补不上的多半是链接早就过期，属于正常情况。
+        if stats["total"]:
+            tail = f"，另有 {stats['failed']} 张链接已过期没能补" if stats["failed"] else ""
+            print(
+                f"  [media] 分享卡封面回填完成: 待补 {stats['total']} 条，"
+                f"已补 {stats['ok']} 条{tail}"
+            )
+        else:
+            print("  [media] 分享卡封面回填完成: 老库里没有缺封面的消息")
 
     async def _backfill_live_photo_videos(self):
         """采集收尾：把库里还没下过小视频的实况图补全（含以前一直没下过的）。
@@ -2372,6 +2451,11 @@ class WebChatScraper:
         zero_saved_streak = 0  # 连续 saved=0 的批次计数
         voice_message_ids = []  # 只转写本次实际新增的语音
         bubble_ids = set()  # 本次遇到的气泡装饰
+        #: 本次采集顺手存下来的分享卡封面数（见 _download_share_cover）。只做统计、
+        #: 不打逐条日志 —— 一个群聊里可能有上百条分享卡，逐条刷屏没法看。
+        share_covers_saved = 0
+        #: 卡片自带的图（群邀请卡群头像、豆包卡封面、喂食卡两张）本次存下的张数。
+        card_icons_saved = 0
         # 每批获取的页数：回填模式带着整包字段，单批体积更大，取小一点。
         pages_per_batch = 4 if refresh else 20
         has_more = True
@@ -2441,6 +2525,7 @@ class WebChatScraper:
                 awe_type = -1
                 image_src = None
                 card_icon_dir = None
+                share_cover_dir = None
                 try:
                     cj = json.loads(content_json)
                     awe_type = cj.get("aweType", -1)
@@ -2499,6 +2584,15 @@ class WebChatScraper:
                     # 另一张阅读端会按 ?url= 找到本地那份（见 common/card_icons.py）。
                     saved_icons = _download_card_icon(cj)
                     card_icon_dir = saved_icons[0] if saved_icons else None
+                    if saved_icons:
+                        card_icons_saved += len(saved_icons)
+                    # 分享卡（视频/图文/动图/文章）的封面也是带签名的临时链接，
+                    # 顺手存一份；失败不报错，采集收尾的回填还会再试。
+                    # 只在真正拿到本地文件时计数（本地早就有的也算，日志里统一说
+                    # 「存下 N 张」），失败的那张不吭声，免得为过期链接刷一屏。
+                    share_cover_dir = _download_share_cover(cj)
+                    if share_cover_dir:
+                        share_covers_saved += 1
                 except (json.JSONDecodeError, AttributeError):
                     text = content_json
                     msg_type = "text"
@@ -2532,6 +2626,7 @@ class WebChatScraper:
                     "order_low": created_at_us & 0xFFFFFFFF,
                     "image_src": image_src,
                     "card_icon_dir": card_icon_dir,
+                    "share_cover_dir": share_cover_dir,
                     "visible": m.get("visible", 0),
                     "is_recalled": m.get("is_recalled", 0),
                     "content_json": content_json,
@@ -2652,6 +2747,17 @@ class WebChatScraper:
 
         # 6.5 老消息漏掉的表情/卡片图不再在这里补：它是全库扫描，跟"刚抓完哪个会话"
         # 无关，挂在每个会话后面只是白扫（见 extract_all 收尾的 _backfill_missing_media）。
+
+        # 6.6 卡片图 / 分享卡封面：本会话顺手存了多少张，收尾时汇总一行。
+        # 逐条打日志会刷屏（一个群聊上百条分享卡），所以只报总数；一张都没存下
+        # 就不吭声，免得每轮都留一行没内容的日志。
+        saved_bits = []
+        if card_icons_saved:
+            saved_bits.append(f"卡片图 {card_icons_saved} 张")
+        if share_covers_saved:
+            saved_bits.append(f"分享卡封面 {share_covers_saved} 张")
+        if saved_bits:
+            print(f"  [media] 已存到本地: {'，'.join(saved_bits)}")
 
         # 7. 归一化 seq
         print(f"  [*] 归一化消息序号 (按服务端排序)...")
@@ -2907,9 +3013,14 @@ class WebChatScraper:
                 # 「图或文字」写进 image_src：display_name 先占位时图就丢了。
                 # 这里补记一遍，media_url 才是历史媒体回填要用的下载地址。
                 media_url = _emoji_payload(json.loads(msg.get("content_json") or "{}"))[1]
-            # 卡片图（群头像 / 豆包卡封面）已经在转换时落盘了，直接当本地媒体挂上，
-            # 它会进 raw_data.card_icon_dir，阅读端按 /media/<它> 取图。
-            local_path = msg.get("card_icon_dir") or msg.get("local_path")
+            # 卡片图（群头像 / 豆包卡封面）与分享卡封面都已经在转换时落盘了，
+            # 直接当本地媒体挂上，它会进 raw_data.card_icon_dir / raw_data.share_cover_dir，
+            # 阅读端按 /media/<它> 取图。分享封面优先：分享消息不会再有卡片图，
+            # 这个顺序只是让字段语义清楚。
+            local_path = (
+                msg.get("share_cover_dir") or msg.get("card_icon_dir")
+                or msg.get("local_path")
+            )
 
             # Timestamp: use precise createdAt from fiber (ISO string → Unix seconds)
             timestamp = 0

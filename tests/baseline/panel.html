@@ -304,9 +304,6 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 }
 .lan-sub .meta { margin: 0; }
-/* 开发者模式（「关于」页最下面）：存好了是绿字、存不上是红字，和别处的小提示一样 */
-#devModeStatus.ok { color: var(--green); }
-#devModeStatus.error { color: var(--red); }
 .lan-devices { margin-top: 14px; }
 .lan-devices-head {
   display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
@@ -1214,6 +1211,66 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .sched-grid-min { grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); }
 
 .theme-dot[data-t="custom"] { background: conic-gradient(from 0deg, #f2586e, #35c0d6, #b57cff, #e2b23c, #4dd08a, #f2586e); }
+
+/* ── 单文件 HTML 导出：单日历日期区间选择器 ── */
+.hdp-triggers { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+.hdp-trigger { flex:1; border:1px solid var(--border,#e0e0e0); border-radius:8px; padding:7px 10px;
+  font-size:13px; cursor:pointer; text-align:center; color:var(--text2,#888); background:var(--surface,#fff); }
+.hdp-trigger.filled { color:var(--text,#222); font-weight:500; }
+.hdp-sep { color:var(--text2,#999); font-size:13px; }
+.hdp-calendar { position:relative; border:1px solid var(--border,#e0e0e0); border-radius:10px;
+  padding:10px; background:var(--surface,#fff); }
+.hdp-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.hdp-title { display:flex; gap:2px; }
+.hdp-unit { border:none; background:none; font-size:14px; font-weight:600; cursor:pointer;
+  color:var(--text,#222); padding:3px 8px; border-radius:6px; }
+.hdp-unit:hover { background:var(--hover,#f0f0f0); }
+.hdp-unit::after { content:'▾'; font-size:10px; opacity:.5; margin-left:2px; }
+.hdp-nav, .hdp-today { border:1px solid var(--border,#e0e0e0); background:var(--surface,#fff);
+  border-radius:6px; cursor:pointer; color:var(--text,#333); font-size:13px; padding:3px 9px; }
+.hdp-nav { min-width:30px; }
+.hdp-nav:hover, .hdp-today:hover { background:var(--hover,#f0f0f0); }
+.hdp-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; }
+.hdp-dow { text-align:center; font-size:11px; color:var(--text2,#999); padding:4px 0; }
+.hdp-day { position:relative; text-align:center; font-size:13px; padding:7px 0; border-radius:8px;
+  cursor:pointer; color:var(--text,#222); }
+.hdp-day.empty { cursor:default; }
+.hdp-day.no-msg { color:var(--text3,#c3c3c3); opacity:.45; }
+.hdp-day.has-msg { font-weight:600; color:var(--text,#222); }
+.hdp-day.has-msg::after { content:''; position:absolute; left:50%; bottom:3px; width:4px; height:4px;
+  border-radius:50%; background:var(--accent,#4d8f5c); transform:translateX(-50%); }
+.hdp-day:hover:not(.empty) { background:var(--hover,#ececec); }
+.hdp-day.anchor { outline:2px solid var(--accent,#4d8f5c); outline-offset:-2px; }
+/* 区间中间日期：浅色主题色圆角矩形（不是直角），背景色变化带过渡 */
+.hdp-day.in-range { background:var(--accent-soft,rgba(64,132,83,.18)); border-radius:8px;
+  transition: background-color .18s ease; }
+/* anchor 期间的实时预览：更浅一档，同样圆角；加/删类时背景色平滑过渡
+   （transition 只对属性变化生效，不会像 animation 那样每次重画都重放） */
+.hdp-day.preview { background:color-mix(in srgb, var(--accent,#4d8f5c) 12%, transparent);
+  border-radius:8px; transition: background-color .18s ease; }
+.hdp-day.edge { background:var(--accent,#4d8f5c); color:#fff; border-radius:8px; }
+.hdp-overlay { position:absolute; inset:10px 10px 34px 10px; background:var(--surface,#fff);
+  border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.12); padding:8px; z-index:5;
+  display:grid; grid-template-columns:repeat(4,1fr); gap:4px; align-content:start;
+  overflow-y:auto; }
+.hdp-option { text-align:center; font-size:13px; padding:8px 0; border-radius:8px; cursor:pointer;
+  color:var(--text,#222); }
+.hdp-option:hover { background:var(--hover,#f0f0f0); }
+.hdp-option.current { background:var(--accent-soft,rgba(64,132,83,.18)); font-weight:600; }
+/* HTML 导出弹窗：更柔和的弹出/收起动画 + 高度平滑过渡。
+   height:auto 过渡不了，所以切换内容时由 JS 量好目标高度再过渡（见 animateHtmlDialogHeight）。 */
+#htmlExportModal .ap-modal { transition: opacity .22s cubic-bezier(.2,0,.2,1); }
+#htmlExportModal .ap-modal-dialog {
+  height:auto; max-height:min(80vh, 720px);
+  /* height 不走 CSS transition：由 JS 的 Web Animations API 平滑过渡（见 animateHtmlDialogHeight） */
+  transition: opacity .22s cubic-bezier(.2,0,.2,1), transform .22s cubic-bezier(.2,0,.2,1);
+}
+#htmlExportModal .ap-modal:not(.show) .ap-modal-dialog { transform: translateY(10px) scale(.98); }
+#htmlExportModal .ap-modal-body { overflow-y:auto; }
+/* 年/月下拉浮层：淡入（animation 在 hidden 移除时自动播放一次） */
+#hdpOverlay:not([hidden]) { animation: hdp-overlay-in .16s ease; }
+@keyframes hdp-overlay-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
 </style>
 </head>
 <body data-theme="dark">
@@ -1255,6 +1312,52 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
     <div class="ap-pick-list"><div class="sched-grid" id="schedPickGrid"></div></div>
   </div>
 </div>
+<!-- 单文件 HTML 导出弹窗：全部 / 部分（会话 + 日期区间）+ 实时预估大小 -->
+<div id="htmlExportModal" class="ap-modal" hidden onclick="if(event.target===this)closeHtmlExport()">
+  <div class="ap-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="htmlExportTitle" style="max-width:640px">
+    <div class="ap-modal-head">
+      <div class="ap-modal-title" id="htmlExportTitle">导出单文件 HTML</div>
+      <button type="button" class="ap-modal-close" onclick="closeHtmlExport()" aria-label="关闭">✕</button>
+    </div>
+    <div class="ap-modal-body" style="padding:14px 18px">
+      <div class="toggle" style="margin-bottom:12px">
+        <input type="radio" name="htmlExportScope" id="htmlScopeAll" value="all" checked onchange="onHtmlScopeChange()">
+        <label for="htmlScopeAll">全部导出（这个会话的所有消息）</label>
+        <input type="radio" name="htmlExportScope" id="htmlScopePart" value="part" onchange="onHtmlScopeChange()">
+        <label for="htmlScopePart">部分导出（选日期区间）</label>
+      </div>
+
+      <div id="htmlExportDateSection" style="display:none;margin-top:12px">
+        <div class="hdp-triggers">
+          <div class="hdp-trigger" id="hdpStartTrigger">开始日期</div>
+          <span class="hdp-sep">至</span>
+          <div class="hdp-trigger" id="hdpEndTrigger">结束日期</div>
+        </div>
+        <div class="hdp-calendar" id="htmlDateCal">
+          <div class="hdp-head">
+            <button type="button" class="hdp-nav" id="hdpPrev" aria-label="上个月">‹</button>
+            <div class="hdp-title">
+              <button type="button" class="hdp-unit" id="hdpYearBtn">2026年</button>
+              <button type="button" class="hdp-unit" id="hdpMonthBtn">10月</button>
+            </div>
+            <button type="button" class="hdp-today" id="hdpToday">今日</button>
+            <button type="button" class="hdp-nav" id="hdpNext" aria-label="下个月">›</button>
+          </div>
+          <div class="hdp-grid" id="hdpGrid"></div>
+          <div class="hdp-overlay" id="hdpOverlay" hidden></div>
+        </div>
+        <div class="meta" id="htmlDateRangeText" style="margin-top:6px">未选择日期区间（导出全部消息）</div>
+      </div>
+
+      <div class="meta" id="htmlEstimate" style="margin-top:12px"></div>
+    </div>
+    <div class="ap-modal-foot">
+      <button type="button" class="btn" onclick="closeHtmlExport()">取消</button>
+      <button type="button" class="btn btn-primary" id="htmlExportGo" onclick="runHtmlExport()">导出</button>
+    </div>
+  </div>
+</div>
+
 <div id="confirmModal" class="confirm-modal" hidden onclick="if(event.target===this)closeConfirmModal(false)">
   <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle" aria-describedby="confirmModalMessage">
     <div class="confirm-head">
@@ -1738,6 +1841,7 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
         <option value="jsonl">JSONL</option>
         <option value="json">JSON</option>
         <option value="txt" data-i18n="txtFormat">纯文本 TXT（仅含昵称与正文）</option>
+        <option value="html" data-i18n="htmlFormat">单文件 HTML（浏览器直接打开）</option>
         <option value="database" data-i18n="databaseFormat">整个数据库（SQLite，可导入）</option>
       </select>
       <button class="btn btn-primary" id="exportBtn" onclick="startExport()" data-i18n="exportBtn">导出</button>
@@ -1877,9 +1981,8 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   </div>
   <!-- 局域网访问：让同一个局域网里的其它设备也能打开面板和查看器。
        开关（监听 127.0.0.1 还是 0.0.0.0）要重启服务才生效，所以打开/关闭后会
-       自动重启一次，页面自己等它回来；访问密码和信任设备改完立刻生效，不用重启。
-       整块收在「关于 → 开发者模式」里（默认 hidden），开关状态由 applyDeveloperMode() 同步。 -->
-  <div class="section" id="lanSection" hidden>
+       自动重启一次，页面自己等它回来；访问密码和信任设备改完立刻生效，不用重启。 -->
+  <div class="section" id="lanSection">
     <h2 data-i18n="lanTitle">局域网访问</h2>
     <div class="meta" style="margin-bottom:12px" data-i18n="lanDesc">打开后，同一个局域网里的其它设备用自己的 IP 加端口就能打开控制面板和聊天查看器。开关变化需要重启一次服务（会自动完成），访问密码和信任设备改完立刻生效。</div>
 
@@ -2100,9 +2203,8 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
           </span>
         </div>
 
-        <!-- 私有仓库凭据：只在「关于 → 开发者模式」打开后显示（默认 hidden），
-             普通用户不用看到这一项。开关状态由 applyDeveloperMode() 同步。 -->
-        <div class="ab-token" id="abTokenBox" hidden>
+        <!-- 私有仓库凭据：把项目放回自己的私有仓库时才需要；公开仓库不填也能检查更新。 -->
+        <div class="ab-token" id="abTokenBox">
           <div class="ab-token-head">
             <span data-i18n="aboutTokenTitle">私有仓库凭据</span>
             <span class="status status-idle" id="abTokenBadge" data-i18n="aboutTokenNotSet">未设置</span>
@@ -2273,21 +2375,6 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
           <span class="meta" id="packAboutMeta"></span>
         </div>
       </div>
-
-      <!-- 开发者模式：开关一拨就存，没有「应用」按钮。打开后「关于」页才多出「私有仓库凭据」、
-             「设置」页才多出「局域网访问」—— 这两项进阶功能收在它后面，放在「关于」页最下面。 -->
-      <div class="section" id="devModeSection">
-        <h2 data-i18n="devModeTitle">开发者模式</h2>
-        <div class="lan-switch-row">
-          <label class="switch">
-            <input type="checkbox" id="devModeEnabled" onchange="setDeveloperMode(this.checked)">
-            <span class="slider"></span>
-          </label>
-          <span class="lan-switch-title" data-i18n="devModeLabel">开启开发者模式</span>
-        </div>
-        <div class="meta" id="devModeNote" style="margin-top:6px" data-i18n="devModeNote">开启后，「关于」页会显示「私有仓库凭据」，「设置」页会显示「局域网访问」。</div>
-        <div class="meta" id="devModeStatus" style="margin-top:6px" hidden></div>
-      </div>
     </div>
 
   </main>
@@ -2387,6 +2474,7 @@ const T = {
     nameStyleFull: '不代替',
     nameStyleNumber: '以数字代替昵称',
     nameStyleLetter: '以字母代替昵称',
+    htmlFormat: '单文件 HTML（浏览器直接打开）',
     databaseFormat: '整个数据库（SQLite，可导入）',
     databaseExportHint: '整库导出会生成一个可在本面板覆盖导入的 SQLite 文件。',
     databaseImportTitle: '数据库覆盖导入',
@@ -2633,7 +2721,6 @@ const T = {
     pubCfManualInvalid: '你放的文件不是能运行的 cloudflared（可能没下完）。',
     pubCfManualVersion: '你放的版本和最新版对不上，没有安装。',
     pubCfManualProgressDesc: '正在核对指定位置的文件版本并安装。替换时隧道会短暂断开，完成后自动重连。',
-    devModeOffPublicWarn: '公网访问也开着：关掉开发者模式会顺手把公网入口也关掉（域名留着，重新打开开发者模式就能一键挂回去）。',
     notifyTitle: '通知',
     notifyDesc: '采集失败时通过 Server酱 推送到微信。',
     notifyPlaceholder: 'SCT... SendKey',
@@ -2924,18 +3011,6 @@ const T = {
     aboutAutoCheckPresetDailyThree: '每天早8点 + 中午12点 + 晚8点',
     weekday0: '周一', weekday1: '周二', weekday2: '周三', weekday3: '周四',
     weekday4: '周五', weekday5: '周六', weekday6: '周日',
-    /* 开发者模式（「关于」页最下面） */
-    devModeTitle: '开发者模式',
-    devModeLabel: '开启开发者模式',
-    devModeNote: '开启后，「关于」页会显示「私有仓库凭据」，「设置」页会显示「局域网访问」。',
-    devModeSaved: (on) => on ? '已保存：开发者模式已开启。' : '已保存：开发者模式已关闭。',
-    devModeSaveFailed: (msg) => `保存失败：${msg || '请稍后再试'}`,
-    devModeOffConfirmTitle: '关闭开发者模式？',
-    devModeOffConfirmOk: '确认关闭',
-    devModeOffLanWarn: '「局域网访问」正开着：关闭开发者模式会把它一起关掉（访问密码和已信任的设备都留着，下次打开开发者模式不用重新输），并重启一次服务。',
-    devModeOffTokenWarn: '「私有仓库凭据」已保存：关闭开发者模式后，检查更新不再用它读私有仓库，也不再从私有仓库取项目代码；Token 不会被删掉，重新打开开发者模式就能接着用（要彻底删除请点凭据框右边的「清除」）。',
-    devModeRestartWait: (s) => `正在重启服务，把监听地址切回本机…已等 ${s} 秒，页面会自己刷新`,
-    devModeRestartFailed: (msg) => `开发者模式和局域网访问都已关闭。${msg}`,
   },
   en: {
     appTitle: 'Douyin Chat Export',
@@ -3024,6 +3099,7 @@ const T = {
     nameStyleFull: 'Keep as is',
     nameStyleNumber: 'Replace with numbers',
     nameStyleLetter: 'Replace with letters',
+    htmlFormat: 'Single-file HTML (opens in browser)',
     databaseFormat: 'Entire database (SQLite, importable)',
     databaseExportHint: 'The full export is a SQLite file that can be imported here to replace the database.',
     databaseImportTitle: 'Replace database by import',
@@ -3267,7 +3343,6 @@ const T = {
     pubCfManualInvalid: 'The file you saved is not a runnable cloudflared (probably incomplete).',
     pubCfManualVersion: 'The version you saved does not match the latest one; nothing was installed.',
     pubCfManualProgressDesc: 'Checking the file you saved and installing it. The tunnel disconnects briefly while the program is replaced and reconnects automatically.',
-    devModeOffPublicWarn: 'Public access is on too: turning off developer mode also closes the public entry point (the domain is kept — switch developer mode back on and mount it again in one click).',
     lanSaved: 'Settings saved.',
     lanDevMode: 'In dev mode (uvicorn --reload) the service is not restarted automatically — restart it once by hand to apply the listening address.',
     lanEnableFailed: 'Could not restart the service automatically. Please restart it once by hand (start.ps1 / start.sh).',
@@ -3562,18 +3637,6 @@ const T = {
     aboutAutoCheckPresetDailyThree: 'Daily 8am + noon + 8pm',
     weekday0: 'Mon', weekday1: 'Tue', weekday2: 'Wed', weekday3: 'Thu',
     weekday4: 'Fri', weekday5: 'Sat', weekday6: 'Sun',
-    /* Developer mode (bottom of the About page) */
-    devModeTitle: 'Developer mode',
-    devModeLabel: 'Turn on developer mode',
-    devModeNote: 'When on, the About page shows the private-repo credential and Settings shows LAN access.',
-    devModeSaved: (on) => on ? 'Saved: developer mode is on.' : 'Saved: developer mode is off.',
-    devModeSaveFailed: (msg) => `Save failed: ${msg || 'try again later'}`,
-    devModeOffConfirmTitle: 'Turn off developer mode?',
-    devModeOffConfirmOk: 'Turn it off',
-    devModeOffLanWarn: 'LAN access is on: turning off developer mode turns it off as well (the access password and your trusted devices are kept, so nothing has to be entered again next time) and restarts the service once.',
-    devModeOffTokenWarn: 'A private-repo credential is saved: update checks will stop using it and the project code will no longer be fetched from the private repo; the token is NOT deleted and works again as soon as you turn developer mode back on (use the Clear button in the credential box to delete it for good).',
-    devModeRestartWait: (s) => `Restarting the service to listen on this machine only… ${s}s so far, the page refreshes itself`,
-    devModeRestartFailed: (msg) => `Developer mode and LAN access are both off. ${msg}`,
   },
 };
 
@@ -3674,8 +3737,6 @@ function showPage(id) {
     loadGithubTokenStatus();
     loadUpdateSchedule();
     pollUpdate();
-    // 最下面的开发者模式开关：它管着「关于」页的凭据框和「设置」页的局域网访问
-    loadDeveloperMode();
   }
   if (id === 'logs') {
     // 记住上次看的是哪一份日志；进页面立刻取一次，不用等自动刷新的下一个 3 秒
@@ -3689,8 +3750,6 @@ function showPage(id) {
     loadLanAccess();
     // 公网访问（Cloudflare 隧道）的状态与挂载进度
     loadPublicAccess();
-    // 开发者模式开着才有「局域网访问」这一块，所以进设置页也要读一次开关状态
-    loadDeveloperMode();
   }
 }
 
@@ -5141,6 +5200,21 @@ async function applyCronExpr() {
 
 async function startExport() {
   const format = document.getElementById('exportFormat').value;
+  // 单文件 HTML 走独立弹窗（全部/部分 + 日期区间选择），不直接导出。
+  // 会话就是这里勾选的那个：只勾了一个才继续，一个都没勾/勾了多个都提示。
+  if (format === 'html') {
+    const picked = [...selectedMap.export];
+    if (picked.length === 0) {
+      setDynText(document.getElementById('exportMsg'), t('exportNeedConv'));
+      return;
+    }
+    if (picked.length > 1) {
+      setDynText(document.getElementById('exportMsg'), '单文件 HTML 一次导出一个会话，请只勾选一个会话。');
+      return;
+    }
+    openHtmlExport(picked[0]);
+    return;
+  }
   const conversations = [...selectedMap.export];
   const msg = document.getElementById('exportMsg');
   // 一个都没勾就别发了：后端会拒绝（400），这里先把话说清楚，别让按钮看着像坏了
@@ -5184,6 +5258,430 @@ function updateDatabaseFileName(input) {
   nameEl.textContent = file ? file.name : t('databaseNoFile');
   nameEl.title = file ? file.name : '';
 }
+
+
+/* ── 单文件 HTML 导出（单日历日期区间选择器：两次点击选区间，年/月下拉快速跳转） ── */
+
+const htmlExport = {
+  scope: "all",
+  convName: "",
+  convId: "",
+  viewY: 2026, viewM: 1,   // 当前日历显示的年月
+  anchor: null,             // 两次点击的第一下（起始日期 YYYY-MM-DD）
+  previewEnd: null,         // anchor 期间鼠标悬停的日期（实时预览区间终点）
+  startTs: null,
+  endTs: null,
+  months: [],               // 该会话有消息的日期集合（Set<YYYY-MM-DD>）
+  minDate: null, maxDate: null,
+  estTimer: null,
+  overlay: null,            // "year" | "month" | null（下拉列表打开状态）
+};
+
+let htmlExportCloseTimer = null;
+
+function openHtmlExport(convName) {
+  const modal = document.getElementById("htmlExportModal");
+  if (!modal) return;
+  htmlExport.convName = convName || "";
+  htmlExport.scope = "all";
+  htmlExport.anchor = null;
+  htmlExport.previewEnd = null;
+  htmlExport.startTs = null;
+  htmlExport.endTs = null;
+  htmlExport.months = [];
+  htmlExport.overlay = null;
+  document.getElementById("htmlScopeAll").checked = true;
+  document.getElementById("htmlExportTitle").textContent = convName
+    ? "导出单文件 HTML · " + convName
+    : "导出单文件 HTML";
+  onHtmlScopeChange();
+  modal.hidden = false;
+  clearTimeout(htmlExportCloseTimer);
+  requestAnimationFrame(() => modal.classList.add("show"));
+}
+
+function closeHtmlExport() {
+  const modal = document.getElementById("htmlExportModal");
+  if (!modal || modal.hidden) return;
+  modal.classList.remove("show");
+  clearTimeout(htmlExportCloseTimer);
+  htmlExportCloseTimer = setTimeout(() => { modal.hidden = true; }, 200);
+}
+
+function onHtmlScopeChange() {
+  const all = document.getElementById("htmlScopeAll").checked;
+  htmlExport.scope = all ? "all" : "part";
+  lockHtmlDialogHeight();
+  document.getElementById("htmlExportDateSection").style.display = all ? "none" : "";
+  updateHtmlEstimate();
+  if (!all && !htmlExport.months.length) loadHtmlCalendar();
+  tweenHtmlDialogHeight();
+}
+
+// 拉这个会话的每日消息量（面板自己的接口，自动带 token）
+function loadHtmlCalendar() {
+  if (!htmlExport.convName) return;
+  fetch("/panel/api/export/html/conversations")
+    .then((r) => (r.ok ? r.json() : Promise.reject()))
+    .then((d) => {
+      const item = (d.items || []).find((c) => c.name === htmlExport.convName);
+      if (!item) throw new Error();
+      htmlExport.convId = item.conv_id;
+      return fetch("/panel/api/export/html/daily?conv_id=" + encodeURIComponent(item.conv_id));
+    })
+    .then((r) => (r.ok ? r.json() : Promise.reject()))
+    .then((s) => {
+      const items = s.items || [];
+      htmlExport.months = new Set(items.filter((it) => it.count > 0).map((it) => it.date));
+      if (items.length) {
+        htmlExport.minDate = items[0].date;
+        htmlExport.maxDate = items[items.length - 1].date;
+        // 默认显示最后有消息的那个月
+        const [y, m] = htmlExport.maxDate.split("-").map(Number);
+        htmlExport.viewY = y;
+        htmlExport.viewM = m;
+      }
+      renderHtmlCal();
+    })
+    .catch(() => {
+      const grid = document.getElementById("hdpGrid");
+      if (grid) grid.innerHTML = '<div class="meta">日历加载失败，请重试。</div>';
+    });
+}
+
+function dateToTs(date) {
+  return Math.floor(new Date(date + "T00:00:00").getTime() / 1000);
+}
+
+function tsToDate(ts) {
+  const d = new Date(ts * 1000);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// 两次点击：第一下定起点；第二下定终点；已选好区间后再点 = 清掉重来
+function onHtmlDayClick(date) {
+  if (!htmlExport.anchor) {
+    if (htmlExport.startTs) {
+      htmlExport.startTs = null;
+      htmlExport.endTs = null;
+    }
+    htmlExport.anchor = date;
+    htmlExport.previewEnd = date;
+  } else {
+    const range = date >= htmlExport.anchor
+      ? [htmlExport.anchor, date]
+      : [date, htmlExport.anchor];
+    htmlExport.anchor = null;
+    htmlExport.previewEnd = null;
+    htmlExport.startTs = dateToTs(range[0]);
+    htmlExport.endTs = dateToTs(range[1]) + 86400;
+    updateHtmlEstimate();
+  }
+  renderHtmlCal();
+}
+
+// anchor 期间鼠标悬停：实时预览将要选中的区间。
+// 不重画整个日历（重画会让每个预览格的淡入动画重放一遍，看起来是闪烁），
+// 只对变化的格子增删 preview 类：新进区间的淡入一次、离开区间的直接撤掉。
+function onHtmlDayHover(date) {
+  if (!htmlExport.anchor || htmlExport.previewEnd === date) return;
+  const prev = htmlExport.previewEnd;
+  htmlExport.previewEnd = date;
+  const grid = document.getElementById("hdpGrid");
+  if (!grid) return;
+  const anchor = htmlExport.anchor;
+  const lo = date >= anchor ? anchor : date;
+  const hi = date >= anchor ? date : anchor;
+  const prevLo = prev >= anchor ? anchor : prev;
+  const prevHi = prev >= anchor ? prev : anchor;
+  for (const el of grid.querySelectorAll(".hdp-day[data-date]")) {
+    const d = el.dataset.date;
+    const inNew = d > lo && d < hi;
+    const inOld = d > prevLo && d < prevHi;
+    if (inNew && !inOld) el.classList.add("preview");
+    else if (!inNew && inOld) el.classList.remove("preview");
+  }
+}
+
+// 画单月日历
+function renderHtmlCal() {
+  const grid = document.getElementById("hdpGrid");
+  if (!grid) return;
+  // 渲染前锁住当前高度：等下面 DOM 撑开后，由结尾的补间平滑过渡过去
+  lockHtmlDialogHeight();
+  document.getElementById("hdpYearBtn").textContent = htmlExport.viewY + "年";
+  document.getElementById("hdpMonthBtn").textContent = htmlExport.viewM + "月";
+  grid.innerHTML = "";
+  if (!htmlExport.months.size) {
+    grid.innerHTML = '<div class="meta" style="grid-column:1/-1">这个会话还没有消息。</div>';
+    updateHtmlTriggers();
+    return;
+  }
+  for (const dow of ["日", "一", "二", "三", "四", "五", "六"]) {
+    const el = document.createElement("div");
+    el.className = "hdp-dow";
+    el.textContent = dow;
+    grid.appendChild(el);
+  }
+  const y = htmlExport.viewY, m = htmlExport.viewM;
+  const first = new Date(y, m - 1, 1);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  for (let i = 0; i < first.getDay(); i++) {
+    const el = document.createElement("div");
+    el.className = "hdp-day empty";
+    grid.appendChild(el);
+  }
+  const anchor = htmlExport.anchor;
+  const previewRange = anchor && htmlExport.previewEnd
+    ? (htmlExport.previewEnd >= anchor
+        ? [anchor, htmlExport.previewEnd]
+        : [htmlExport.previewEnd, anchor])
+    : null;
+  const sel = htmlExport.startTs
+    ? [tsToDate(htmlExport.startTs), tsToDate(htmlExport.endTs - 1)]
+    : null;
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = y + "-" + String(m).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+    const el = document.createElement("div");
+    const has = htmlExport.months.has(date);
+    el.className = "hdp-day " + (has ? "has-msg" : "no-msg");
+    el.textContent = day;
+    el.dataset.date = date;   // 增量预览按日期找格子（见 onHtmlDayHover）
+    if (anchor && date === anchor) el.classList.add("anchor");
+    // 已确认的区间：实底色
+    if (sel && date >= sel[0] && date <= sel[1]) {
+      el.classList.add(date === sel[0] || date === sel[1] ? "edge" : "in-range");
+    }
+    // anchor 期间的实时预览区间：浅色主题色
+    if (previewRange && date >= previewRange[0] && date <= previewRange[1]
+        && date !== anchor) {
+      el.classList.add("preview");
+    }
+    if (has) {
+      el.onclick = () => onHtmlDayClick(date);
+      el.onmouseenter = () => onHtmlDayHover(date);
+    }
+    grid.appendChild(el);
+  }
+  updateHtmlTriggers();
+  renderHtmlOverlay();
+  tweenHtmlDialogHeight();
+}
+
+// 更新顶部「开始日期 / 结束日期」触发框
+function updateHtmlTriggers() {
+  const st = document.getElementById("hdpStartTrigger");
+  const en = document.getElementById("hdpEndTrigger");
+  if (htmlExport.anchor) {
+    st.textContent = htmlExport.anchor;
+    st.classList.add("filled");
+    en.textContent = "结束日期";
+    en.classList.remove("filled");
+  } else if (htmlExport.startTs) {
+    st.textContent = tsToDate(htmlExport.startTs);
+    st.classList.add("filled");
+    en.textContent = tsToDate(htmlExport.endTs - 1);
+    en.classList.add("filled");
+  } else {
+    st.textContent = "开始日期";
+    st.classList.remove("filled");
+    en.textContent = "结束日期";
+    en.classList.remove("filled");
+  }
+  updateHtmlRangeText();
+}
+
+function updateHtmlRangeText() {
+  const el = document.getElementById("htmlDateRangeText");
+  if (!el) return;
+  if (htmlExport.anchor) {
+    el.textContent = "已选开始日期 " + htmlExport.anchor + "，再点一下选结束日期。";
+    return;
+  }
+  if (!htmlExport.startTs) {
+    el.textContent = "未选择日期区间（导出全部消息）";
+    return;
+  }
+  el.textContent = "导出区间：" + tsToDate(htmlExport.startTs) + " 至 " + tsToDate(htmlExport.endTs - 1);
+}
+
+// 年/月下拉浮层：点年份展开年份列表、点月份展开 1-12 月
+function renderHtmlOverlay() {
+  const ov = document.getElementById("hdpOverlay");
+  if (!ov) return;
+  if (!htmlExport.overlay) {
+    ov.hidden = true;
+    ov.innerHTML = "";
+    return;
+  }
+  ov.hidden = false;
+  ov.innerHTML = "";
+  if (htmlExport.overlay === "year") {
+    const [minY] = htmlExport.minDate.split("-").map(Number);
+    const [maxY] = htmlExport.maxDate.split("-").map(Number);
+    for (let y = minY; y <= maxY; y++) {
+      const el = document.createElement("div");
+      el.className = "hdp-option" + (y === htmlExport.viewY ? " current" : "");
+      el.textContent = y + "年";
+      el.onclick = () => { htmlExport.viewY = y; htmlExport.overlay = null; renderHtmlCal(); };
+      ov.appendChild(el);
+    }
+  } else {
+    for (let m = 1; m <= 12; m++) {
+      const el = document.createElement("div");
+      el.className = "hdp-option" + (m === htmlExport.viewM ? " current" : "");
+      el.textContent = m + "月";
+      el.onclick = () => { htmlExport.viewM = m; htmlExport.overlay = null; renderHtmlCal(); };
+      ov.appendChild(el);
+    }
+  }
+  ov.hidden = false;
+}
+
+function bindHtmlCalControls() {
+  document.getElementById("hdpPrev").onclick = () => {
+    htmlExport.overlay = null;
+    htmlExport.viewM -= 1;
+    if (htmlExport.viewM < 1) { htmlExport.viewM = 12; htmlExport.viewY -= 1; }
+    renderHtmlCal();
+  };
+  document.getElementById("hdpNext").onclick = () => {
+    htmlExport.overlay = null;
+    htmlExport.viewM += 1;
+    if (htmlExport.viewM > 12) { htmlExport.viewM = 1; htmlExport.viewY += 1; }
+    renderHtmlCal();
+  };
+  document.getElementById("hdpToday").onclick = () => {
+    const now = new Date();
+    htmlExport.overlay = null;
+    htmlExport.viewY = now.getFullYear();
+    htmlExport.viewM = now.getMonth() + 1;
+    renderHtmlCal();
+  };
+  document.getElementById("hdpYearBtn").onclick = () => {
+    htmlExport.overlay = htmlExport.overlay === "year" ? null : "year";
+    renderHtmlCal();
+  };
+  document.getElementById("hdpMonthBtn").onclick = () => {
+    htmlExport.overlay = htmlExport.overlay === "month" ? null : "month";
+    renderHtmlCal();
+  };
+}
+
+function updateHtmlEstimate() {
+  const el = document.getElementById("htmlEstimate");
+  if (!el) return;
+  const go = document.getElementById("htmlExportGo");
+  if (htmlExport.scope === "all") {
+    el.textContent = "将导出这个会话的全部消息。";
+    if (go) go.disabled = false;
+    return;
+  }
+  if (!htmlExport.startTs) {
+    el.textContent = "请先在日历上点两下选择日期区间。";
+    if (go) go.disabled = true;
+    return;
+  }
+  if (go) go.disabled = true;
+  el.textContent = "正在估算大小…";
+  clearTimeout(htmlExport.estTimer);
+  htmlExport.estTimer = setTimeout(() => {
+    fetch("/panel/api/export/html/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversation: htmlExport.convName,
+        start_ts: htmlExport.startTs,
+        end_ts: htmlExport.endTs,
+      }),
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        el.textContent = "预计 " + d.messages + " 条消息（含 " + d.media_count + " 张本机图片），导出文件约 " + d.estimated_mb + " MB。";
+        if (go) go.disabled = false;
+      })
+      .catch(() => { el.textContent = "预估失败，请重试。"; });
+  }, 300);
+}
+// 高度过渡拆成两步：lock（内容变化前锁住当前高度）+ tween（内容变化后补间到新高度）。
+// 这样 before 永远是变化前的真实高度，after 是变化后的自然高度，过渡一定成立。
+let _htmlHeightAnim = null;
+
+function lockHtmlDialogHeight() {
+  const dialog = document.querySelector("#htmlExportModal .ap-modal-dialog");
+  if (!dialog) return;
+  if (_htmlHeightAnim) { cancelAnimationFrame(_htmlHeightAnim); _htmlHeightAnim = null; }
+  const h = dialog.offsetHeight;
+  if (h) dialog.style.height = h + "px";
+}
+
+function tweenHtmlDialogHeight() {
+  const dialog = document.querySelector("#htmlExportModal .ap-modal-dialog");
+  if (!dialog) return;
+  const before = parseFloat(dialog.style.height) || dialog.offsetHeight;
+  dialog.style.height = "auto";       // 解锁，量内容自然高度
+  const after = dialog.offsetHeight;
+  if (Math.abs(after - before) < 2) {
+    dialog.style.height = "";
+    return;
+  }
+  const duration = 220;
+  const t0 = performance.now();
+  const ease = (t) => 1 - Math.pow(1 - t, 3);   // easeOutCubic
+  const step = (now) => {
+    const t = Math.min((now - t0) / duration, 1);
+    dialog.style.height = (before + (after - before) * ease(t)) + "px";
+    if (t < 1) {
+      _htmlHeightAnim = requestAnimationFrame(step);
+    } else {
+      dialog.style.height = "";          // 补间完成，恢复自适应
+      _htmlHeightAnim = null;
+    }
+  };
+  _htmlHeightAnim = requestAnimationFrame(step);
+}
+
+// 点年份/月份下拉外面的区域 → 关闭下拉
+document.addEventListener("click", (ev) => {
+  if (!htmlExport.overlay) return;
+  const cal = document.getElementById("htmlDateCal");
+  if (cal && cal.contains(ev.target)) return;
+  htmlExport.overlay = null;
+  renderHtmlCal();
+});
+
+// 面板脚本加载后绑定一次（按钮是静态存在的）
+bindHtmlCalControls();
+
+function runHtmlExport() {
+  const go = document.getElementById("htmlExportGo");
+  if (go) go.disabled = true;
+  const msg = document.getElementById("exportMsg");
+  const body = {
+    conversation: htmlExport.convName,
+    start_ts: htmlExport.scope === "all" ? null : htmlExport.startTs,
+    end_ts: htmlExport.scope === "all" ? null : htmlExport.endTs,
+  };
+  fetch("/panel/api/export/html", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+    .then(async (r) => {
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || t("error"));
+      if (msg) setDynText(msg, d.message || "HTML 导出完成");
+      closeHtmlExport();
+      const btn = document.getElementById("downloadBtn");
+      if (btn) btn.style.display = "";
+      setStatusEl(document.getElementById("exportStatus"), "idle");
+    })
+    .catch((e) => {
+      if (msg) setDynText(msg, "HTML 导出失败: " + (e.message || e));
+      setStatusEl(document.getElementById("exportStatus"), "idle");
+    });
+}
+
 
 function updateExportMode() {
   const mode = document.getElementById('exportFormat').value;
@@ -5489,7 +5987,7 @@ function renderLanAccess() {
 }
 
 /* ── 面板密码这道锁的三个名单（设置页「密码」区块里那三个列表）──
-   数据来自 /panel/api/panel-auth/status，跟开发者模式无关：只要设了面板密码就显示。
+   数据来自 /panel/api/panel-auth/status：只要设了面板密码就显示。
    本机不算设备（主人自己），所以这里永远只有外来设备。 */
 let panelAuth = null;
 
@@ -6811,132 +7309,6 @@ function lanEscape(text) {
   return String(text == null ? '' : text)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
-}
-
-/* ── 开发者模式（「关于」页最下面） ──
-   一拨就存（没有「应用」按钮）。它管着两项进阶功能：「关于」页的私有仓库凭据、
-   「设置」页的局域网访问。关掉时凭据框只是不显示（Token 留着、只是不再被使用），
-   而局域网如果正开着会被一起关掉 —— 访问密码和信任设备保留，并重启一次服务把监听
-   地址切回本机，页面等它回来再刷新。
-   存不上就把开关拨回原来的位置并说明原因：界面显示的和真正存下来的必须一致。 */
-let devModeBusy = false;
-//: 开关当前知道的「它管着什么」：局域网开着吗、公网开着吗、存过 Token 吗（关开关时据此弹确认框）
-let devModeState = { enabled: false, lan_on: false, public_on: false, token_set: false };
-
-async function loadDeveloperMode() {
-  try {
-    const r = await fetch('/panel/api/config/developer-mode');
-    if (!r.ok) return;
-    const d = await r.json();
-    devModeState = { enabled: !!d.enabled, lan_on: !!d.lan_on,
-                     public_on: !!d.public_on, token_set: !!d.token_set };
-    applyDeveloperMode(devModeState.enabled);
-  } catch {}
-}
-
-/** 开关与它管着的那两项一起同步：关着时凭据框、局域网访问整块都不显示。 */
-function applyDeveloperMode(enabled) {
-  const box = document.getElementById('devModeEnabled');
-  if (box) box.checked = !!enabled;
-  const tokenBox = document.getElementById('abTokenBox');
-  if (tokenBox) tokenBox.hidden = !enabled;
-  const lanSection = document.getElementById('lanSection');
-  if (lanSection) lanSection.hidden = !enabled;
-}
-
-function setDevModeStatus(text, kind) {
-  const el = document.getElementById('devModeStatus');
-  if (!el) return;
-  el.className = 'meta' + (kind ? ' ' + kind : '');
-  el.textContent = text || '';
-  el.hidden = !text;
-}
-
-/* 关掉开发者模式前先问一句：它顺带会做的事（关掉局域网 / 停掉用 Token 读私有仓库）
-   要讲清楚 —— 尤其是「密码和信任设备留着」「Token 不会被删」这两点，不然用户会以为
-   这些设置被清掉了。两件事都成立时两句一起显示（用面板自带的确认弹窗）。 */
-async function confirmDevModeOff(state) {
-  const lines = [];
-  if (state.lan_on) lines.push(t('devModeOffLanWarn'));
-  if (state.public_on) lines.push(t('devModeOffPublicWarn'));
-  if (state.token_set) lines.push(t('devModeOffTokenWarn'));
-  const modal = document.getElementById('confirmModal');
-  if (!modal) return window.confirm(lines.join('\n'));
-  const messageEl = document.getElementById('confirmModalMessage');
-  const previous = messageEl ? messageEl.textContent : '';
-  const promise = openConfirmModal('', { titleKey: 'devModeOffConfirmTitle',
-                                        okKey: 'devModeOffConfirmOk' });
-  setDynText(messageEl, lines.join('\n'));
-  const ok = await promise;
-  setDynText(messageEl, previous);
-  return ok;
-}
-
-async function setDeveloperMode(enabled) {
-  const box = document.getElementById('devModeEnabled');
-  if (!box || devModeBusy) return;          // 上一次请求还没回来时别叠着再发一次
-  const wanted = !!enabled;
-  if (!wanted && (devModeState.lan_on || devModeState.public_on || devModeState.token_set)) {
-    if (!await confirmDevModeOff(devModeState)) { box.checked = true; return; }
-  }
-  devModeBusy = true;
-  box.disabled = true;
-  try {
-    const r = await fetch('/panel/api/config/developer-mode', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ enabled: wanted }),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.error || '');
-    devModeState = { enabled: !!d.enabled, lan_on: !!d.lan_on,
-                     public_on: !!d.public_on, token_set: !!d.token_set };
-    applyDeveloperMode(devModeState.enabled);
-    if (d.restarting) { beginDevModeRestart(); return; }   // 等服务回来再刷新页面
-    if (d.restart_code === 'dev_mode') {
-      setDevModeStatus(t('devModeRestartFailed', t('lanDevMode')), 'error');
-      return;
-    }
-    if (d.restart_error) {
-      setDevModeStatus(t('devModeRestartFailed', d.restart_error), 'error');
-      return;
-    }
-    setDevModeStatus(t('devModeSaved', wanted), 'ok');
-    // 刚打开就顺手把凭据状态取回来，凭据框一出现就有内容（不用等进页面的那次请求）
-    if (wanted) loadGithubTokenStatus();
-  } catch (e) {
-    applyDeveloperMode(!wanted);           // 没存上就拨回去，不骗人
-    setDevModeStatus(t('devModeSaveFailed', (e && e.message) || e), 'error');
-  } finally {
-    devModeBusy = false;
-    box.disabled = false;
-  }
-}
-
-/* 关开发者模式时顺带关了局域网访问：监听地址要重启才切回 127.0.0.1，页面在这儿等它
-   回来再刷新（判定用 /panel/api/lan 的 restarted，和「设置」页那套同一个口径）。 */
-let devModeRestartTimer = null;
-let devModeRestartSeconds = 0;
-
-function beginDevModeRestart() {
-  devModeRestartSeconds = 0;
-  setDevModeStatus(t('devModeRestartWait', 0));
-  checkDevModeRestart();
-  if (devModeRestartTimer) clearInterval(devModeRestartTimer);
-  devModeRestartTimer = setInterval(checkDevModeRestart, 2000);
-}
-
-async function checkDevModeRestart() {
-  devModeRestartSeconds += 2;
-  try {
-    const r = await fetch('/panel/api/lan?expect_host=127.0.0.1');
-    if (r.ok && (await r.json()).restarted) {
-      clearInterval(devModeRestartTimer);
-      devModeRestartTimer = null;
-      location.reload();                   // 服务已经按本机地址回来了
-      return;
-    }
-  } catch {}
-  setDevModeStatus(t('devModeRestartWait', devModeRestartSeconds));
 }
 
 /* ── Notifications (Server酱) ── */
@@ -9402,7 +9774,6 @@ async function panelAuthCheck() {
       loadLanAccess();
       loadPublicAccess();
       loadDownloadImages();
-      loadDeveloperMode();
       loadAppearance();
       pollBackfill();
       loadVideoPending();

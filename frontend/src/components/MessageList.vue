@@ -24,23 +24,25 @@
       <div v-if="referenceError" role="status" class="msg-loading" @click="referenceError = ''">{{ referenceError }}</div>
 
       <!-- UID 选择弹窗 -->
-      <div v-if="showPicker" class="picker-overlay" @click.self="showPicker = false">
-        <div class="picker-dialog">
-          <div class="picker-title">选择哪个是你自己</div>
-          <div class="picker-hint">选择后消息会区分左右显示</div>
-          <div
-            v-for="s in pickerOptions"
-            :key="s.sender_uid"
-            class="picker-option"
-            :class="{ active: effectiveSelfUid === s.sender_uid }"
-            @click="pickSelf(s.sender_uid)"
-          >
-            <span class="picker-uid">{{ pickerLabel(s) }}</span>
-            <span class="picker-count">{{ s.discovered ? '本机账号' : `${s.msg_count} 条消息` }}</span>
+      <Transition name="modal-fade">
+        <div v-if="showPicker" class="picker-overlay" @click.self="showPicker = false">
+          <div class="picker-dialog modal-fade-panel">
+            <div class="picker-title">选择哪个是你自己</div>
+            <div class="picker-hint">选择后消息会区分左右显示</div>
+            <div
+              v-for="s in pickerOptions"
+              :key="s.sender_uid"
+              class="picker-option"
+              :class="{ active: effectiveSelfUid === s.sender_uid }"
+              @click="pickSelf(s.sender_uid)"
+            >
+              <span class="picker-uid">{{ pickerLabel(s) }}</span>
+              <span class="picker-count">{{ s.discovered ? '本机账号' : `${s.msg_count} 条消息` }}</span>
+            </div>
+            <button v-if="selfUid" class="picker-clear" @click="pickSelf(null)">清除选择</button>
           </div>
-          <button v-if="selfUid" class="picker-clear" @click="pickSelf(null)">清除选择</button>
         </div>
-      </div>
+      </Transition>
 
       <Transition name="fab">
         <button v-if="!isStatic && hasOlder" class="msg-jump-fab msg-jump-top" @click="jumpToTop">
@@ -598,6 +600,12 @@
                   <span class="msg-voice-wave" aria-hidden="true">
                     <i v-for="n in 13" :key="n"></i>
                   </span>
+                  <button
+                    type="button"
+                    class="msg-voice-speed"
+                    :aria-label="'播放速度 ' + voiceSpeedLabel(voiceSpeed)"
+                    @click.stop="cycleVoiceSpeed"
+                  >{{ voiceSpeedLabel(voiceSpeed) }}</button>
                   <span class="msg-voice-dur">{{ getVoiceDuration(msg) }}″</span>
                   <audio
                     :ref="el => setVoiceAudioRef(msg.msg_id, el)"
@@ -947,6 +955,18 @@ function isVoicePlaying(msg) {
   return playingVoiceId.value === msg.msg_id
 }
 
+// 语音条倍速：全局一份（同时只有一条在播），点击在 1x → 1.25x → 1.5x → 2x → 1x 之间循环。
+// 设置后立刻作用到正在播的那条；新播放的自动沿用当前倍速。
+const VOICE_SPEEDS = [1, 1.25, 1.5, 2]
+const voiceSpeed = ref(1)
+const voiceSpeedLabel = (v) => (v === 1 ? '1x' : v + 'x')
+function cycleVoiceSpeed() {
+  const index = VOICE_SPEEDS.indexOf(voiceSpeed.value)
+  voiceSpeed.value = VOICE_SPEEDS[(index + 1) % VOICE_SPEEDS.length]
+  const audio = playingVoiceId.value ? voiceAudioRefs.get(playingVoiceId.value) : null
+  if (audio) audio.playbackRate = voiceSpeed.value
+}
+
 async function toggleVoice(msg) {
   const audio = voiceAudioRefs.get(msg.msg_id)
   if (!audio || !getVoiceUrl(msg)) return
@@ -959,6 +979,7 @@ async function toggleVoice(msg) {
     if (msgId !== msg.msg_id && !other.paused) other.pause()
   }
   try {
+    audio.playbackRate = voiceSpeed.value
     await audio.play()
     playingVoiceId.value = msg.msg_id
   } catch {
@@ -2083,7 +2104,6 @@ watch(() => props.jumpToSeq, async (seq) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  animation: overlay-in var(--dur-fast) var(--ease-out);
 }
 .picker-dialog {
   background: var(--bg-secondary);
@@ -2094,15 +2114,6 @@ watch(() => props.jumpToSeq, async (seq) => {
   max-height: 80vh;
   overflow-y: auto;
   box-shadow: 0 8px 30px rgba(0,0,0,0.4);
-  animation: dialog-in var(--dur-base) var(--ease-out);
-}
-@keyframes overlay-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@keyframes dialog-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.96); }
-  to { opacity: 1; transform: none; }
 }
 .picker-title {
   font-size: 16px;
@@ -3667,6 +3678,19 @@ watch(() => props.jumpToSeq, async (seq) => {
 .msg-item.msg-self > .msg-body > .msg-voice-bubble .msg-voice-play.playing {
   opacity: 0.8;
 }
+.msg-voice-speed {
+  border: 1px solid var(--ink-3, #bbb);
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 8px;
+  cursor: pointer;
+  flex: none;
+  opacity: .75;
+}
+.msg-voice-speed:hover { opacity: 1; }
 .msg-voice-play:disabled {
   opacity: 0.45;
   cursor: default;

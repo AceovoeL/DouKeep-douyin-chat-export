@@ -14,6 +14,7 @@
 ``content_title`` 通常为空。抓取端落库、导出端标注与历史数据回填共用
 ``daily_share_text()``，保证三处文案一致、且「限时日常」这个关键词可被检索。
 """
+import json
 import re
 
 VIEW_ONCE_AWE_TYPE = "10401"
@@ -64,6 +65,63 @@ def daily_share_text(cj) -> str:
 VIDEO_SHARE_AWE_TYPES = frozenset([
     800, 801, 803, 11054, 11055, 11063, 11066, 11067, 11069, 11070,
 ])
+
+
+def _share_cover_url(value) -> str:
+    """链接字段 → 第一个可用地址；读不出返回空串。
+
+    抖音的图片字段形态很多：字符串、``{url_list:[...]}`` 都有，这里只取第一个。
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        urls = value.get("url_list")
+        if isinstance(urls, list) and urls and isinstance(urls[0], str):
+            return urls[0].strip()
+    return ""
+
+
+def share_cover_url(cj) -> str:
+    """分享卡封面图的原始链接；不是作品分享卡（或读不出封面）返回空串。
+
+    封面是**带签名的临时链接**（约一年过期），以前只把链接记进 media_url 直接给
+    `<img>` 用，过期后卡片就显示「封面已失效」。现在和群头像、豆包卡封面一样，
+    采集时顺手存一份进 data/media/card_icons/（common/card_icons.py），阅读端走
+    /media/card_icons/... 取本地那份（前端 iconSrc()）。
+
+    只认 VIDEO_SHARE_AWE_TYPES 里的作品分享（视频 / 图文 / 动图 / 文章）—— 这些
+    卡片在前端画成「大封面 + 播放按钮」，封面过期就是整块「封面已失效」。商品卡
+    （11029）、评论卡（10500）的 content_thumb 是 100×100 小图（当头像用），
+    不在「大封面」之列；群邀请卡、豆包卡等另有各自的通道。
+
+    提取顺序和前端 getShareInfo 的 cover 字段一致：cover_url → cover_info.resource_url
+    → content_thumb → cover_info，最后是动态排版卡（11054 这类）的 top.content。
+    """
+    if not isinstance(cj, dict):
+        return ""
+    if str(cj.get("aweType") or "") not in {str(t) for t in VIDEO_SHARE_AWE_TYPES}:
+        return ""
+    cover_info = cj.get("cover_info")
+    cover = (
+        _share_cover_url(cj.get("cover_url"))
+        or _share_cover_url(cover_info.get("resource_url") if isinstance(cover_info, dict) else None)
+        or _share_cover_url(cj.get("content_thumb"))
+        or _share_cover_url(cover_info)
+    )
+    if cover:
+        return cover
+    # 11054 这类动态排版卡：封面在 im_dynamic_patch.raw_data 的 top.content 里
+    # （可能是再次编码的字符串）。
+    patch = cj.get("im_dynamic_patch")
+    raw = patch.get("raw_data") if isinstance(patch, dict) else None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            raw = None
+    top = raw.get("top") if isinstance(raw, dict) else None
+    return _share_cover_url(top.get("content")) if isinstance(top, dict) else ""
+
 
 #: 卡片自带的类型标注：push_detail = "分享[图文]"。这个字段只出现在卡片载荷里，
 #: 所以整串里找就行。

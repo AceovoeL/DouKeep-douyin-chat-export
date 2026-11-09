@@ -94,6 +94,26 @@ describe('share card author and commenter metadata', () => {
     expect(info.isCommentShare).toBe(false)
   })
 
+  it('抖音图床的封面/头像走本地缓存代理，外站链接原样返回', () => {
+    const cover = 'https://p3-sign.douyinpic.com/obj/demo-cover.jpeg'
+    const avatar = 'https://p3-aweme-im-img.byteimg.com/tos/demo-avatar.webp'
+    const info = getShareInfo(withCj({
+      aweType: 800, content_title: '示例标题',
+      cover_url: { url_list: [cover] },
+      content_thumb: { url_list: [avatar] },
+    }))
+    // 走 /media/card_icons/ 代理（后端优先发本地那份，采集时已存）
+    expect(info.cover).toContain('/media/card_icons/')
+    expect(info.cover).toContain(encodeURIComponent(cover))
+    expect(info.authorAvatar).toContain('/media/card_icons/')
+    // 不是抖音图床的链接（example.com）：iconSrc 返回空串，proxyCover 原样透传
+    const external = getShareInfo(withCj({
+      aweType: 800, content_title: '示例标题',
+      cover_url: { url_list: ['https://example.com/cover.jpeg'] },
+    }))
+    expect(external.cover).toBe('https://example.com/cover.jpeg')
+  })
+
   it('aweType=10500 是分享评论：评论者昵称 + 评论正文 + 作品标题和 media_type', () => {
     const info = getShareInfo(withCj({
       aweType: 10500, comment_user_name: '示例评论者', comment: '示例评论',

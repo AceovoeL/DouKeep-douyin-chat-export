@@ -23,6 +23,7 @@ import json
 import os
 
 from common import card_icons
+from common.message_kinds import share_cover_url, VIDEO_SHARE_AWE_TYPES
 from common.paths import EMOJI_DIR
 
 #: 一条 SQL 挑出「该补图」的行：表情（含 519）、卡片。SQLite 的 json_extract
@@ -70,6 +71,13 @@ _ROW_HINTS = (
     + _json_like_patterns("card_key", f'"{card_icons.EASTER_REDPACK_CARD_KEY}"')
     + _json_like_patterns("card_key", f'\\"{card_icons.EASTER_REDPACK_CARD_KEY}\\"')
     + _json_like_patterns("aweType", str(card_icons.EASTER_REDPACK_AWE_TYPE))
+    # 分享卡（视频/图文/动图/文章）的封面：和群头像一样是带签名的临时链接，
+    # 以前只记链接不下载，过期后卡片显示「封面已失效」。老库里的也要补一次。
+    + tuple(
+        hint
+        for awe in sorted(VIDEO_SHARE_AWE_TYPES)
+        for hint in _json_like_patterns("aweType", str(awe))
+    )
 )
 _MEDIA_ROW_WHERE = (
     "(("
@@ -85,8 +93,10 @@ _MEDIA_ROW_COLUMNS = "msg_id, msg_type, media_url, media_local_path, raw_data, c
 
 
 def is_media_payload(cj: dict, msg_type=None) -> bool:
-    """这条载荷是不是「该补图」的那几种：卡片，或表情（含落成普通消息的 515/517/519/520）。"""
+    """这条载荷是不是「该补图」的那几种：卡片、分享卡封面，或表情（含 515/517/519/520）。"""
     if card_icons.card_icon_url(cj):
+        return True
+    if share_cover_url(cj):
         return True
     if str(cj.get("aweType")) in card_icons.EMOJI_AWE_TYPES:
         return True
@@ -118,6 +128,8 @@ def has_media_source(row: dict) -> bool:
     cj = content_json(row)
     if cj and is_media_payload(cj, row.get("msg_type")):
         if card_icons.card_icon_url(cj):
+            return True
+        if share_cover_url(cj):
             return True
         if emoji_media_url(cj, row.get("media_url")):
             return True
@@ -204,6 +216,13 @@ def backfill_row_media(row: dict) -> tuple[str | None, str | None]:
                     first = (rel, url)
             if first:
                 return first
+        # 分享卡（视频/图文/动图/文章）的封面：存进 card_icons/，和群头像同一套
+        # 落地缓存。media_url 顺手记上原始链接，下次不再当成缺图。
+        cover = share_cover_url(cj)
+        if cover:
+            rel = card_icons.save_card_icon(cover)
+            if rel:
+                return rel, cover
         url = emoji_media_url(cj, row.get("media_url"))
         return save_emoji_media(cj, row.get("media_url")), url
     # 连载荷都没有的老表情：数据库里记着的地址就是唯一线索

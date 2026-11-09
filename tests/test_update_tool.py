@@ -121,7 +121,6 @@ def test_archive_without_token_downloads_anonymously(tmp_path, monkeypatch):
     data = make_archive({"common/version.py": b'VERSION = "1.2.3"\n'})
     seen: list = []
     monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
-    monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "")
     monkeypatch.setattr(updater.github_auth, "load", lambda: "")
     monkeypatch.setattr(updater, "download_archive",
                         lambda slug, branch, token: seen.append(token) or data)
@@ -138,7 +137,6 @@ def test_archive_hints_at_the_token_when_the_download_needs_one(tmp_path, monkey
     repo = fake_repo(tmp_path)
     tried: list = []
     monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
-    monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "")
     monkeypatch.setattr(updater.github_auth, "load", lambda: "")
 
     def not_found(slug, branch, token):
@@ -156,36 +154,13 @@ def test_archive_hints_at_the_token_when_the_download_needs_one(tmp_path, monkey
     assert "没有 .git" in out
 
 
-def test_archive_points_at_developer_mode_when_a_saved_token_is_not_used(
-        tmp_path, monkeypatch, capsys):
-    """存过 Token、但开发者模式关着：这条路不用它，下不到时要指向「关于 → 开发者模式」。
-
-    不能让人以为 Token 丢了、又去粘一遍。
-    """
-    repo = fake_repo(tmp_path)
-    monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
-    monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "")
-    monkeypatch.setattr(updater.github_auth, "load", lambda: "tok")
-
-    def not_found(slug, branch, token):
-        raise updater.urllib.error.HTTPError(slug, 404, "Not Found", None, None)
-
-    monkeypatch.setattr(updater, "download_archive", not_found)
-
-    assert updater.main([]) == 1
-
-    out = capsys.readouterr().out
-    assert "开发者模式" in out
-    assert "没有 .git" in out
-
-
 def test_archive_retries_without_the_token_when_it_is_rejected(tmp_path, monkeypatch):
     """凭据过期/被撤销（401）时不该整个更新失败：退回匿名再下一次。"""
     repo = fake_repo(tmp_path)
     data = make_archive({"common/version.py": b'VERSION = "1.2.3"\n'})
     seen: list = []
     monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
-    monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "ghp_" + "b" * 36)
+    monkeypatch.setattr(updater.github_auth, "load", lambda: "ghp_" + "b" * 36)
     monkeypatch.setattr(updater, "install_and_build", lambda: 0)
 
     def download(slug, branch, token):
@@ -207,7 +182,7 @@ def test_archive_mode_replaces_code_and_keeps_data(tmp_path, monkeypatch):
     repo = fake_repo(tmp_path)
     data = make_archive({"common/version.py": b'VERSION = "1.2.3"\n', "README.md": b"new\n"})
     monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
-    monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "tok")
+    monkeypatch.setattr(updater.github_auth, "load", lambda: "tok")
     monkeypatch.setattr(updater, "download_archive", lambda slug, branch, token: data)
     monkeypatch.setattr(updater, "install_and_build", lambda: 0)
 
@@ -221,7 +196,7 @@ def test_archive_mode_replaces_code_and_keeps_data(tmp_path, monkeypatch):
 def test_archive_download_failure_is_reported(tmp_path, monkeypatch, capsys):
     repo = fake_repo(tmp_path)
     monkeypatch.setattr(updater, "REPO_ROOT", str(repo))
-    monkeypatch.setattr(updater.github_auth, "load_for_use", lambda: "tok")
+    monkeypatch.setattr(updater.github_auth, "load", lambda: "tok")
 
     def boom(slug, branch, token):
         raise updater.urllib.error.HTTPError(slug, 404, "Not Found", None, None)

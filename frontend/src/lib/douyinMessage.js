@@ -6,6 +6,8 @@
 // (often double-encoded) content_json), sender_uid, sender_name, timestamp,
 // media_local_path, media_url, ref_msg, voice_transcription }.
 
+import { iconSrc } from './media'
+
 // Cache by row identity: the same server message may also appear in a forward.
 let cjCache = new WeakMap()
 
@@ -385,6 +387,15 @@ export function isLooseImage(msg) {
 // 排版节点 → 文字。抖音给分享卡片的 content_top / top_bottom_top 有时是**组件列表**
 // （im-component-list，例如「获得火花见面礼」卡），直接当标题用会被渲染成
 // "[object Object],[object Object],…"，这里只拼文字节点。
+
+// 分享卡上的图（封面 / 作者头像 / 评论图）都是**带签名的临时链接**（约一年过期）：
+// 采集时已经存进 data/media/card_icons/，这里统一走 iconSrc() 的
+// /media/card_icons/<哈希>?url=<原链> 代理 —— 后端优先发本地那份，本地没有且链接
+// 还没过期时顺手补拉一份（见 backend/media_files.py）。不是抖音图床的链接原样返回。
+function proxyCover(url) {
+  const proxied = iconSrc(url)
+  return proxied || (typeof url === 'string' && /^https?:\/\//i.test(url) ? url : '')
+}
 function layoutText(node) {
   const value = node?.content
   if (typeof value === 'string') return value
@@ -476,15 +487,17 @@ export function getShareInfo(msg) {
   return {
     title: layoutText(layout.top_bottom_top) || layoutText(layout.content_top) || source.content_title || source.aweme_title || source.poi_name || source.push_detail || source.bottom_card_title || extractShareTitle(msg.content) || plainContent || '',
     author: layoutText(layout.top_bottom_content_right) || source.content_name || '',
-    cover: imageUrl(layout.top?.content) || cover || imageUrl(source.aweme_info?.cover_url),
+    // 封面走 card_icons 本地缓存（proxyCover）：采集时已存一份，链接过期后
+    // 后端仍能发本地那份，卡片不再显示「封面已失效」。
+    cover: proxyCover(imageUrl(layout.top?.content) || cover || imageUrl(source.aweme_info?.cover_url)),
     itemId: String(source.itemId || source.item_id || source.aweme_info?.item_id || relatedVideo.itemId || schemaItemId || ''),
     productUrl,
     comment,
     commentUser,
-    commentImg,
+    commentImg: commentImg ? proxyCover(commentImg) : '',
     isCommentShare,
     // 动态排版卡的头像优先；其余卡片（800）的头像在 content_thumb 里。
-    authorAvatar: layoutAvatar || contentThumb,
+    authorAvatar: proxyCover(layoutAvatar || contentThumb),
     // 封面原始宽高（0 表示载荷里没给）。
     coverWidth: Number(coverSize[0]) || 0,
     coverHeight: Number(coverSize[1]) || 0,

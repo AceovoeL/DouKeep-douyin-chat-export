@@ -1,24 +1,14 @@
 """版本号与仓库信息（控制面板「关于」页的数据来源）。
 
-版本号规则：仓库的第一个 commit 记为 1.0.0，之后每多一个 commit 就把最后一位加一，
-进位和常规三段版本一致 —— 1.0.9 的下一个版本是 1.1.0，1.1.9 之后是 1.2.0。
+版本号就是**发版时手写的那个号**，写在下面的 VERSION 里，和仓库有几个 commit 没有
+关系 —— 改动攒着一次发版、或者按计划跳号（1.4.4 → 1.6.0），都属正常。
 
-    commit 数   版本号
-    1           1.0.0
-    2           1.0.1
-    ...
-    11          1.1.0
-    12          1.1.1
+判断「有没有新版本」时，本地版本读 VERSION，远端版本直接读 GitHub 上最新的版本标签
+（vX.Y.Z，见 backend/control_panel.py），两边按版本号比大小。
 
-本地版本就是下面的 VERSION。判断「有没有新版本」时，远端版本直接读 GitHub 上最新的
-版本标签（vX.Y.Z，见 backend/control_panel.py），不再按 commit 数推算 —— 攒着几个
-改动一起发版时，commit 条数和真正的发版号会差开，按条数算出来的号也就不作数了。
-
-关于"落后一点"：VERSION 必须是**静态**写在文件里的（面板「关于」页和更新检测都读它），
-它没法自己跟着 commit 数跑。所以约定是：每次提交时，把它写成"这次提交是第几个 commit"
-对应的版本号（第 18 个 commit → 1.1.7）；攒着几个改动一起发版时，它就**落后**于当前
-commit 数，这是允许的，**但绝不允许超前**（超前说明版本号指向了还不存在的提交）。新增
-commit 之后跑 `python tools/sync_version.py --apply` 重新写入即可（工具会把这个约定讲清楚）。
+下面的 ``version_string`` / ``commit_count_for`` 只是给老逻辑用的换算表（把版本号
+翻译成数字），不再用来推导 VERSION；``local_commit_count`` 仅在「检查更新」时用来
+定位落后的那些提交。
 """
 
 from __future__ import annotations
@@ -28,11 +18,10 @@ import subprocess
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: 本项目当前版本。按上面的约定，它是"包含它的这次提交"的版本号：正常状态下等于
-#: version_string(commit 数)，攒着改动没发版时会落后若干位（只能落后，不能超前）。
+#: 本项目当前版本（发版时手写的号，不跟 commit 数挂钩）。
 #: 2026-10-03 迁到新仓库 DouKeep-douyin-chat-export（从空仓库重开、旧历史不带过去），
 #: 版本号随新仓库从 1.0.0 重新开始。
-VERSION = "1.4.4"
+VERSION = "1.6.0"
 
 #: 版本号第一位默认是 1，一个「大版本」内共 100 个小版本（1.0.0 → 1.9.9）。
 _BASE_MAJOR = 1
@@ -65,7 +54,7 @@ LICENSE_NAME = "MIT"
 
 
 def version_string(commit_count: int) -> str:
-    """第 ``commit_count`` 个 commit 对应的版本号（1 → 1.0.0）。"""
+    """把序号换算成三段版本号（1 → 1.0.0）。只用于老逻辑，不再推导 VERSION。"""
     if commit_count < 1:
         raise ValueError("commit_count must be >= 1")
     n = commit_count - 1                       # 第一个 commit 是 1.0.0
@@ -74,7 +63,11 @@ def version_string(commit_count: int) -> str:
 
 
 def commit_count_for(version: str) -> int | None:
-    """版本号反推 commit 数；格式不对时返回 None。"""
+    """版本号换算成序号；格式不对时返回 None。
+
+    只用来比较版本大小、给落后的提交定位，**不代表** VERSION 和第几个 commit 有什么
+    对应关系 —— 发版号是手写的。
+    """
     parts = str(version).strip().split(".")
     if len(parts) != 3 or not all(p.isdigit() for p in parts):
         return None
@@ -85,7 +78,7 @@ def commit_count_for(version: str) -> int | None:
 
 
 def version_key(version: str) -> tuple[int, int, int]:
-    """把版本号变成可比较的元组，非法版本当作 0.0.0。"""
+    """把版本号变成可比较的元组，非法版本当作 0.0.0（只看版本号，不看 commit）。"""
     count = commit_count_for(version)
     if count is None:
         return (0, 0, 0)

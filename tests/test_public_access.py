@@ -792,17 +792,6 @@ def test_remove_endpoint_says_so_when_dns_stays_behind(client, cfg_file, fake_tu
     assert body["removed_tunnel"] is True and body["removed_dns"] is False
 
 
-def test_developer_mode_off_also_closes_public_access(client, cfg_file, fake_tunnel):
-    """公网访问挂在开发者模式下面：关掉开发者模式就顺手把公网入口收起来（域名留着）。"""
-    lan_on_with_password(cfg_file)
-    access.set_public_access(enabled=True, domain="example.com")
-    body = client.post("/panel/api/config/developer-mode", json={"enabled": False}).json()
-    assert body["public_on"] is False
-    assert body["public_was_on"] is True
-    assert access.public_enabled() is False
-    assert access.public_domain() == "example.com"
-
-
 def test_turning_off_lan_also_closes_public_access(client, cfg_file, fake_tunnel, monkeypatch):
     """公网访问搭在局域网访问上：关掉局域网就把公网入口一起收起来，域名留着。"""
     import backend.control_panel as cp

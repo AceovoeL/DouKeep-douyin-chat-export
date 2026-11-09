@@ -11,7 +11,30 @@ const dialog = ref(null)
 const detail = ref(null)
 const loading = ref(false)
 const error = ref('')
+const closing = ref(false)
+let closeTimer = 0
+const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+// 原生 <dialog>.close() 是瞬间消失的。先播放遮罩和对话框的淡出，再真正关闭。
+function requestClose() {
+  if (!dialog.value?.open || closing.value) return
+  if (reduceMotion()) {
+    dialog.value.close()
+    return
+  }
+  // 打开时那段 WAAPI 动画会压住 CSS 的透明度过渡，先取消掉再淡出。
+  dialog.value.getAnimations?.().forEach(anim => anim.cancel())
+  closing.value = true
+  clearTimeout(closeTimer)
+  closeTimer = window.setTimeout(() => {
+    closing.value = false
+    dialog.value?.close()
+  }, 180)
+}
+
 function onClosed() {
+  clearTimeout(closeTimer)
+  closing.value = false
   stopDialogVideos(dialog.value)
 }
 // 合并转发的三行预览里同样可能有 [钱] 这类文字式表情，跟正文一样换成图片。
@@ -21,6 +44,8 @@ function previewText(item) {
 }
 onUnmounted(onClosed)
 async function open(event) {
+  clearTimeout(closeTimer)
+  closing.value = false
   const source = event?.currentTarget?.closest('.forward-card')?.getBoundingClientRect()
   const opening = !dialog.value.open
   dialog.value.showModal()
@@ -54,8 +79,8 @@ async function open(event) {
     <span v-for="(item, index) in info.preview.slice(0, 3)" :key="index" v-html="previewText(item)"></span>
     <small>聊天记录<span v-if="info.count !== null"> · {{ info.count }} 条</span> · 点击查看</small>
   </button>
-  <dialog ref="dialog" class="forward-dialog" @close="onClosed" @click="e => { if (e.target === dialog) dialog.close() }">
-    <header><strong>{{ info.title }}</strong><button aria-label="关闭聊天记录" @click="dialog.close()">关闭</button></header>
+  <dialog ref="dialog" class="forward-dialog" :class="{ closing }" @close="onClosed" @cancel.prevent="requestClose" @click="e => { if (e.target === dialog) requestClose() }">
+    <header><strong>{{ info.title }}</strong><button aria-label="关闭聊天记录" @click="requestClose">关闭</button></header>
     <p v-if="loading">加载中...</p>
     <p v-else-if="error" role="alert">{{ error }} <button @click="open">重试</button></p>
     <template v-else-if="detail">
@@ -71,10 +96,12 @@ async function open(event) {
 .forward-card:active { transform: scale(0.99); }
 .forward-card > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; font-size: 12px; color: var(--text-secondary); }
 .forward-card small { width: 100%; padding-top: 8px; border-top: 1px solid var(--border-color); color: var(--text-muted); }
-.forward-dialog { margin: auto; width: min(760px, 94vw); max-height: 85vh; padding: 0; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-primary); color: var(--text-primary); }
+.forward-dialog { margin: auto; width: min(760px, 94vw); max-height: 85vh; padding: 0; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-primary); color: var(--text-primary); opacity: 1; transition: opacity var(--dur-fast) var(--ease-out); }
 .forward-dialog[open] { display: flex; flex-direction: column; height: min(760px, 85vh); }
+.forward-dialog.closing { opacity: 0; }
 .forward-dialog > .msg-panel { min-height: 0; }
-.forward-dialog::backdrop { background: #0008; animation: backdrop-in var(--dur-base) var(--ease-out); }
+.forward-dialog::backdrop { background: #0008; animation: backdrop-in var(--dur-base) var(--ease-out); transition: opacity var(--dur-fast) var(--ease-out); }
+.forward-dialog.closing::backdrop { opacity: 0; }
 @keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 .forward-dialog header { display: flex; justify-content: space-between; gap: 12px; padding: 16px; position: sticky; top: 0; background: var(--bg-secondary); z-index: 1; }
 .forward-dialog header button { cursor: pointer; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; padding: 4px 10px; }

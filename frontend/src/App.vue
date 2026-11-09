@@ -4,6 +4,7 @@ import ConversationList from './components/ConversationList.vue'
 import MessageList from './components/MessageList.vue'
 import SearchBar from './components/SearchBar.vue'
 import ScreenshotView from './components/ScreenshotView.vue'
+import InsightsModal from './components/InsightsModal.vue'
 import {
   applyAppearance,
   cachedAppearance,
@@ -24,6 +25,8 @@ const syncSidebarLayout = () => { sidebarOpen.value = !mobileLayout.matches }
 mobileLayout.addEventListener('change', syncSidebarLayout)
 onUnmounted(() => mobileLayout.removeEventListener('change', syncSidebarLayout))
 const searchOpen = ref(false)
+// 数据洞察弹窗开关
+const insightsOpen = ref(false)
 const readerLayout = ref(null)
 async function setSearchOpen(open) {
   const list = readerLayout.value?.querySelector('.msg-list')
@@ -258,6 +261,7 @@ async function openConversation(conv) {
         </button>
         <div class="app-title">抖音聊天记录</div>
         <button class="search-toggle" :disabled="!activeConversation" :aria-expanded="searchOpen" @click="setSearchOpen(!searchOpen)">⌕ 查找聊天记录</button>
+        <button class="search-toggle insights-toggle" :disabled="!activeConversation" @click="insightsOpen = true">📊 数据洞察</button>
         <div class="theme-switcher">
           <button
             v-for="t in themes"
@@ -282,6 +286,12 @@ async function openConversation(conv) {
           <SearchBar :convId="activeConversation.conv_id" :convName="activeConversation.name" @navigate="navigateToMessage" @close="setSearchOpen(false)" />
         </div>
       </div>
+      <InsightsModal
+        :open="insightsOpen"
+        :convId="activeConversation?.conv_id || ''"
+        :convName="activeConversation?.name || ''"
+        @close="insightsOpen = false"
+      />
     </div>
   </div>
 </template>

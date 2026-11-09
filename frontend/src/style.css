@@ -247,6 +247,28 @@ html.theme-anim *::after {
   filter: brightness(1.2);
 }
 
+/* 弹窗统一进出场：遮罩淡入淡出，对话框轻微上移 + 缩放。
+   用法：<Transition name="modal-fade"> 包住遮罩，给里面的对话框加 modal-fade-panel。
+   关闭时 Transition 会先播放 leave 再真正移除，所以关闭也有过渡，不会「啪」一下消失。 */
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
+.modal-fade-enter-active .modal-fade-panel,
+.modal-fade-leave-active .modal-fade-panel {
+  transition: opacity var(--dur-base) var(--ease-out),
+              transform var(--dur-base) var(--ease-out);
+}
+.modal-fade-enter-from .modal-fade-panel,
+.modal-fade-leave-to .modal-fade-panel {
+  opacity: 0;
+  transform: translateY(10px) scale(0.97);
+}
+
 /* 系统级「减少动态效果」兜底：停顿式动画一律去掉，只保留即时状态切换 */
 @media (prefers-reduced-motion: reduce) {
   *,

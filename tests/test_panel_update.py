@@ -70,7 +70,7 @@ def local_count(monkeypatch, tmp_path):
     monkeypatch.setattr(cp, "_remote_repository", lambda: version.REPOSITORY_URL)
     monkeypatch.setattr(cp._github_auth, "TOKEN_PATH", str(tmp_path / "github_token"))
     config_path = tmp_path / "panel_config.json"
-    config_path.write_text(json.dumps({"developer_mode": True}), encoding="utf-8")
+    config_path.write_text(json.dumps({}), encoding="utf-8")
     monkeypatch.setattr(paths, "CONFIG_PATH", str(config_path))
     return LOCAL_COUNT
 
@@ -526,6 +526,25 @@ def test_collect_update_without_git_still_reports_versions(monkeypatch, local_co
     assert result["compare_url"].endswith(f"/commits/{version.REPOSITORY_BRANCH}")
 
 
+def test_missing_commit_history_never_guesses_the_commit_count(monkeypatch, local_count):
+    """本地读不到 git 历史时不去猜 commit 数：版本判断只听标签，提交清单留空。"""
+    calls: list = []
+    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: [
+        _tag("1.1.0", "a"), _tag(LOCAL_VERSION, LOCAL_SHA),
+    ])
+    monkeypatch.setattr(cp, "_git_head", lambda: None)
+    monkeypatch.setattr(cp._version, "local_commit_count", lambda: None)
+    monkeypatch.setattr(cp, "_remote_commit_total",
+                        lambda slug, branch: calls.append(slug) or 11)
+
+    result = asyncio.run(cp._collect_update(refresh=True))
+
+    assert calls == [], "读不到历史就不该按条数去问远端"
+    assert result["remote_version"] == "1.1.0"
+    assert result["update_available"] is True
+    assert result["behind"] == 0
+
+
 def test_update_check_reports_missing_repo(monkeypatch, local_count):
     def boom():
         raise cp._UpdateCheckError("repo_missing")
@@ -630,7 +649,6 @@ def test_update_info_exposes_author_and_repos(monkeypatch):
     payload = asyncio.run(cp.update_info())
 
     assert payload["version"] == version.VERSION
-    assert payload["commit_count"] == version.commit_count_for(version.VERSION)
     assert payload["author"] == "AceovoeL"
     assert payload["upstream_author"] == "TeamBreakerr"
     assert payload["fork_url"] == version.REPOSITORY_URL

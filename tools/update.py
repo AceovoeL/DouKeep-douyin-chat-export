@@ -14,8 +14,8 @@
 * **没有 git 的目录**（从别的电脑整体拷贝过来的副本、ZIP 解压出来的目录，或者这台
   机器压根没装 git）：走 GitHub API 下载默认分支的代码包，解压后覆盖项目里的代码
   文件。这条路**不需要凭据** —— 本项目的仓库是公开的，匿名就能下。只有当项目被
-  放回你自己的**私有仓库**时，才要先在面板「关于」页填那个只读 Token（且开发者模式
-  开着，见 ``common/github_auth.py``）；真下不到时脚本会把该去哪儿填说清楚。下载过程会
+  放回你自己的**私有仓库**时，才要先在面板「关于」页填那个只读 Token（见
+  ``common/github_auth.py``）；真下不到时脚本会把该去哪儿填说清楚。下载过程会
   **边下边报进度**（已下载多少 / 共多少 / 百分之几），免得看着像卡死。
 
 两套换法都只碰**仓库里的代码文件**：``data/``（聊天数据库、下载的媒体）、
@@ -368,15 +368,11 @@ def download_code_archive(slug: str, branch: str, token: str) -> bytes:
 def archive_auth_hint() -> str:
     """下不到代码包时提示该去哪儿补什么。
 
-    公开仓库匿名就能下载，所以走到这里基本就是「私有仓库 + 凭据没被用起来」。
-    「存过 Token，但开发者模式关着所以没用」和「压根没填过」是两回事，提示要分开
-    —— 不然用户会以为 Token 丢了，又去粘一遍。
+    公开仓库匿名就能下载，所以走到这里基本就是「私有仓库没填凭据」，或者「填的凭据
+    读不到这个仓库」。这两种提示要分开，别让人以为 Token 丢了、又去粘一遍。
     """
-    if github_auth.load_for_use():
-        return "凭据可能无效，或没有这个仓库的读取权限"
     if github_auth.load():
-        return ("面板「关于」页的开发者模式关着，这条路不会使用已保存的凭据："
-                "请打开「关于 → 开发者模式」后重试")
+        return "凭据可能无效，或没有这个仓库的读取权限"
     return "仓库如果是私有的，请在面板「关于 → 私有仓库凭据」里填写只读 Token"
 
 
@@ -390,7 +386,7 @@ def update_code_via_archive() -> int:
     print("[i] 没有 git 就没法检查本地改动：项目里的代码文件会被换成最新版。"
           "data/、config/、venv/、frontend/node_modules/ 不在代码包里，不会被覆盖。", flush=True)
 
-    token = github_auth.load_for_use()
+    token = github_auth.load()
     slug = version.REPOSITORY_SLUG
     branch = version.REPOSITORY_BRANCH
     # 不分「先检查有没有 Token」：公开仓库匿名就能下，拿不到代码包时再回头提示填凭据

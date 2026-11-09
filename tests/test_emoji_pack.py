@@ -239,11 +239,11 @@ def test_skip_records_the_prompt_in_the_config(emoji_dir, panel_config):
 
 
 def test_skip_keeps_other_config_values(panel_config, emoji_dir):
-    panel_config.write_text(json.dumps({"password_hash": "H", "developer_mode": True}),
+    panel_config.write_text(json.dumps({"password_hash": "H", "auto_update": True}),
                             encoding="utf-8")
     asyncio.run(cp.emoji_pack_skip())
     saved = json.loads(panel_config.read_text(encoding="utf-8"))
-    assert saved["password_hash"] == "H" and saved["developer_mode"] is True
+    assert saved["password_hash"] == "H" and saved["auto_update"] is True
 
 
 def test_download_endpoint_runs_the_job_and_reaches_installed(emoji_dir, panel_config, monkeypatch):

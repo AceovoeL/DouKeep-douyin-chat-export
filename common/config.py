@@ -47,16 +47,6 @@ def get_password_hash() -> str | None:
     return load_config().get("password_hash") or None
 
 
-def developer_mode_enabled() -> bool:
-    """面板「关于」页的**开发者模式**开关（没配过就是关的）。
-
-    它是个显示开关：关着时面板不显示「私有仓库凭据」和「局域网访问」这两项进阶功能。
-    对私有仓库凭据来说它还有第二层意思 —— 决定那个 Token **用不用**：关着时检查更新 /
-    自动更新不再拿它去读私有仓库（文件仍然留着，重新打开开关就能接着用，不用重新粘贴）。
-    """
-    return bool(load_config().get("developer_mode"))
-
-
 def get_api_token() -> str | None:
     """Return the persistent API token, or None if not yet generated."""
     return load_config().get("api_token") or None

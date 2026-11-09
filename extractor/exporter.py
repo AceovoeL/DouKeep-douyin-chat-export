@@ -70,7 +70,7 @@ def build_export_filename(
     """
     export_time = time.localtime(time.time() if timestamp is None else timestamp)
     stamp = time.strftime("%Y%m%d%H%M%S", export_time)
-    extension = {"json": ".json", "txt": ".txt"}.get(output_format, ".jsonl")
+    extension = {"json": ".json", "txt": ".txt", "html": ".html"}.get(output_format, ".jsonl")
     collision_suffix = f"_{collision_index}" if collision_index else ""
     suffix = f"{collision_suffix}_{stamp}_export{extension}"
     component = _safe_filename_component(

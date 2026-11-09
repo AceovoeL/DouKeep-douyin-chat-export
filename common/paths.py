@@ -32,6 +32,9 @@ CONVERSATIONS_LIST = os.path.join(DATA_DIR, "conversations_list.json")
 #: 两个回填工具的回滚记录：记的是数据库里被改写的那几行的原值，跟着数据库走
 BACKFILL_DAILY_SHARE_UNDO = os.path.join(DATA_DIR, "backfill_daily_share_undo.json")
 BACKFILL_MODIFY_UNDO = os.path.join(DATA_DIR, "backfill_modify_undo.json")
+#: 「分享卡封面全库回填」只做一次的标记：文件存在就说明老库已经补过，
+#: 之后的采集只下载新消息的封面，不再扫旧数据（见 extractor/web_scraper.py）。
+SHARE_COVER_BACKFILL_DONE = os.path.join(DATA_DIR, "share_cover_backfill_done")
 
 # Media tree（下载到本机的图片/表情/语音/头像/视频）
 MEDIA_DIR = os.path.join(DATA_DIR, "media")

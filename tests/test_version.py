@@ -1,7 +1,7 @@
-"""版本号规则：第一个 commit 是 1.0.0，之后每个 commit 把最后一位加一。
+"""版本号：发版时手写，和 commit 个数无关。
 
-这些用例同时钉住进位规则（1.0.9 → 1.1.0 → 1.1.1），因为控制面板「关于」页和
-更新检测都靠它把 commit 数翻译成版本号。
+下面的换算表（序号 ↔ 三段版本号）只服务于「检查更新」时定位落后的提交，
+**不再**用来推导 VERSION —— 这里只验证换算是自洽的。
 """
 from common import version
 
@@ -33,40 +33,11 @@ def test_invalid_versions_are_rejected():
         assert version.version_key(bad) == (0, 0, 0)
 
 
-def test_shipped_version_matches_commit_count():
-    """common/version.py 里的 VERSION 必须和它的 commit 序号一致。"""
+def test_shipped_version_is_a_legal_version():
+    """VERSION 必须是一个合法的三段版本号，且能原样换算回来。"""
     count = version.commit_count_for(version.VERSION)
     assert count is not None, f"VERSION 不是合法版本号: {version.VERSION}"
     assert version.version_string(count) == version.VERSION
-
-
-def test_version_is_in_sync_with_git_history():
-    """VERSION 必须是合法的版本号，且与 commit 数保持「同步」。
-
-    为什么是「同步」而不是「相等」：VERSION 是静态写在文件里的，而每一次提交
-    （包括写回版本号的那次）都会让 commit 数 +1。如果硬要求 ``VERSION ==
-    version_string(commit 数)``，那就只能靠再提交一次来满足它 —— 而那次提交又把
-    数字顶走一位，永远追不上。所以约定的不变量是：
-
-        VERSION 的 commit 序号 ∈ { 当前 commit 数 - 落后次数, ..., 当前 commit 数 }
-
-    也就是说：版本号最多落后若干个 commit（改动攒着一起发版时很正常），但**绝不
-    允许超过当前 commit 数**（那意味着版本号指向了还不存在的提交，一定是手改错了）。
-    ``tools/sync_version.py`` 负责在发版时把它追平。
-
-    CI 的 actions/checkout 默认是浅克隆（fetch-depth: 1），那里数出来的 commit
-    数没有意义，local_commit_count() 返回 None，这个用例直接跳过。
-    """
-    count = version.local_commit_count()
-    if count is None:
-        return
-
-    declared = version.commit_count_for(version.VERSION)
-    assert declared is not None, f"VERSION 不是合法版本号: {version.VERSION}"
-    assert declared <= count, (
-        f"VERSION={version.VERSION} 对应第 {declared} 个 commit，"
-        f"但仓库只有 {count} 个提交 —— 版本号写过头了"
-    )
 
 
 def test_shallow_clone_detection(tmp_path, monkeypatch):

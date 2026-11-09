@@ -960,6 +960,14 @@ class ExportRequest(BaseModel):
     name_style: str = "full"
 
 
+class HtmlExportRequest(BaseModel):
+    """单文件 HTML 导出参数：一个会话（或全部会话打包）+ 可选日期区间。"""
+    conversation: str = ""
+    all: bool = False
+    start_ts: int | None = None
+    end_ts: int | None = None
+
+
 class ScheduleRequest(BaseModel):
     enabled: bool
     cron: str = ""  # cron expression: "0 0 * * *" or shorthand
@@ -1333,7 +1341,7 @@ async def clear_panel_guard(request: Request):
 def _panel_auth_payload(request: Request) -> dict:
     """设置页「密码」区块那三个列表要的数据（面板密码这道锁的）。
 
-    跟开发者模式无关：只要设了面板密码就显示（外来设备输过面板密码的记录才有意义）。
+    只要设了面板密码就显示（外来设备输过面板密码的记录才有意义）。
     """
     client_host = _gate._client_host(request)
     cookie_id = _access.trusted_device_id(request.cookies.get(_access.COOKIE_NAME))
@@ -1614,87 +1622,6 @@ async def emoji_pack_skip():
 @control_router.post("/api/emoji-pack/stop")
 async def emoji_pack_stop():
     return _emoji_pack.stop()
-
-
-# ── 开发者模式（「关于」页最下面的开关） ──
-#
-# 一个显示开关：打开后「关于」页才多出「私有仓库凭据」、「设置」页才多出「局域网访问」。
-# 面板那边一拨就存（没有「应用」按钮）。它还有一层实际作用：私有仓库的 Token 只在这个
-# 开关打开时才被用到（见 github_auth.load_for_use），关掉 = 不再从私有仓库读代码。
-#
-# 关掉它时如果「向局域网开放」正开着，要顺手把局域网也关掉：不然界面藏了、门还开着。
-# 关监听地址要重启服务才生效（和设置页那个开关走同一套助手），而访问密码与信任设备
-# 都留着 —— 下次打开开发者模式，那些设备不用重新输密码。
-
-class DeveloperModeToggle(BaseModel):
-    enabled: bool
-
-
-def _developer_mode_flags() -> dict:
-    """面板要知道的东西：开关状态、局域网开着吗、存过 Token 吗。
-
-    顺带给出「已保存的 Token 现在真的会被用到吗」—— 开发者模式关着时不会，面板据此
-    说明「关掉之后不再从私有仓库读代码」，用户也不用猜 Token 是不是被删了。
-    """
-    enabled = _cfg.developer_mode_enabled()
-    token_set = bool(_github_auth.load())
-    return {
-        "enabled": enabled,
-        "lan_on": _access.lan_enabled(),
-        "public_on": _access.public_enabled(),
-        "token_set": token_set,
-        "token_from_private_repo": bool(enabled and token_set),
-    }
-
-
-@control_router.get("/api/config/developer-mode")
-async def get_developer_mode():
-    # 没配过（老配置文件里没有这个字段）就是关的：默认给普通用户看精简的界面。
-    return _developer_mode_flags()
-
-
-@control_router.post("/api/config/developer-mode")
-async def set_developer_mode(req: DeveloperModeToggle, request: Request):
-    """打开 / 关闭开发者模式。
-
-    关闭时：公网访问若正开着，先把隧道停掉（域名留着）；局域网若正开着，再关掉它
-    （访问密码与信任设备保留），并交棒给重启助手把监听地址切回 127.0.0.1；随后再关
-    开发者模式。Token 只是「不再使用」，文件不动。
-    """
-    if req.enabled:
-        cfg = _load_config()
-        cfg["developer_mode"] = True
-        _save_config(cfg)
-        return {**_developer_mode_flags(), "status": "ok", "restarting": False}
-
-    lan_was_on = _access.lan_enabled()
-    public_was_on = _access.public_enabled()
-    if public_was_on:
-        # 公网访问是开发者模式里的东西：关掉开发者模式就先收起公网入口（域名留着，
-        # 下次打开开发者模式重新点「挂载到公网」不用再填）
-        _cloudflared.disable_public()
-    result: dict = {}
-    if lan_was_on:
-        # 复用设置页那个开关的整套逻辑（自检、起助手、退出），只是不改访问密码与设备
-        result = await set_lan_access(LanAccessRequest(enabled=False), request)
-        if isinstance(result, JSONResponse):        # 自检没过 / 助手起不来
-            result = {"ok": False, "error": json.loads(result.body).get("error", "")}
-
-    # 局域网那一步已经把配置重写过一次，这里重新读一遍再写自己这一格
-    cfg = _load_config()
-    cfg["developer_mode"] = False
-    _save_config(cfg)
-
-    payload = {**_developer_mode_flags(), "status": "ok",
-               "restarting": bool(result.get("restart_required")),
-               "public_was_on": public_was_on}
-    if lan_was_on and not result.get("ok", True):
-        # 局域网已经关掉（配置里），但没能自动重启：界面要提示手动重启一次
-        payload["restart_error"] = result.get("error", "")
-    if lan_was_on and result.get("code"):
-        # uvicorn --reload（开发模式）：没法自己重启，界面照着设置页那条提示说
-        payload["restart_code"] = result["code"]
-    return payload
 
 
 @control_router.get("/api/media/backfill/status")
@@ -2169,12 +2096,11 @@ class _GitFetchAuthError(Exception):
 
 
 def _github_token() -> str:
-    """检查更新 / 拉代码时**真正拿去用**的 Token（没有、或开发者模式关着时为空串）。
+    """检查更新 / 拉代码时拿去用的 Token（没存过就是空串）。
 
-    Token 文件由用户在「关于 → 私有仓库凭据」里保存；开发者模式关掉之后就不再拿它
-    读私有仓库（文件留着，重新打开开发者模式就能接着用）。见 github_auth.load_for_use。
+    Token 由用户在「关于 → 私有仓库凭据」里保存；存过就一直用到用户点「清除」为止。
     """
-    return _github_auth.load_for_use()
+    return _github_auth.load()
 
 
 def _github_read(url: str, *, quiet_404: bool = False, token: str | None = None):
@@ -2232,14 +2158,13 @@ def _last_page(link: str) -> int | None:
 
 
 def _local_commit_count() -> int:
-    """本地是第几个 commit；读不到 git 历史时用 VERSION 反推。
+    """本地 git 历史是第几个 commit；读不到（没有 .git / 浅克隆）返回 0。
 
-    这个数只用来「定位」落后的那些提交（远端总数 - 本地条数），不再决定版本号：
-    版本号一律以 GitHub 上的标签为准。VERSION 按版本规则一定能反推出 commit 数，
-    所以「从别人那儿整体拷贝过来、没有 .git」的副本也能参与比对。
+    版本号不跟 commit 数挂钩（见 common/version.py），这个数只用来把落后的提交
+    「定位」出来、按版本分组显示。读不到就干脆不猜 —— 只按 GitHub 上的版本标签
+    判断有没有新版本。
     """
-    count = _version.local_commit_count() or _version.commit_count_for(_version.VERSION)
-    return int(count or 0)
+    return int(_version.local_commit_count() or 0)
 
 
 def _fetch_ahead_commits(slug: str, branch: str, base: str) -> tuple[int, list[dict]]:
@@ -2316,7 +2241,11 @@ def _fetch_ahead_commits_by_count(
 
     「远端总数 - 本地条数」就是落后的条数；历史是线性的，落后的那些一定是远端
     最新的一批。这里只是在给提交清单定位，版本号另有出处（GitHub 上的标签）。
+    本地读不到 git 历史（local_count 为 0）时不猜条数，直接交空清单。
     """
+    if local_count <= 0:
+        _check_log_add("本地读不到 git 历史，跳过多余提交的定位（只按版本号判断）")
+        return 0, []
     total = _remote_commit_total(slug, branch)
     _check_log_add(f"远端 {branch} 一共 {total} 个 commit（本地 {local_count} 个）")
     if total < 1:
@@ -2540,7 +2469,7 @@ async def _remote_reachable() -> bool:
 async def _fetch_ahead_best_source() -> tuple[int, list[dict]]:
     """选一条路拿「落后的 commit」。
 
-    有 Token（且开发者模式开着，见 _github_token）时直接用 API：私有仓库也能读，一条
+    有 Token（见 _github_token）时直接用 API：私有仓库也能读，一条
     请求就拿到版本与逐条提交说明，不必等 git。**没有** Token 时先试本地 git（本机凭据
     可能已经能读那个私有仓库），git 也不行再用不带凭据的 API 兜一次 —— 公开仓库本来就
     允许匿名读，不该因为「没填凭据」就报「需要私有仓库凭据」。
@@ -2721,8 +2650,6 @@ def _local_version_payload() -> dict:
     count = _version.local_commit_count()
     return {
         "version": _version.VERSION,
-        # 版本号理论上总能反推出 commit 数；反推失败说明文件被手改坏了。
-        "commit_count": _version.commit_count_for(_version.VERSION),
         "git_commit_count": count,
         "repository_url": _remote_repository(),
         "fork_url": _version.REPOSITORY_URL,
@@ -2852,7 +2779,7 @@ def _schedule_github_login_refresh(token: str) -> None:
 def warm_github_login() -> None:
     """服务启动时先问一次「Token 是谁」（后台线程），面板第一次打开就有名字。
 
-    没有可用的 Token（没配、或开发者模式关着）时什么都不做。
+    没有可用的 Token（没配）时什么都不做。
     """
     _schedule_github_login_refresh(_github_token())
 
@@ -2884,8 +2811,7 @@ def _credential_scope(token: str) -> tuple[str, str]:
 async def update_token_status():
     """Token 状态：只告诉面板「有没有、是谁」，不回 Token 本身。
 
-    「有没有」看的是文件（存过就是存过），但**只有开发者模式开着才去问 GitHub
-    「是谁」** —— 关着时那一步会拿 Token 发一次请求，而那时它已经不该被用到了。
+    「有没有」看的是文件（存过就是存过）；「是谁」只在后台补问一次，不在这个请求里等。
     """
     token = _github_auth.load()
     try:                             # 跨盘符时 relpath 会抛 ValueError，退回绝对路径
@@ -2999,7 +2925,7 @@ _CREDENTIAL_HELPER_SCRIPT = os.path.join(
 def _git_env(*, with_token: bool = False) -> dict | None:
     """git 子进程的环境；不需要特殊设置时返回 None（继承父进程环境）。
 
-    with_token 且有可用的 Token（开发者模式开着）、远端又是 HTTPS 时，注入一个只在
+    with_token 且有可用的 Token、远端又是 HTTPS 时，注入一个只在
     本进程内生效的凭据助手（系统凭据助手仍然在后面兜底）。没有 Token 时 git 照旧用
     系统凭据 —— 本机本来就能 `git pull` 的机器不受影响。
     """
@@ -4970,6 +4896,191 @@ async def _cron_loop(parsed: list, incremental: bool):
             await asyncio.sleep(61)
     except asyncio.CancelledError:
         pass
+
+
+@control_router.get("/api/export/html/daily")
+async def html_export_daily(conv_id: str):
+    """HTML 导出弹窗的日历数据：按天统计消息量（走面板鉴权，不用另配 token）。"""
+    conn = database.connect()
+    try:
+        rows = conn.execute(
+            "SELECT date(timestamp + 8 * 3600, 'unixepoch') AS date, COUNT(*) AS count "
+            "FROM messages WHERE conv_id = ? AND timestamp > 0 "
+            "GROUP BY date ORDER BY date ASC",
+            (conv_id,),
+        ).fetchall()
+        return {"items": [{"date": r["date"], "count": r["count"]} for r in rows]}
+    finally:
+        conn.close()
+
+@control_router.get("/api/export/html/conversations")
+async def html_export_conversations():
+    """HTML 导出弹窗用的会话清单：直接读数据库，不依赖「刷新会话列表」。"""
+    conn = database.connect()
+    try:
+        rows = conn.execute(
+            "SELECT conv_id, name FROM conversations ORDER BY last_message_time DESC"
+        ).fetchall()
+        return {"items": [{"conv_id": r["conv_id"], "name": r["name"] or r["conv_id"]} for r in rows]}
+    finally:
+        conn.close()
+
+@control_router.post("/api/export/html/estimate")
+async def estimate_html_export(req: HtmlExportRequest):
+    """预估单文件 HTML 导出的消息数与文件大小（不真正生成文件）。
+
+    大小按「文字字节数 + 内嵌图片实际大小 x 1.37（base64 膨胀）」粗算；
+    图片只算本机已有、且不超过内嵌上限的；每条消息另计约 120 字节的
+    HTML 结构开销（时间、气泡、头像等标记）。
+    """
+    name = (req.conversation or "").strip()
+    if not name:
+        return JSONResponse({"error": "请先选择会话"}, status_code=400)
+
+    from pathlib import Path
+
+    from extractor.html_exporter import _MAX_EMBED_BYTES
+
+    conn = database.connect()
+    try:
+        row = conn.execute(
+            "SELECT conv_id FROM conversations WHERE name = ?", (name,)
+        ).fetchone()
+        if not row:
+            return JSONResponse({"error": "未找到会话"}, status_code=404)
+        conv_id = row["conv_id"]
+        sql = ("SELECT content, media_local_path FROM messages WHERE conv_id = ?")
+        params: list = [conv_id]
+        if req.start_ts:
+            sql += " AND timestamp >= ?"
+            params.append(req.start_ts)
+        if req.end_ts:
+            sql += " AND timestamp < ?"
+            params.append(req.end_ts)
+        messages = conn.execute(sql, params).fetchall()
+        text_bytes = 0
+        media_bytes = 0
+        media_count = 0
+        for msg in messages:
+            content = msg["content"] or ""
+            if content and not content.startswith("{"):
+                text_bytes += len(content.encode("utf-8")) + 120
+            local = msg["media_local_path"]
+            if local:
+                candidate = Path(paths.DATA_DIR) / "media" / local
+                try:
+                    if candidate.is_file() and candidate.stat().st_size <= _MAX_EMBED_BYTES:
+                        media_bytes += candidate.stat().st_size
+                        media_count += 1
+                except OSError:
+                    pass
+        estimated = int(text_bytes + media_bytes * 1.37)
+        return {
+            "messages": len(messages),
+            "media_count": media_count,
+            "estimated_bytes": estimated,
+            "estimated_mb": round(estimated / (1024 * 1024), 1),
+        }
+    finally:
+        conn.close()
+
+
+@control_router.post("/api/export/html")
+async def export_html(req: HtmlExportRequest):
+    """单文件 HTML 导出：一个会话（或全部会话各一个文件打包 zip）。"""
+    if _export_state["status"] == "running":
+        return JSONResponse({"error": "Export already running"}, status_code=409)
+    if not req.all:
+        name = (req.conversation or "").strip()
+        if not name:
+            return JSONResponse({"error": "请先选择会话"}, status_code=400)
+    if req.start_ts and req.end_ts and req.start_ts >= req.end_ts:
+        return JSONResponse({"error": "日期区间无效：开始要早于结束"}, status_code=400)
+
+    _export_state["status"] = "running"
+    _export_state["file_path"] = None
+    _export_state["message"] = "正在导出 HTML..."
+
+    def _run():
+        from extractor.html_exporter import SingleFileHtmlExporter
+
+        try:
+            if req.all:
+                _run_html_all()
+            else:
+                name = (req.conversation or "").strip()
+                exporter = SingleFileHtmlExporter(
+                    conv_name=name, start_ts=req.start_ts, end_ts=req.end_ts,
+                )
+                output_path = exporter.export()
+                if not output_path or not os.path.exists(output_path):
+                    raise RuntimeError(f"未找到会话: {name}")
+                _export_state["file_path"] = os.path.basename(output_path)
+                size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                _export_state["message"] = f"HTML 导出完成 ({size_mb:.1f} MB)"
+            _export_state["status"] = "completed"
+        except Exception as e:
+            _export_state["status"] = "failed"
+            _export_state["message"] = f"导出失败: {e}"
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _run)
+    return {
+        "status": _export_state["status"],
+        "message": _export_state["message"],
+        "file_path": _export_state["file_path"],
+    }
+
+
+def _run_html_all() -> None:
+    """全部会话各导一个 HTML，打包成 zip（复用普通导出的打包逻辑）。"""
+    import zipfile
+
+    from extractor.exporter import build_export_filename
+    from extractor.html_exporter import SingleFileHtmlExporter
+
+    conn = database.connect()
+    try:
+        rows = conn.execute(
+            "SELECT name FROM conversations ORDER BY last_message_time DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        raise RuntimeError("数据库里还没有会话")
+
+    tmp_dir = os.path.join(paths.DATA_DIR, "export_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    for fn in os.listdir(tmp_dir):
+        try:
+            os.remove(os.path.join(tmp_dir, fn))
+        except Exception:
+            pass
+
+    produced = []
+    exported_at = int(time.time())
+    for row in rows:
+        name = row["name"] or ""
+        try:
+            path = SingleFileHtmlExporter(conv_name=name or None).export(
+                os.path.join(tmp_dir, build_export_filename(name, "html", exported_at))
+            )
+            if path and os.path.exists(path):
+                produced.append(path)
+        except Exception as e:
+            print(f"[-] HTML 导出 {name} 失败: {e}")
+
+    if not produced:
+        raise RuntimeError("没有成功导出的会话")
+
+    zip_path = os.path.join(paths.DATA_DIR, "export.zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in produced:
+            zf.write(path, arcname=os.path.basename(path))
+
+    _export_state["file_path"] = "export.zip"
+    size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+    _export_state["message"] = f"HTML 导出完成 ({len(produced)} 个会话, {size_mb:.1f} MB)"
 
 
 @control_router.post("/api/export")

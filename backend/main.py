@@ -415,6 +415,24 @@ def daily_stats(conv_id: str, tz: float = Query(8, ge=-12, le=14)):
     return {"items": database.get_daily_stats(conv_id, tz_hours=tz)}
 
 
+@app.get("/api/conversations/{conv_id}/insights")
+def conversation_insights(conv_id: str, tz: float = Query(8, ge=-12, le=14)):
+    """聊天数据洞察：热力图 / 消息排行 / 表情榜 / 友谊数据 / 关键词，一次全给。"""
+    conv = database.get_conversation(conv_id)
+    if not conv:
+        raise HTTPException(404, "会话不存在")
+    from extractor.models import get_db
+    from backend.insights import build_insights
+
+    conn = get_db()
+    try:
+        return build_insights(
+            conn, conv_id, conv["conv_type"], conv["name"], tz_hours=int(tz)
+        )
+    finally:
+        conn.close()
+
+
 @app.get("/api/token")
 def get_api_token():
     """查看持久 API token（受与其余 /api/ 相同的鉴权保护）。"""
