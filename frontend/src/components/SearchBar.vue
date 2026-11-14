@@ -492,4 +492,11 @@ function formatTime(ts) {
 .calendar-days button:active:not(:disabled) { transform: scale(0.9); }
 .calendar-days button:disabled { background: transparent; color: var(--text-muted); opacity: .4; cursor: default; }
 .calendar-days button.selected, .calendar-days button:hover:not(:disabled) { background: var(--accent); color: #fff; }
+/* 手机端：顶部条和按钮加大一点，日历格子也要点得准 */
+@media (max-width: 768px) {
+  .search-header { padding: 8px 10px; min-height: 52px; }
+  .icon-button { min-width: 36px; min-height: 36px; font-size: 22px; }
+  .search-shortcuts button { padding: 12px; }
+  .calendar-days button { font-size: 13px; }
+}
 </style>

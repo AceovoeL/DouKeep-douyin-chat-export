@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -27,6 +28,11 @@ import re
 from urllib.parse import urlparse
 
 from common.paths import MEDIA_DIR
+
+#: 下载失败时把异常塞进调用方给的列表（见 save_card_icon 的 error_out）。
+#: 用 contextvar 而不是改 _fetch_icon 的签名：不少调用方 / 测试直接打桩
+#: _fetch_icon(url)，签名一改就全炸。
+_fetch_error = contextvars.ContextVar("card_icon_fetch_error", default=None)
 
 log = logging.getLogger("app.media")
 
@@ -454,15 +460,23 @@ def find_card_icon(url: object) -> str | None:
     return None
 
 
-def save_card_icon(url: object) -> str | None:
-    """下载并保存卡片图；返回相对路径。失败（一般是签名过期 403）返回 None。"""
+def save_card_icon(url: object, error_out: list | None = None) -> str | None:
+    """下载并保存卡片图；返回相对路径。失败（一般是签名过期 403）返回 None。
+
+    error_out：给了列表就把这次失败的异常塞进去，调用方据此判断「链接已经过期，
+    下次别再白试」（见 common/media_retry.py 与 extractor/media_backfill.py）。
+    """
     if not is_allowed_icon_url(url):
         return None
     existing = find_card_icon(url)
     if existing:
         return existing
 
-    data, content_type = _fetch_icon(url)
+    token = _fetch_error.set(error_out if error_out is not None else [])
+    try:
+        data, content_type = _fetch_icon(url)
+    finally:
+        _fetch_error.reset(token)
     if not data:
         return None
     directory = card_icon_dir()
@@ -515,6 +529,9 @@ def _fetch_icon(url: str) -> tuple[bytes | None, str]:
             data = resp.read(MAX_CARD_ICON_BYTES + 1)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         log.info("卡片图补拉失败（多半是签名过期）: %s (%s)", _short(url), type(exc).__name__)
+        sink = _fetch_error.get()
+        if sink is not None:
+            sink.append(exc)
         return None, ""
     if not data or len(data) > MAX_CARD_ICON_BYTES:
         return None, ""

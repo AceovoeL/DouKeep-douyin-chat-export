@@ -126,4 +126,25 @@ describe('会话列表的加载态', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(text()).toContain('小明')
   })
+
+  it('有火花时名字右边显示图标和天数', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        items: [{
+          conv_id: 'c1', name: '小明', message_count: 10, display_count: 10,
+          spark_days: 101, spark_icon: 'spark_icons/blue_normal.png',
+        }],
+        total: 1,
+      }),
+    })))
+
+    mount()
+    await flush()
+
+    expect(text()).toContain('101')
+    const icon = host.querySelector('.spark-icon')
+    expect(icon).not.toBeNull()
+    expect(icon.getAttribute('src')).toBe('/media/spark_icons/blue_normal.png')
+  })
 })

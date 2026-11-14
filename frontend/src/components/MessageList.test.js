@@ -23,12 +23,12 @@ import MessageList from './MessageList.vue'
 //   2. 直接用同一份 messages 数组渲染，分隔条算的是哪两条一眼看得见。
 let items = []
 
-function mount() {
+function mount(conversation = { conv_id: '0:1:aaa:bbb', name: '测试会话' }) {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const app = createApp({
     render: () => h(MessageList, {
-      conversation: { conv_id: '0:1:aaa:bbb', name: '测试会话' },
+      conversation,
       embeddedMessages: items,
       // 指定「我是谁」，消息才分左右；不分也不影响分隔条，但能顺带验证布局没塌
       selfUidOverride: 'aaa',
@@ -188,6 +188,35 @@ function easterMsg(id, ts, senderUid = 'bbb') {
     media_local_path: 'card_icons/demo.png',
   }
 }
+
+describe('聊天标题的火花', () => {
+  it('昵称右边显示火花图标和天数', async () => {
+    // 这里不能用 mount()：它传了 embeddedMessages，会被当成静态导出模式，
+    // 正好把聊天标题藏起来（标题只在正常浏览时出现）。
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp({
+      render: () => h(MessageList, {
+        conversation: {
+          conv_id: '0:1:aaa:bbb',
+          name: '测试会话',
+          spark_days: 101,
+          spark_icon: 'spark_icons/blue_normal.png',
+        },
+      }),
+    })
+    app.mount(host)
+    await flush()
+
+    const badge = host.querySelector('.msg-title-row .spark-badge')
+    expect(badge).not.toBeNull()
+    expect(badge.textContent).toContain('101')
+    expect(badge.querySelector('.spark-icon').getAttribute('src'))
+      .toBe('/media/spark_icons/blue_normal.png')
+    app.unmount()
+    host.remove()
+  })
+})
 
 describe('聊天窗口的彩蛋福袋卡', () => {
   it('按发送者分左右，两行文字固定写「已过期」「彩蛋福袋」', async () => {

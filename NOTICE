@@ -35,6 +35,9 @@ TeamBreakerr/douyin-chat-export 的版权声明）。下面这些东西不是本
    `data/media/bubbles/`，仓库里不分发这些素材；版权方如有异议，请在仓库开 issue，
    我们会立即移除相关下载/显示逻辑。
 
+   会话列表 / 聊天标题上的火花图标（例如 `blue_normal.png`）同样来自抖音接口，
+   采集时下载到本机 `data/media/spark_icons/`，仓库里不分发。
+
 3. 浏览器标签页图标 `frontend/public/favicon.svg`
 
    是抖音的音符标识，商标与美术作品权利归北京抖音信息服务有限公司所有，随代码附带

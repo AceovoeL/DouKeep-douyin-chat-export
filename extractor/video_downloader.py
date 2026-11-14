@@ -33,7 +33,7 @@ from extractor.im_media import (
 from extractor.web_scraper import WebChatScraper
 from extractor.models import get_db, init_db
 from extractor.cenc import decrypt_cenc_mp4
-from common import paths
+from common import media_retry, paths
 
 
 VIDEOS_DIR = paths.VIDEOS_DIR
@@ -191,24 +191,33 @@ def ensure_live_photo_covers(conn, jobs, limit=None):
     pending = [j for j in jobs if j.get("needs_cover")]
     if limit:
         pending = pending[:limit]
-    done = 0
+    done = failed = 0
     for job in pending:
+        msg_id = job["msg_id"]
+        if media_retry.should_skip(conn, msg_id, "live_cover"):
+            continue
         row = conn.execute("SELECT raw_data FROM messages WHERE msg_id=?",
-                           (job["msg_id"],)).fetchone()
+                           (msg_id,)).fetchone()
         cj = _content_json(row["raw_data"]) if row else {}
         if not cj:
             continue
-        path = download_direct_media(cj, job.get("file_id") or job["msg_id"])
+        path = download_direct_media(cj, job.get("file_id") or msg_id)
         if not path:
-            # 链接过期（403）之类：这条这次补不了，下次采集还会再试
+            # 链接过期（403）之类：记下来，别每次采集都为了它再试一遍
+            failed += 1
+            media_retry.note_failure(
+                conn, msg_id, "live_cover",
+                reason="封面下不下来（多半链接已过期）",
+            )
             continue
         conn.execute(
             "UPDATE messages SET media_local_path=? WHERE msg_id=? "
             "AND (media_local_path IS NULL OR media_local_path = '')",
-            (path, job["msg_id"]),
+            (path, msg_id),
         )
+        media_retry.note_success(conn, msg_id, "live_cover")
         done += 1
-    if done:
+    if done or failed:
         conn.commit()
     return done
 
@@ -370,6 +379,12 @@ async def save_cenc_jobs(page, jobs, *, conn=None, progress_cb=None,
                     fail += 1
                     last_error = f"{file_id}: no URL from resolver"
                     log.append(f"    [-] {last_error}")
+                    if kind == "live":
+                        # 抖音已经不给地址了：记下来，下次采集别再为它白跑一趟
+                        media_retry.note_failure(
+                            conn, msg_id, kind,
+                            reason="抖音没返回可下载的地址（多半已过期）",
+                        )
                     if progress_cb:
                         progress_cb({
                             "ok": ok, "fail": fail, "skipped": skipped,
@@ -381,18 +396,24 @@ async def save_cenc_jobs(page, jobs, *, conn=None, progress_cb=None,
                     enc = await asyncio.to_thread(_download, url, 60)
                     size = await asyncio.to_thread(_process_one, enc, skey, out_abs)
                     _record_saved(conn, msg_id, kind, out_rel)
+                    media_retry.note_success(conn, msg_id, kind)
                     ok += 1
                     log.append(f"    [+] {file_id} ({size // 1024} KB)")
                 except Exception as e:
                     fail += 1
                     last_error = f"{file_id}: {e}"
                     log.append(f"    [-] {last_error}")
+                    if kind == "live":
+                        media_retry.note_failure(conn, msg_id, kind, exc=e)
                 if progress_cb:
                     progress_cb({
                         "ok": ok, "fail": fail, "skipped": skipped,
                         "total": total, "current": str(file_id),
                         "last_error": last_error,
                     })
+    if conn is not None:
+        # 失败的记录也要落盘，不然下一轮采集又老老实实重试一遍
+        conn.commit()
     return {"total": total, "ok": ok, "fail": fail, "skipped": skipped, "log": log}
 
 

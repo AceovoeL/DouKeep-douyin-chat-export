@@ -25,7 +25,10 @@
           <span v-else>{{ (conv.name || '?')[0] }}</span>
         </div>
         <div class="conv-info">
-          <div class="conv-name">{{ conv.name || '未命名' }}</div>
+          <div class="conv-title">
+            <span class="conv-name">{{ conv.name || '未命名' }}</span>
+            <SparkBadge :days="conv.spark_days || 0" :icon="conv.spark_icon || ''" />
+          </div>
           <div class="conv-meta">
             <span>{{ shownCount(conv) }} 条消息</span>
           </div>
@@ -82,6 +85,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { resolveAvatarUrl } from '@/lib/media'
+import SparkBadge from './SparkBadge.vue'
 
 const props = defineProps({
   activeId: String,
@@ -287,7 +291,16 @@ onMounted(() => {
   flex: 1;
   min-width: 0;
 }
+.conv-title {
+  display: flex;
+  align-items: center;
+  /* 火花图自带一圈透明边，外间距收窄一点，昵称和火花的距离才像官方那样 */
+  gap: 3px;
+  min-width: 0;
+}
 .conv-name {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: var(--conv-name-size);
   font-weight: 500;
   white-space: nowrap;

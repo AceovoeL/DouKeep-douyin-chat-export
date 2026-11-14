@@ -2,7 +2,13 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<script>
+/* 手机端禁止缩放：iOS Safari 无视 user-scalable=no，双指缩放要拦 gesture 事件 */
+['gesturestart', 'gesturechange', 'gestureend'].forEach(function (t) {
+  document.addEventListener(t, function (e) { e.preventDefault(); }, { passive: false });
+});
+</script>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>Control Panel - 抖音聊天记录</title>
 <style>
@@ -154,6 +160,32 @@ body {
 .card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .card .num { font-size: calc(32px * var(--font-scale)); font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
 .card .label { font-size: calc(12px * var(--font-scale)); color: var(--text2); margin-top: 6px; letter-spacing: 0.4px; }
+
+/* 概览页标题右边放刷新按钮 */
+.ov-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.ov-head .btn { flex: none; margin-top: 2px; }
+
+/* 第二排 4 张卡：窄屏折成 2×2 */
+.cards.cards-4 { grid-template-columns: repeat(4, 1fr); }
+
+/* 消息构成：一行「名字 / 条数 / 占比 / 横条」 */
+.ov-bars { display: flex; flex-direction: column; gap: 10px; }
+.ov-bar-row { display: grid; grid-template-columns: 78px 92px 58px 1fr; gap: 10px; align-items: center; font-size: calc(13px * var(--font-scale)); }
+.ov-bar-name { color: var(--text2); }
+.ov-bar-count, .ov-bar-pct { font-variant-numeric: tabular-nums; text-align: right; }
+.ov-bar-count { color: var(--text); }
+.ov-bar-pct { color: var(--text3); }
+.ov-bar-track { height: 8px; border-radius: 999px; background: var(--bg3); overflow: hidden; }
+.ov-bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+
+/* 数据范围 / 存储占用：两列键值行 */
+.kv-list { display: flex; flex-direction: column; }
+.kv-row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 9px 0; font-size: calc(13px * var(--font-scale)); }
+.kv-row + .kv-row { border-top: 1px dashed color-mix(in srgb, var(--border) 70%, transparent); }
+.kv-key { color: var(--text2); }
+.kv-val { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
+@media (max-width: 820px) { .cards.cards-4 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 520px) { .ov-bar-row { grid-template-columns: 64px 1fr 52px; } .ov-bar-track { display: none; } }
 
 /* ── Sections (cards inside a page) ── */
 .section {
@@ -1271,6 +1303,47 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 #hdpOverlay:not([hidden]) { animation: hdp-overlay-in .16s ease; }
 @keyframes hdp-overlay-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 
+/* ── 手机端禁止缩放 ──
+   touch-action: manipulation 管住双击缩放；iOS 上双指缩放由 <head> 里的 gesture 拦截。 */
+* { touch-action: manipulation; }
+
+/* ── 窄屏顶栏改两行 ──
+   第一行：品牌 + 版本 / 语言 / 主题 / 聊天查看器；第二行：文字导航。
+   以前一整行横向滑动，右侧的「聊天查看器」得左右滑才看得到；改成两行后不用滑也能全部点得到。
+   （上面的单行样式保持不动，这里只做覆盖，桌面端完全不受影响。） */
+@media (max-width: 820px) {
+  .sidebar {
+    flex-wrap: wrap; gap: 10px 12px; padding: 10px 14px;
+    overflow: visible; border-right: none; border-bottom: 1px solid var(--border);
+  }
+  .side-foot {
+    order: 1; flex: 1 1 0; min-width: 0; margin-left: 0;
+    flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px;
+  }
+  .lang-switcher { align-self: center; }
+  .viewer-btn { padding: 7px 12px; white-space: nowrap; }
+  /* 导航整行换到第二行：窄屏只显示文字标签，图标那批字形/线条留给大屏 */
+  .nav { order: 2; flex: 1 0 100%; flex-direction: row; flex-wrap: wrap; gap: 4px; margin-top: 0; }
+  .nav-item { flex: 1 1 auto; width: auto; height: auto; padding: 7px 8px; font-size: 13px; white-space: nowrap; }
+  .nav-item .ico { display: none; }
+  .nav-item span:last-child { display: inline; }
+  .panel-main { padding: 20px 16px; }
+}
+@media (max-width: 520px) {
+  .cards { gap: 8px; }
+  .card { padding: 16px 8px; }
+  .card .num { font-size: 24px; }
+  .brand span:last-child { display: none; }
+  .lang-switcher button { padding: 4px 9px; }
+  .theme-switcher { gap: 6px; padding: 0; }
+  .theme-dot { width: 18px; height: 18px; }
+  .section { padding: 18px 16px; }
+  #loginOverlay > div { width: min(320px, calc(100vw - 32px)) !important; padding: 28px 20px !important; }
+}
+@media (max-width: 360px) {
+  .nav-item { padding: 7px 4px; }
+}
+
 </style>
 </head>
 <body data-theme="dark">
@@ -1635,12 +1708,48 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 
     <!-- Overview -->
     <div class="panel-page active" id="page-overview">
-      <div class="page-head"><h1 data-i18n="navOverview">概览</h1><p data-i18n="overviewDesc">导出统计与快捷状态。</p></div>
+      <div class="page-head ov-head">
+        <div>
+          <h1 data-i18n="navOverview">概览</h1>
+          <p data-i18n="overviewDesc">数据规模、消息构成与存储占用。</p>
+        </div>
+        <button class="btn btn-outline btn-sm" id="ovRefreshBtn" type="button"
+                onclick="refreshOverview()" data-i18n="ovRefresh">刷新</button>
+      </div>
+      <p class="meta" id="ovCutoff" style="margin:0 0 14px" hidden></p>
       <div class="cards">
         <div class="card"><div class="num" id="convCount">-</div><div class="label" data-i18n="statConversations">会话</div></div>
         <div class="card"><div class="num" id="msgCount">-</div><div class="label" data-i18n="statMessages">消息</div></div>
         <div class="card"><div class="num" id="userCount">-</div><div class="label" data-i18n="statUsers">用户</div></div>
       </div>
+
+      <div class="meta" style="margin:20px 0 10px;font-weight:600;" data-i18n="ovDataTitle">数据总览</div>
+      <div class="cards cards-4">
+        <div class="card"><div class="num" id="ovToday">-</div><div class="label" data-i18n="ovToday">今日消息</div></div>
+        <div class="card"><div class="num" id="ovWeek">-</div><div class="label" data-i18n="ovWeek">近 7 天</div></div>
+        <div class="card"><div class="num" id="ovActiveDays">-</div><div class="label" data-i18n="ovActiveDays">有消息天数</div></div>
+        <div class="card"><div class="num" id="ovSenders">-</div><div class="label" data-i18n="ovSenders">发言人数</div></div>
+      </div>
+
+      <div class="section">
+        <h2 data-i18n="ovComposition">消息构成</h2>
+        <div class="ov-bars" id="ovTypeBars"></div>
+        <div class="meta" style="margin-top:10px" data-i18n="ovOtherHint">「其他」包括语音、系统提示和卡片消息。</div>
+      </div>
+      <div class="section">
+        <h2 data-i18n="ovRange">数据范围</h2>
+        <div class="kv-list" id="ovRangeList"></div>
+        <div class="meta" style="margin-top:10px" data-i18n="ovGroupHint">小火人 AI 不计入发言人数。</div>
+      </div>
+      <div class="section">
+        <h2 data-i18n="ovLocalSave">本地保存</h2>
+        <div class="kv-list" id="ovLocalList"></div>
+      </div>
+      <div class="section">
+        <h2 data-i18n="ovStorage">存储占用</h2>
+        <div class="kv-list" id="ovStorageList"></div>
+      </div>
+      <div class="meta" id="ovError" hidden></div>
     </div>
 
     <!-- Scrape (conversation list + scraper) -->
@@ -1943,7 +2052,7 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
     <div class="row">
       <input type="password" id="pwInput" data-i18n-placeholder="enterPassword" placeholder="输入密码" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg)">
       <button class="btn btn-primary" onclick="setPassword()" data-i18n="setBtn">设置</button>
-      <button class="btn" onclick="clearPassword()" data-i18n="clearBtn">清除</button>
+      <button class="btn btn-outline" onclick="clearPassword()" data-i18n="clearBtn">清除</button>
     </div>
     <div class="meta" id="pwStatus" style="margin-top:6px"></div>
 
@@ -2099,8 +2208,8 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
     <div class="row">
       <input type="password" id="notifyKeyInput" data-i18n-placeholder="notifyPlaceholder" placeholder="SCT... SendKey" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg)">
       <button class="btn btn-primary" onclick="saveNotifyKey()" data-i18n="setBtn">设置</button>
-      <button class="btn" onclick="clearNotifyKey()" data-i18n="clearBtn">清除</button>
-      <button class="btn" onclick="testNotify()" data-i18n="notifyTestBtn">测试</button>
+      <button class="btn btn-outline" onclick="clearNotifyKey()" data-i18n="clearBtn">清除</button>
+      <button class="btn btn-outline" onclick="testNotify()" data-i18n="notifyTestBtn">测试</button>
     </div>
     <div class="meta" id="notifyStatus" style="margin-top:6px"></div>
   </div>
@@ -2386,7 +2495,7 @@ const T = {
   zh: {
     appTitle: '抖音聊天记录导出',
     navOverview: '概览', navScrape: '采集', navSchedule: '定时', navExport: '导出/导入', navLogin: '登录', navSettings: '设置',
-    overviewDesc: '导出统计与快捷状态。',
+    overviewDesc: '数据规模、消息构成与存储占用。',
     chatViewer: '聊天查看器 →',
     panelTitle: '控制面板',
     enterPasswordPrompt: '请输入密码',
@@ -2395,6 +2504,57 @@ const T = {
     statConversations: '会话',
     statMessages: '消息',
     statUsers: '用户',
+    ovDataTitle: '数据总览',
+    ovCutoffPrefix: '数据统计截止至',
+    ovToday: '今日消息',
+    ovWeek: '近 7 天',
+    ovActiveDays: '有消息天数',
+    ovSenders: '发言人数',
+    ovComposition: '消息构成',
+    ovRange: '数据范围',
+    ovStorage: '存储占用',
+    ovEmpty: '暂无数据',
+    ovUnavailable: '暂时读不到数据',
+    ovComputing: '正在统计…',
+    ovRefresh: '刷新',
+    ovRefreshing: '统计中…',
+    ovLocalSave: '本地保存',
+    ovOtherHint: '「其他」包括语音、系统提示和卡片消息。',
+    ovGroupHint: '小火人 AI 不计入发言人数。',
+    ovTypeText: '文字',
+    ovTypeImage: '图片',
+    ovTypeEmoji: '表情包',
+    ovTypeVideo: '视频',
+    ovTypeShare: '分享卡片',
+    ovTypeOther: '其他',
+    ovSaved: '已保存',
+    ovVideoMessages: '视频消息',
+    ovLivePhoto: '实况图视频',
+    ovSavedOf: (saved, total) => '已保存 ' + saved + ' / 共 ' + total,
+    ovFiles: (n) => n + ' 个文件',
+    ovFirstMessage: '最早消息',
+    ovLastMessage: '最近消息',
+    ovLast30: '近 30 天消息',
+    ovSingles: '单聊',
+    ovGroups: '群聊',
+    ovAvgMessages: '平均每会话',
+    ovVoice: '语音转写',
+    ovVoiceDone: '成功',
+    ovVoiceFailed: '失败',
+    ovVoicePending: '待处理',
+    ovStorageDb: '数据库',
+    ovStorageMedia: '媒体文件',
+    ovStorageExports: '导出/备份文件',
+    ovStorageTotal: '合计',
+    ovStorageImages: '图片',
+    ovStorageEmoji: '表情包',
+    ovStorageVoice: '语音',
+    ovStorageAvatars: '头像',
+    ovStorageVideos: '视频',
+    ovStorageOther: '其他',
+    ovSchedule: '定时采集',
+    ovScheduleOff: '未开启',
+    ovScheduleOn: (when) => '已开启 · 下次 ' + when,
     loginTitle: '登录',
     scanQr: '扫码登录',
     cancel: '取消',
@@ -3015,7 +3175,7 @@ const T = {
   en: {
     appTitle: 'Douyin Chat Export',
     navOverview: 'Overview', navScrape: 'Scrape', navSchedule: 'Schedule', navExport: 'Export / Import', navLogin: 'Login', navSettings: 'Settings',
-    overviewDesc: 'Export stats and quick status.',
+    overviewDesc: 'Data size, message mix and storage.',
     chatViewer: 'Chat Viewer →',
     panelTitle: 'Control Panel',
     enterPasswordPrompt: 'Please enter password',
@@ -3024,6 +3184,57 @@ const T = {
     statConversations: 'Conversations',
     statMessages: 'Messages',
     statUsers: 'Users',
+    ovDataTitle: 'Data overview',
+    ovCutoffPrefix: 'Data as of',
+    ovToday: 'Today',
+    ovWeek: 'Last 7 days',
+    ovActiveDays: 'Days with messages',
+    ovSenders: 'Senders',
+    ovComposition: 'Message mix',
+    ovRange: 'Data range',
+    ovStorage: 'Storage',
+    ovEmpty: 'No data',
+    ovUnavailable: 'Data unavailable for now',
+    ovComputing: 'Counting…',
+    ovRefresh: 'Refresh',
+    ovRefreshing: 'Counting…',
+    ovLocalSave: 'Saved locally',
+    ovOtherHint: '"Other" covers voice, system notices and cards.',
+    ovGroupHint: 'The Firebot AI is not counted as a speaker.',
+    ovTypeText: 'Text',
+    ovTypeImage: 'Images',
+    ovTypeEmoji: 'Stickers',
+    ovTypeVideo: 'Videos',
+    ovTypeShare: 'Share cards',
+    ovTypeOther: 'Other',
+    ovSaved: 'Saved',
+    ovVideoMessages: 'Videos',
+    ovLivePhoto: 'Live photos',
+    ovSavedOf: (saved, total) => 'Saved ' + saved + ' of ' + total,
+    ovFiles: (n) => n + ' files',
+    ovFirstMessage: 'First message',
+    ovLastMessage: 'Latest message',
+    ovLast30: 'Last 30 days',
+    ovSingles: 'Direct chats',
+    ovGroups: 'Group chats',
+    ovAvgMessages: 'Avg. per chat',
+    ovVoice: 'Voice transcription',
+    ovVoiceDone: 'Done',
+    ovVoiceFailed: 'Failed',
+    ovVoicePending: 'Pending',
+    ovStorageDb: 'Database',
+    ovStorageMedia: 'Media files',
+    ovStorageExports: 'Exports / backups',
+    ovStorageTotal: 'Total',
+    ovStorageImages: 'Images',
+    ovStorageEmoji: 'Stickers',
+    ovStorageVoice: 'Voice',
+    ovStorageAvatars: 'Avatars',
+    ovStorageVideos: 'Videos',
+    ovStorageOther: 'Other',
+    ovSchedule: 'Scheduled scrape',
+    ovScheduleOff: 'Off',
+    ovScheduleOn: (when) => 'On · next ' + when,
     loginTitle: 'Login',
     scanQr: 'Scan QR Login',
     cancel: 'Cancel',
@@ -3701,6 +3912,8 @@ function setLang(l) {
   renderEnvSummary();
   // 日志页顶部那行「大小 · 更新于 …」是拼出来的，切语言也要重画
   renderServerLogMeta();
+  // 概览页的数据总览也是拼出来的句子，切语言要用缓存重画一遍
+  renderOverview();
   // 局域网访问那一块有拼出来的句子（访问地址、设备名、重启等待），切语言要重画
   renderLanAccess();
   // Refresh composed strings (scrapeTime, scheduleMeta) that are built from t() calls
@@ -3731,6 +3944,10 @@ function showPage(id) {
   document.querySelectorAll('.panel-page').forEach(p => p.classList.toggle('active', p.id === 'page-' + id));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === id));
   localStorage.setItem('panel-page', id);
+  if (id === 'overview') {
+    // 概览页的数字单独取（带缓存），不跟 5 秒状态轮询抢数据库
+    loadOverview(false);
+  }
   if (id === 'about') {
     // 版本号与更新状态每次进页面都刷新一遍
     loadPanelInfo();
@@ -3829,6 +4046,214 @@ async function loadStatus() {
     document.getElementById('scheduleMeta').textContent = schMeta;
 
   } catch (e) { console.error('Status fetch failed:', e); }
+}
+
+/* ── Overview data（数据总览）──
+   这些数字要扫整张 messages 表、遍历媒体目录，不能跟着 5 秒一次的状态轮询走。
+   单独一个接口、60 秒缓存，只在概览页打开或停留时取；切语言时用缓存重画。 */
+let _overviewData = null;
+let _overviewPollTimer = null;
+let _overviewRetryTimer = null;
+
+const OV_TYPE_LABELS = {
+  text: 'ovTypeText', image: 'ovTypeImage', emoji: 'ovTypeEmoji',
+  video: 'ovTypeVideo', share: 'ovTypeShare', other: 'ovTypeOther',
+};
+const OV_STORAGE_LABELS = {
+  images: 'ovStorageImages', emoji: 'ovStorageEmoji', voice: 'ovStorageVoice',
+  avatars: 'ovStorageAvatars', videos: 'ovStorageVideos', other: 'ovStorageOther',
+};
+
+function fmtOverviewNum(n) {
+  return Number(n || 0).toLocaleString();
+}
+
+function fmtOverviewBytes(n) {
+  const value = Number(n || 0);
+  if (value < 1024) return value + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = value / 1024;
+  let i = 0;
+  while (size >= 1024 && i < units.length - 1) { size /= 1024; i += 1; }
+  return (size >= 100 ? size.toFixed(0) : size.toFixed(1)) + ' ' + units[i];
+}
+
+function fmtOverviewTime(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString() : '—';
+}
+
+// 「数据统计截止至」跟聊天查看器同一个写法：2026年11月14日 16:51:38
+function fmtOverviewCutoff(ts) {
+  const date = new Date(Number(ts) * 1000);
+  if (!ts || Number.isNaN(date.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return date.getFullYear() + '年' + (date.getMonth() + 1) + '月' + date.getDate() + '日 '
+    + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
+}
+
+function ovKvRow(key, value) {
+  return '<div class="kv-row"><span class="kv-key">' + key + '</span>'
+    + '<span class="kv-val">' + value + '</span></div>';
+}
+
+function renderOverview() {
+  const d = _overviewData;
+  // 「数据统计截止至」在最上面单独一行：没有采集记录就整行不显示
+  const cutoffEl = document.getElementById('ovCutoff');
+  if (cutoffEl) {
+    const ts = d && d.collected_at ? Number(d.collected_at) : 0;
+    const text = ts > 0 ? t('ovCutoffPrefix') + ' ' + fmtOverviewCutoff(ts) : '';
+    cutoffEl.textContent = text;
+    cutoffEl.hidden = !text;
+  }
+  const errorEl = document.getElementById('ovError');
+  const barIds = ['ovToday', 'ovWeek', 'ovActiveDays', 'ovSenders'];
+  if (!d) {
+    if (errorEl) { errorEl.hidden = true; errorEl.textContent = ''; }
+    return;
+  }
+  if (d.computing) {
+    // 后台还在扫库：占位符先留着，页面别闪成「读不到」
+    if (errorEl) { errorEl.hidden = false; errorEl.textContent = t('ovComputing'); }
+    return;
+  }
+  if (!d.available) {
+    barIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '—';
+    });
+    ['ovTypeBars', 'ovRangeList', 'ovStorageList'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '';
+    });
+    if (errorEl) { errorEl.hidden = false; errorEl.textContent = t('ovUnavailable'); }
+    return;
+  }
+  if (errorEl) { errorEl.hidden = true; errorEl.textContent = ''; }
+
+  const act = d.activity || {};
+  document.getElementById('ovToday').textContent = fmtOverviewNum(act.today);
+  document.getElementById('ovWeek').textContent = fmtOverviewNum(act.last7);
+  document.getElementById('ovActiveDays').textContent = fmtOverviewNum(act.active_days);
+  document.getElementById('ovSenders').textContent = fmtOverviewNum(act.senders);
+
+  const barsEl = document.getElementById('ovTypeBars');
+  if (barsEl) {
+    const rows = (d.types || []).filter(item => item.count > 0);
+    if (!rows.length) {
+      barsEl.innerHTML = '<div class="meta">' + t('ovEmpty') + '</div>';
+    } else {
+      barsEl.innerHTML = rows.map(item => {
+        const label = t(OV_TYPE_LABELS[item.key] || 'ovTypeOther');
+        const pct = Number(item.percent || 0);
+        return '<div class="ov-bar-row">'
+          + '<span class="ov-bar-name">' + label + '</span>'
+          + '<span class="ov-bar-count">' + fmtOverviewNum(item.count) + '</span>'
+          + '<span class="ov-bar-pct">' + pct.toFixed(1) + '%</span>'
+          + '<span class="ov-bar-track"><span class="ov-bar-fill" style="width:' + Math.min(100, pct) + '%"></span></span>'
+          + '</div>';
+      }).join('');
+    }
+  }
+
+  const totals = d.totals || {};
+  const rangeEl = document.getElementById('ovRangeList');
+  if (rangeEl) {
+    const sched = d.schedule || {};
+    const next = (sched.enabled && sched.next_run)
+      ? t('ovScheduleOn', fmtOverviewTime(sched.next_run))
+      : t('ovScheduleOff');
+    const items = [
+      [t('ovFirstMessage'), fmtOverviewTime(act.first_message_time)],
+      [t('ovLastMessage'), fmtOverviewTime(act.last_message_time)],
+      [t('ovLast30'), fmtOverviewNum(act.last30)],
+      [t('ovSingles'), fmtOverviewNum(totals.singles)],
+      [t('ovGroups'), fmtOverviewNum(totals.groups)],
+      [t('ovAvgMessages'), fmtOverviewNum(totals.avg_messages)],
+      [t('ovSchedule'), next],
+    ];
+    rangeEl.innerHTML = items.map(pair => ovKvRow(pair[0], pair[1])).join('');
+  }
+
+  const localEl = document.getElementById('ovLocalList');
+  if (localEl) {
+    const media = d.media || {};
+    const voice = d.voice || {};
+    const savedOf = (saved, total) => t('ovSavedOf', fmtOverviewNum(saved), fmtOverviewNum(total));
+    const rows = [];
+    const addMedia = (label, info) => {
+      if (!info || !(info.total > 0)) return;
+      rows.push([label, savedOf(info.saved, info.total)]);
+    };
+    addMedia(t('ovTypeImage'), media.images);
+    addMedia(t('ovTypeEmoji'), media.emoji);
+    addMedia(t('ovVideoMessages'), media.videos);
+    addMedia(t('ovLivePhoto'), media.live_photo);
+    if (voice.total) {
+      let voiceText = t('ovVoiceDone') + ' ' + fmtOverviewNum(voice.success);
+      if (voice.failed) voiceText += ' · ' + t('ovVoiceFailed') + ' ' + fmtOverviewNum(voice.failed);
+      if (voice.pending) voiceText += ' · ' + t('ovVoicePending') + ' ' + fmtOverviewNum(voice.pending);
+      rows.push([t('ovVoice'), voiceText]);
+    }
+    localEl.innerHTML = rows.length
+      ? rows.map(pair => ovKvRow(pair[0], pair[1])).join('')
+      : '<div class="meta">' + t('ovEmpty') + '</div>';
+  }
+
+  const storageEl = document.getElementById('ovStorageList');
+  if (storageEl) {
+    const st = d.storage || {};
+    const items = [
+      [t('ovStorageDb'), fmtOverviewBytes(st.db_bytes)],
+      [t('ovStorageMedia'), fmtOverviewBytes(st.media_bytes) + ' · ' + t('ovFiles', fmtOverviewNum(st.media_files))],
+    ];
+    // 只有确实存在导出 / 备份文件时才显示这一行，不拿内部小文件凑数
+    if (st.exports_bytes > 0) {
+      items.push([t('ovStorageExports'), fmtOverviewBytes(st.exports_bytes)]);
+    }
+    items.push([t('ovStorageTotal'), fmtOverviewBytes(st.total_bytes)]);
+    (st.detail || []).filter(item => item.bytes || item.files).forEach(item => {
+      items.push([
+        t(OV_STORAGE_LABELS[item.key] || 'ovStorageOther'),
+        fmtOverviewBytes(item.bytes) + ' · ' + t('ovFiles', fmtOverviewNum(item.files)),
+      ]);
+    });
+    storageEl.innerHTML = items.map(pair => ovKvRow(pair[0], pair[1])).join('');
+  }
+}
+
+async function loadOverview(force) {
+  if (_overviewRetryTimer) { clearTimeout(_overviewRetryTimer); _overviewRetryTimer = null; }
+  try {
+    const url = '/panel/api/overview' + (force ? '?refresh=1' : '');
+    const r = await fetch(url);
+    if (r.status === 401) return;   // 登录态失效交给现有统一处理，别在这里弹错
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    _overviewData = await r.json();
+    renderOverview();
+    // 后台还在算：3 秒后再问一次（只挂一个定时器，别越叠越多）
+    if (_overviewData && _overviewData.computing) {
+      _overviewRetryTimer = setTimeout(() => {
+        _overviewRetryTimer = null;
+        loadOverview(false);
+      }, 3000);
+    }
+  } catch (e) {
+    console.error('Overview fetch failed:', e);
+    _overviewData = { available: false };
+    renderOverview();
+  }
+}
+
+async function refreshOverview() {
+  const btn = document.getElementById('ovRefreshBtn');
+  if (btn) { btn.disabled = true; btn.textContent = t('ovRefreshing'); }
+  try {
+    // 手动刷新走同步重算：点一次就要拿到新数字，不能让页面继续看旧缓存
+    await loadOverview(true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = t('ovRefresh'); }
+  }
 }
 
 // Set both textContent AND data-i18n so future applyI18n() passes stay in sync
@@ -9800,10 +10225,17 @@ let _statusPollTimer = null;
 function _startStatusPolling() {
   if (_statusPollTimer) return;
   _statusPollTimer = setInterval(loadStatus, 5000);
+  // 概览页的「数据总览」单独每 60 秒刷一次，而且只在概览页可见时才请求。
+  _overviewPollTimer = setInterval(() => {
+    const page = document.getElementById('page-overview');
+    if (page && page.classList.contains('active')) loadOverview(false);
+  }, 60000);
 }
 
 function _stopStatusPolling() {
   if (_statusPollTimer) { clearInterval(_statusPollTimer); _statusPollTimer = null; }
+  if (_overviewPollTimer) { clearInterval(_overviewPollTimer); _overviewPollTimer = null; }
+  if (_overviewRetryTimer) { clearTimeout(_overviewRetryTimer); _overviewRetryTimer = null; }
 }
 
 async function panelLogin() {

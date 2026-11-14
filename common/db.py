@@ -52,7 +52,10 @@ def init_db():
             participant_uids TEXT DEFAULT '[]',
             last_message_time INTEGER DEFAULT 0,
             message_count INTEGER DEFAULT 0,
-            display_count INTEGER
+            display_count INTEGER,
+            spark_days INTEGER,
+            spark_icon TEXT,
+            collected_at INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -97,6 +100,19 @@ def init_db():
             fields TEXT
         );
 
+        -- 补媒体时「试过、补不下来」的记录（见 common/media_retry.py）。
+        -- 链接过期的别再每轮采集都重试一遍，否则收尾要白等好几分钟。
+        CREATE TABLE IF NOT EXISTS media_retry (
+            msg_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            signature TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_at INTEGER NOT NULL DEFAULT 0,
+            permanent INTEGER NOT NULL DEFAULT 0,
+            reason TEXT,
+            PRIMARY KEY (msg_id, kind)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages(conv_id, seq);
         CREATE INDEX IF NOT EXISTS idx_messages_content ON messages(content);
@@ -124,6 +140,20 @@ def init_db():
     # NULL 表示「还没算过」，阅读端（后端）取数据时会补算并写回。
     try:
         conn.execute("ALTER TABLE conversations ADD COLUMN display_count INTEGER")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+    # 迁移：会话列表上的「火花」天数与本地图标（见 common/spark_icons.py）
+    try:
+        conn.execute("ALTER TABLE conversations ADD COLUMN spark_days INTEGER")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+    try:
+        conn.execute("ALTER TABLE conversations ADD COLUMN spark_icon TEXT")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+    # 迁移：这个会话本次第一次调用消息 API 的时间（数据洞察的「数据统计截至」）
+    try:
+        conn.execute("ALTER TABLE conversations ADD COLUMN collected_at INTEGER")
     except sqlite3.OperationalError:
         pass  # 列已存在
     conn.commit()
@@ -169,6 +199,38 @@ def update_conversation_stats(conn, conv_id):
              display_count = NULL
            WHERE conv_id = ?""",
         (conv_id, conv_id, conv_id),
+    )
+
+
+def update_conversation_spark(conn, conv_id, days, icon=None):
+    """记录会话的火花天数；icon 传 None 时保留上一次存好的图。"""
+    conn.execute(
+        """UPDATE conversations SET
+             spark_days = ?,
+             spark_icon = COALESCE(?, spark_icon)
+           WHERE conv_id = ?""",
+        (int(days or 0), icon or None, conv_id),
+    )
+
+
+def clear_conversation_spark(conn, conv_id):
+    """这个会话当前没有火花：天数和图标一起清掉。"""
+    conn.execute(
+        "UPDATE conversations SET spark_days = 0, spark_icon = NULL WHERE conv_id = ?",
+        (conv_id,),
+    )
+
+
+def mark_conversation_collected(conn, conv_id, when=None):
+    """记录「数据统计截至」：这个会话本次采集第一次调消息 API 的 Unix 秒。
+
+    存的是采集动作发生的时刻（显示时按本地时区展开），不是最新一条消息的发送时间。
+    """
+    if when is None:
+        when = int(time.time())
+    conn.execute(
+        "UPDATE conversations SET collected_at = ? WHERE conv_id = ?",
+        (int(when), conv_id),
     )
 
 

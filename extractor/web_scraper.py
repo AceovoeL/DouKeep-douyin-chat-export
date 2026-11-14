@@ -33,6 +33,7 @@ from common.message_kinds import (
     daily_share_text, is_daily_share, is_view_once, share_cover_url,
 )
 from common.message_modify import parse_modify
+from common.spark_icons import save_spark_icon
 from extractor.forwarded import backfill_uploaded_forwards
 from extractor.im_media import (  # noqa: F401 — re-exported for tools/control_panel
     _detect_media_format, _fetch, _save_emoji, _save_image,
@@ -40,6 +41,7 @@ from extractor.im_media import (  # noqa: F401 — re-exported for tools/control
 )
 from extractor.models import (
     init_db, get_db, upsert_user, upsert_conversation, update_conversation_stats,
+    update_conversation_spark, clear_conversation_spark, mark_conversation_collected,
 )
 from extractor.voice_transcriber import (
     VoiceTranscriber,
@@ -1389,10 +1391,11 @@ class WebChatScraper:
         except Exception as e:
             print(f"  [!] 补齐历史表情/卡片图失败（消息已保存）: {type(e).__name__}")
             return
-        if stats["total"]:
+        if stats["total"] or stats.get("skipped"):
             print(
                 f"  [media] 补齐缺图的消息: 需要 {stats['total']} 条，"
-                f"成功 {stats['ok']}，失败 {stats['failed']}"
+                f"成功 {stats['ok']}，失败 {stats['failed']}，"
+                f"跳过 {stats.get('skipped', 0)}"
             )
 
     async def _backfill_share_covers_once(self):
@@ -1461,8 +1464,19 @@ class WebChatScraper:
             ensure_live_photo_covers, live_photo_jobs, save_cenc_jobs,
         )
 
-        jobs = live_photo_jobs(self._db_conn)
+        from common import media_retry
+
+        all_jobs = live_photo_jobs(self._db_conn)
+        # 以前试过、补不下来的（链接早就过期）别再每轮都试一遍，否则收尾白等好几分钟
+        jobs = [
+            job for job in all_jobs
+            if not media_retry.should_skip(
+                self._db_conn, job.get("msg_id"), job.get("kind") or "live")
+        ]
+        blocked = len(all_jobs) - len(jobs)
         if not jobs:
+            if blocked:
+                print(f"  [live] 有 {blocked} 条实况图以前就补不下来，这次跳过")
             return
         covers = await asyncio.to_thread(
             ensure_live_photo_covers, self._db_conn, jobs
@@ -1475,6 +1489,8 @@ class WebChatScraper:
             f"  [live] 实况图补全: 成功 {stats['ok']}，失败 {stats['fail']}，"
             f"跳过 {stats['skipped']}"
         )
+        if blocked:
+            print(f"  [live] 另有 {blocked} 条以前就补不下来，这次跳过")
 
     async def _extract_and_save_user_info(self, conv_id):
         """从 userInfoStore 提取用户信息（昵称、头像、unique_id），下载头像到本地。"""
@@ -1679,6 +1695,63 @@ class WebChatScraper:
         except Exception as e:
             print(f"  [!] 下载会话头像失败: {e}")
 
+    async def _read_active_conv_spark(self):
+        """读当前激活会话列表项上的火花：天数 + 图标地址。
+
+        抖音把「火花图标 + 天数」放在标题右侧的 commonStreak* 容器里（天数在
+        commonStreaknormalText，图标是容器里的 img）。找不到活跃项时返回 None，
+        调用方据此「不更新」——列表还没渲染好时不能把旧数据清掉。
+        """
+        return await self.page.evaluate(f"""() => {{
+            const active = document.querySelector('{SEL_CONV_ITEM}[class*="curConversation"]');
+            if (!active) return null;
+            const box = active.querySelector('[class*="commonStreakstreakContainer"]');
+            if (!box) return {{ days: 0, icon: '' }};
+            const textEl = box.querySelector('[class*="commonStreaknormalText"]');
+            const raw = (textEl ? textEl.textContent : box.textContent) || '';
+            const digits = String(raw).replace(/[^0-9]/g, '');
+            const days = digits ? parseInt(digits, 10) : 0;
+            const img = box.querySelector('img');
+            const icon = img && img.src && /^https?:/i.test(img.src) ? img.src : '';
+            return {{ days: Number.isFinite(days) ? days : 0, icon: icon }};
+        }}""")
+
+    async def _extract_and_save_conv_spark(self, conv_id):
+        """把当前会话的火花天数/图标落库；本地没有图标时按官方文件名下载。"""
+        try:
+            spark = await self._read_active_conv_spark()
+        except Exception as exc:
+            print(f"  [!] 读取火花失败: {type(exc).__name__}")
+            return
+        if spark is None:
+            # 会话列表项还没渲染好：不动旧数据，免得把已有的火花清掉
+            return
+
+        try:
+            days = int(spark.get("days") or 0)
+        except (TypeError, ValueError):
+            days = 0
+        if days <= 0:
+            clear_conversation_spark(self._db_conn, conv_id)
+            self._db_conn.commit()
+            return
+
+        icon = ""
+        raw_icon = str(spark.get("icon") or "")
+        if raw_icon:
+            icon = await asyncio.to_thread(save_spark_icon, raw_icon) or ""
+        update_conversation_spark(self._db_conn, conv_id, days, icon or None)
+        self._db_conn.commit()
+        if icon:
+            print(f"  [*] 火花 {days} 天，图标已保存")
+        else:
+            print(f"  [*] 火花 {days} 天")
+
+    def _mark_collected_at(self, conv_id, when=None):
+        """记下这个会话本次采集第一次调用消息 API 的时刻（Unix 秒）。"""
+        mark_conversation_collected(self._db_conn, conv_id, when=when)
+        self._db_conn.commit()
+
     async def _extract_conversation(self, conv_index, conv_info, refresh=False):
         """Click a conversation and extract all its messages.
 
@@ -1738,6 +1811,9 @@ class WebChatScraper:
             # 从激活的会话列表项抓取并保存会话头像
             await self._extract_and_save_conv_avatar(conv_id)
 
+            # 列表项上的「火花图标 + 天数」；本地没有图标就按官方文件名存一份
+            await self._extract_and_save_conv_spark(conv_id)
+
             # 提取用户信息（昵称、头像、unique_id）
             await self._extract_and_save_user_info(conv_id)
 
@@ -1753,6 +1829,9 @@ class WebChatScraper:
                 print(f"  [!] 未能获取 short_id，跳过该会话（其它会话不受影响；已有消息会保留）")
                 return
 
+            # 真正开始用 API 取这个会话的消息了：记下此刻（本地时间）作为
+            # 「数据统计截至」——是本次采集拉数据的时间，不是最后一条消息的发送时间
+            self._mark_collected_at(conv_id)
             total_saved = await self._api_fetch_all_messages(
                 conv_id, short_id, incremental=self.incremental, refresh=refresh
             )

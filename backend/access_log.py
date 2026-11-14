@@ -35,6 +35,7 @@ _ROUTES = (
     (r"^/panel/api/notify/", "控制面板：通知设置"),
     (r"^/panel/api/password/", "控制面板：密码设置"),
     (r"^/panel/api/login/check$", "控制面板：抖音登录探测"),
+    (r"^/panel/api/overview$", "控制面板：数据总览"),
     (r"^/panel/api/status$", "控制面板：运行状态轮询"),
     (r"^/panel/api/", "控制面板 API"),
     (r"^/panel", "控制面板页面"),

@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 
-from common import card_icons
+from common import card_icons, media_retry
 from common.message_kinds import share_cover_url, VIDEO_SHARE_AWE_TYPES
 from common.paths import EMOJI_DIR
 
@@ -137,6 +137,27 @@ def has_media_source(row: dict) -> bool:
     return row.get("msg_type") == 2 and str(row.get("media_url") or "").startswith("http")
 
 
+def pending_signature(row: dict) -> str:
+    """这次会拿哪个地址去试 —— 只用来判断「地址有没有换」。
+
+    地址过期是常态，记下来的地址没变就不用再试；重新抓到消息、载荷里换成新签名的
+    链接时签名会变，那时才值得再试一次。
+    """
+    cj = content_json(row)
+    if cj:
+        icons = card_icons.card_icon_urls(cj)
+        if icons:
+            return icons[0]
+        cover = share_cover_url(cj)
+        if cover:
+            return cover
+        url = emoji_media_url(cj, row.get("media_url"))
+        if url:
+            return url
+    url = row.get("media_url")
+    return url if isinstance(url, str) else ""
+
+
 def iter_media_rows(conn, *, exclude: set[str] | None = None) -> list[dict]:
     """还没存下图、但**现在确实下得动**的行（表情 + 卡片）。
 
@@ -156,7 +177,7 @@ def iter_media_rows(conn, *, exclude: set[str] | None = None) -> list[dict]:
 
 
 def backfill_media(conn, *, limit: int | None = None, on_progress=None,
-                   exclude: set[str] | None = None) -> dict:
+                   exclude: set[str] | None = None, force: bool = False) -> dict:
     """把缺的表情/卡片图补下来，成功的那几条顺手写回 ``media_local_path``。
 
     ⚠️ 这个函数**必须在打开 ``conn`` 的同一个线程里跑**（sqlite3 的连接不能跨线程）。
@@ -165,17 +186,36 @@ def backfill_media(conn, *, limit: int | None = None, on_progress=None,
 
     ``exclude``：调用方自己已经处理过的 msg_id，别重复统计。
 
-    返回 ``{"total", "ok", "failed", "paths"}``：``paths`` 是
-    ``msg_id → 相对路径``（测试和日志用）。
+    force：忽略「以前补不下来」的记录、全部重试（面板手动点「下载历史图片」时用）。
+    默认 False —— 链接过期的那些不再每轮重试，否则收尾要白等好几分钟。
+
+    返回 {"total", "ok", "failed", "skipped", "paths"}：paths 是
+    msg_id → 相对路径；skipped 是这次按失败记录直接跳过的条数（一次请求都没发）。
     """
     rows = iter_media_rows(conn, exclude=exclude)
+    if force:
+        # 手动「重新补」：以前的失败记录作废，全部再试一遍
+        media_retry.clear(conn, kinds=("media",))
+    pending = []
+    skipped = 0
+    for row in rows:
+        signature = pending_signature(row)
+        if not force and media_retry.should_skip(conn, row["msg_id"], "media", signature):
+            skipped += 1
+            continue
+        pending.append((row, signature))
     if limit is not None:
-        rows = rows[:limit]
-    result = {"total": len(rows), "ok": 0, "failed": 0, "paths": {}}
-    for index, row in enumerate(rows, start=1):
-        rel, source = backfill_row_media(row)
+        pending = pending[:limit]
+    result = {"total": len(pending), "ok": 0, "failed": 0, "skipped": skipped, "paths": {}}
+    for index, (row, signature) in enumerate(pending, start=1):
+        rel, source, error = attempt_row_media(row)
         if not rel:
             result["failed"] += 1
+            # 记下来：链接过期的下次不再白试（见 common/media_retry.py）
+            media_retry.note_failure(
+                conn, row["msg_id"], "media",
+                signature=source or signature, exc=error,
+            )
         else:
             conn.execute(
                 "UPDATE messages SET media_local_path = ?, "
@@ -184,9 +224,10 @@ def backfill_media(conn, *, limit: int | None = None, on_progress=None,
             )
             result["ok"] += 1
             result["paths"][row["msg_id"]] = rel
+            media_retry.note_success(conn, row["msg_id"], "media")
         if on_progress is not None:
             on_progress(index, result)
-    if result["ok"]:
+    if result["ok"] or result["failed"]:
         conn.commit()
     return result
 
@@ -197,7 +238,24 @@ def backfill_row(row: dict) -> str | None:
 
 
 def backfill_row_media(row: dict) -> tuple[str | None, str | None]:
-    """补一条，返回 ``(相对路径, 这条用的原始下载地址)``。
+    """补一条，返回 (相对路径, 这条用的原始下载地址)。"""
+    path, source, _error = attempt_row_media(row)
+    return path, source
+
+
+def attempt_row_media(row: dict) -> tuple[str | None, str | None, BaseException | None]:
+    """补一条，连失败原因一起带出来，给 media_retry 判断要不要再试。
+
+    下载函数自己会把 403 / 网络错误吞掉只返回 None，所以用一个 errors 列表把异常
+    接住（见 card_icons.save_card_icon 的 error_out）。
+    """
+    errors: list = []
+    path, source = _attempt_row_media(row, errors)
+    return path, source, (errors[0] if errors else None)
+
+
+def _attempt_row_media(row: dict, errors: list) -> tuple[str | None, str | None]:
+    """补一条，返回 (相对路径, 这条用的原始下载地址)。
 
     地址要一起带出来：老数据里 ``media_url`` 往往是空的（小火人当初就是当普通消息
     存的），补完之后把它记上，下次就不会再被当成"缺图"。
@@ -211,7 +269,7 @@ def backfill_row_media(row: dict) -> tuple[str | None, str | None]:
         if icons:
             first = None
             for url in icons:
-                rel = card_icons.save_card_icon(url)
+                rel = card_icons.save_card_icon(url, errors)
                 if rel and first is None:
                     first = (rel, url)
             if first:
@@ -220,11 +278,11 @@ def backfill_row_media(row: dict) -> tuple[str | None, str | None]:
         # 落地缓存。media_url 顺手记上原始链接，下次不再当成缺图。
         cover = share_cover_url(cj)
         if cover:
-            rel = card_icons.save_card_icon(cover)
+            rel = card_icons.save_card_icon(cover, errors)
             if rel:
                 return rel, cover
         url = emoji_media_url(cj, row.get("media_url"))
-        return save_emoji_media(cj, row.get("media_url")), url
+        return save_emoji_media(cj, row.get("media_url"), errors), url
     # 连载荷都没有的老表情：数据库里记着的地址就是唯一线索
     url = row.get("media_url")
     if row.get("msg_type") == 2 and isinstance(url, str) and url.startswith("http"):
@@ -240,7 +298,8 @@ def emoji_media_url(cj: dict, row_url: str | None = None) -> str:
     return card_icons.image_url(cj.get("url"))
 
 
-def save_emoji_media(cj: dict, row_url: str | None = None) -> str | None:
+def save_emoji_media(cj: dict, row_url: str | None = None,
+                    errors: list | None = None) -> str | None:
     """下载表情图（明文 CDN 链接），存进 ``data/media/emoji/``。"""
     url = emoji_media_url(cj, row_url)
     if not url:
@@ -250,5 +309,7 @@ def save_emoji_media(cj: dict, row_url: str | None = None) -> str | None:
     os.makedirs(EMOJI_DIR, exist_ok=True)
     try:
         return _save_emoji(url, EMOJI_DIR)
-    except Exception:  # 过期链接 / 网络问题：这条补不了，别把整轮打断
+    except Exception as exc:  # 过期链接 / 网络问题：这条补不了，别把整轮打断
+        if errors is not None:
+            errors.append(exc)
         return None

@@ -126,7 +126,8 @@ def test_expired_link_counts_as_failed(temp_db, media_dirs, monkeypatch):
     insert_message(conn, "srv_music", "c1", 1, msg_type=1, content="《音乐公开课》", raw_data=_doubao_row())
     monkeypatch.setattr(card_icons, "_fetch_icon", lambda url: (None, ""))
     stats = media_backfill.backfill_media(conn)
-    assert stats == {"total": 1, "ok": 0, "failed": 1, "paths": {}}
+    assert stats["total"] == 1 and stats["ok"] == 0
+    assert stats["failed"] == 1 and stats["skipped"] == 0
     assert conn.execute(
         "SELECT media_local_path FROM messages WHERE msg_id='srv_music'").fetchone()[0] is None
     conn.close()

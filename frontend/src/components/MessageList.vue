@@ -6,7 +6,10 @@
     </div>
     <template v-else>
       <div class="msg-header" v-if="!isStatic">
-        <h3>{{ conversation.name || '未命名' }}</h3>
+        <div class="msg-title-row">
+          <h3>{{ conversation.name || '未命名' }}</h3>
+          <SparkBadge :days="conversation.spark_days || 0" :icon="conversation.spark_icon || ''" />
+        </div>
         <span class="msg-total">{{ total }} 条消息</span>
         <!-- 只要这个会话有两个以上的人就可以设置「我」：群聊同样需要
              （以前只在正好两个人的会话里出现，群聊里根本点不到，于是群里
@@ -721,6 +724,7 @@ import { renderRichText as _renderRichText } from '@/lib/highlight'
 import { resolveAvatarUrl, iconSrc } from '@/lib/media'
 import { loadBubbleCatalog, resolveBubble, bubbleCssVars } from '@/lib/bubbleConfig'
 import MessageLightbox from './MessageLightbox.vue'
+import SparkBadge from './SparkBadge.vue'
 import LivePhoto from './LivePhoto.vue'
 import {
   clearCjCache, getContentJson, tryParseJson, tryParseShareContent, extractShareTitle,
@@ -2063,6 +2067,13 @@ watch(() => props.jumpToSeq, async (seq) => {
      「设置"我"」那颗按钮挤出屏幕右边，手机上就再也点不到了。 */
   flex-wrap: wrap;
   flex-shrink: 0;
+}
+.msg-title-row {
+  display: flex;
+  align-items: center;
+  /* 和会话列表一致：火花图的透明边已经占了一点距离 */
+  gap: 3px;
+  min-width: 0;
 }
 .msg-header h3 {
   font-size: 15px;

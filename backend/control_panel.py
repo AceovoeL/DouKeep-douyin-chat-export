@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 
 from backend import database
+from backend import overview as _overview
 from backend import cloudflared as _cloudflared
 from common import access as _access
 from common import config as _cfg, paths
@@ -1775,7 +1776,11 @@ async def _run_backfill():
                 def on_progress(index, partial):
                     _backfill_state["done"] += 1
 
-                return backfill_media(own, on_progress=on_progress, exclude=handled)
+                # force=True：手动点的「下载历史图片」要真的全部重试一遍，
+                # 不理会「以前补不下来」的记录（自动采集收尾才跳过那些）。
+                return backfill_media(
+                    own, on_progress=on_progress, exclude=handled, force=True
+                )
             finally:
                 own.close()
 
@@ -2040,6 +2045,28 @@ async def panel_status():
             # （面板会把高级输入框打开，把表达式原文填进去）。
             "rule": _cron_to_simple_rule(_scheduler_state["schedule"]),
             "next_run": _scheduler_state["next_run"],
+        },
+    }
+
+
+@control_router.get("/api/overview")
+async def panel_overview(refresh: int = 0):
+    """概览页「数据总览」。
+
+    单独一个接口，不塞进 /api/status：那边 5 秒轮询一次，而这里要扫整张
+    messages 表、遍历媒体目录。放在线程里算（见 backend/overview.py 的缓存
+    说明），概览页打开时才来取，慢一点也不会堵住别的请求。
+
+    refresh=1 跳过缓存强制重算（测试与以后的手动刷新用）。
+    """
+    # 普通请求立刻返回（缓存过期也是先给旧数字）；只有手动刷新会真的重算，
+    # 放到线程里跑，别把整个服务的事件循环卡住。
+    data = await asyncio.to_thread(_overview.collect, bool(refresh))
+    return {
+        **data,
+        "schedule": {
+            "enabled": bool(_scheduler_state["enabled"]),
+            "next_run": _scheduler_state.get("next_run"),
         },
     }
 

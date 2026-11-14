@@ -9,7 +9,10 @@ from common import db as _db
 from common.paths import DB_PATH  # re-exported for backward compatibility
 
 # Writer connections enable WAL + foreign keys (unchanged behavior).
-from common.db import init_db, upsert_user, upsert_conversation, update_conversation_stats
+from common.db import (
+    init_db, upsert_user, upsert_conversation, update_conversation_stats,
+    update_conversation_spark, clear_conversation_spark, mark_conversation_collected,
+)
 
 
 def get_db():

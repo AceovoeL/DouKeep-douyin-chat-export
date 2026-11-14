@@ -1,11 +1,16 @@
 <script setup>
 // 数据洞察弹窗：热力图 / 消息排行 / 文字表情榜 / 友谊数据 / 关键词。
 // 数据全部来自本地统计接口 /api/conversations/{id}/insights，打开时现算一次。
-import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import SparkBadge from './SparkBadge.vue'
+import { cutoffLabel } from '@/lib/insightMeta.js'
 
 const props = defineProps({
   convId: { type: String, default: '' },
   convName: { type: String, default: '' },
+  collectedAt: { type: Number, default: 0 },
+  sparkDays: { type: Number, default: 0 },
+  sparkIcon: { type: String, default: '' },
   open: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close'])
@@ -13,6 +18,9 @@ const emit = defineEmits(['close'])
 const loading = ref(false)
 const error = ref('')
 const data = ref(null)
+// 「数据统计截止至」只认采集时记下的时间；没有记录就不显示这一条，
+// 不能拿最后一条消息的发送时间冒充采集时间
+const cutoffText = computed(() => cutoffLabel(props.collectedAt))
 
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const WEEKDAY_SHORT = ['一', '二', '三', '四', '五', '六', '日']
@@ -178,6 +186,14 @@ const fmtCount = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : String(n 
           <button class="insights-close" aria-label="关闭" @click="emit('close')">✕</button>
         </header>
 
+        <div v-if="cutoffText || sparkDays > 0" class="insights-meta">
+          <span v-if="cutoffText" class="insights-cutoff">{{ cutoffText }}</span>
+          <span v-if="sparkDays > 0" class="insights-spark">
+            <span class="insights-spark-label">火花天数</span>
+            <SparkBadge :days="sparkDays" :icon="sparkIcon" />
+          </span>
+        </div>
+
         <div v-if="loading" class="insights-status">正在统计…（可能需要数秒）</div>
         <div v-else-if="error" class="insights-status">{{ error }} <button class="insights-retry" @click="load">重试</button></div>
 
@@ -265,6 +281,10 @@ const fmtCount = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : String(n 
 .insights-modal { background: var(--panel-bg, #fff); color: var(--ink, #111); border-radius: 12px; max-width: 720px; width: 100%; max-height: 88vh; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
 .insights-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line, #eee); }
 .insights-head h2 { font-size: 16px; font-weight: 600; }
+.insights-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 10px 18px; border-bottom: 1px solid var(--line-soft, #eee); font-size: 12px; color: var(--sub, #666); }
+.insights-cutoff { font-variant-numeric: tabular-nums; }
+.insights-spark { display: inline-flex; align-items: center; gap: 4px; }
+.insights-spark-label { color: var(--sub, #888); }
 .insights-close { border: none; background: none; font-size: 16px; cursor: pointer; color: inherit; opacity: .6; padding: 4px 8px; }
 .insights-close:hover { opacity: 1; }
 .insights-status { padding: 40px 20px; text-align: center; color: var(--sub, #888); font-size: 14px; }

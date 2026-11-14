@@ -558,6 +558,10 @@ app.include_router(screenshot_router)
 from backend.chatlab_pull import chatlab_router
 app.include_router(chatlab_router)
 
+# 表情包同步：某个人发过的表情包目录 + 图片（按内容 MD5 去重）
+from backend.stickers import stickers_router
+app.include_router(stickers_router)
+
 
 @app.on_event("startup")
 async def startup():

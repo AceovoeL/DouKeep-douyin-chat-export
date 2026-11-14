@@ -84,6 +84,10 @@ def _reset_panel_caches():
             module._github_login_refreshing = False
             module._video_pending_cache = None
 
+        overview = sys.modules.get("backend.overview")
+        if overview is not None:
+            overview.reset_cache()
+
     clear()
     yield
     clear()

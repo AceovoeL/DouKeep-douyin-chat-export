@@ -12,6 +12,7 @@ import {
   setThemeOverride,
   themeOverride,
 } from './lib/appearance.js'
+import { cutoffLabel } from './lib/insightMeta.js'
 
 // 截图模式：后端 headless 浏览器访问 /screenshot?...&token=<临时token>
 const isScreenshotMode = location.pathname === '/screenshot'
@@ -20,13 +21,18 @@ const activeConversation = ref(null)
 const searchHighlight = ref('')
 const jumpToSeq = ref(null)
 const mobileLayout = window.matchMedia('(max-width: 768px)')
-const sidebarOpen = ref(!mobileLayout.matches)
-const syncSidebarLayout = () => { sidebarOpen.value = !mobileLayout.matches }
+// 手机端还没选会话时直接展开会话列表，省一次点击
+const sidebarOpen = ref(true)
+const syncSidebarLayout = () => { sidebarOpen.value = !mobileLayout.matches || !activeConversation.value }
 mobileLayout.addEventListener('change', syncSidebarLayout)
 onUnmounted(() => mobileLayout.removeEventListener('change', syncSidebarLayout))
 const searchOpen = ref(false)
+// 手机端点结果跳转后，查找面板只隐藏不卸载，再点"查找"能回到原来的结果
+const searchMounted = ref(false)
 // 数据洞察弹窗开关
 const insightsOpen = ref(false)
+// 工具栏里「数据统计截止至 …」：和弹窗顶部同一套规则，没有采集记录就不显示
+const cutoffLabelText = computed(() => cutoffLabel(activeConversation.value?.collected_at || 0))
 const readerLayout = ref(null)
 async function setSearchOpen(open) {
   const list = readerLayout.value?.querySelector('.msg-list')
@@ -35,10 +41,15 @@ async function setSearchOpen(open) {
   const anchor = list && [...list.querySelectorAll(':scope > .msg-item')].find(row => row.getBoundingClientRect().bottom > top)
   const offset = anchor?.getBoundingClientRect().top
   searchOpen.value = open
+  if (open) searchMounted.value = true
   await nextTick()
   if (!list?.isConnected) return
   if (bottom) list.scrollTop = list.scrollHeight - list.clientHeight
   else if (anchor?.isConnected) list.scrollTop += anchor.getBoundingClientRect().top - offset
+}
+function closeSearch() {
+  searchMounted.value = false
+  setSearchOpen(false)
 }
 
 // Auth
@@ -183,10 +194,24 @@ onUnmounted(() => {
   document.documentElement.classList.remove('theme-anim')
 })
 
+// 从列表点进来时会话对象已经带火花/采集时间；搜索结果只带 id 和名字，
+// 这时后台补一次会话详情再合并，头部才能显示火花、数据洞察才有截止时间。
+function hydrateConversationMeta(convId) {
+  if (!convId) return
+  fetch(`/api/conversations/${encodeURIComponent(convId)}`)
+    .then((res) => (res.ok ? res.json() : null))
+    .then((detail) => {
+      if (!detail || activeConversation.value?.conv_id !== convId) return
+      activeConversation.value = { ...activeConversation.value, ...detail }
+    })
+    .catch(() => {})
+}
+
 function selectConversation(conv) {
   activeConversation.value = conv
   searchHighlight.value = ''
   if (mobileLayout.matches) sidebarOpen.value = false
+  if (conv?.conv_id && conv.spark_days === undefined) hydrateConversationMeta(conv.conv_id)
 }
 
 function onConversationDeleted(convId) {
@@ -200,8 +225,11 @@ function navigateToMessage(item) {
     conv_id: item.conv_id,
     name: item.conv_name || '未知',
   }
+  hydrateConversationMeta(item.conv_id)
   searchHighlight.value = item.search_query ?? ''
   jumpToSeq.value = item.seq || null
+  // 手机端查找面板盖住了聊天区，跳转后先收起它（覆盖层，不影响聊天区排版，无需滚动锚定）
+  if (mobileLayout.matches) searchOpen.value = false
 }
 
 // 群邀请卡上的「发消息」：跳到被邀请的那个群。群名问后端要（卡片里带的是
@@ -262,6 +290,7 @@ async function openConversation(conv) {
         <div class="app-title">抖音聊天记录</div>
         <button class="search-toggle" :disabled="!activeConversation" :aria-expanded="searchOpen" @click="setSearchOpen(!searchOpen)">⌕ 查找聊天记录</button>
         <button class="search-toggle insights-toggle" :disabled="!activeConversation" @click="insightsOpen = true">📊 数据洞察</button>
+        <span v-if="cutoffLabelText" class="toolbar-cutoff">{{ cutoffLabelText }}</span>
         <div class="theme-switcher">
           <button
             v-for="t in themes"
@@ -282,14 +311,17 @@ async function openConversation(conv) {
           @jumped="jumpToSeq = null"
           @openConversation="openConversation"
         />
-        <div v-if="searchOpen && activeConversation" class="search-slot">
-          <SearchBar :convId="activeConversation.conv_id" :convName="activeConversation.name" @navigate="navigateToMessage" @close="setSearchOpen(false)" />
+        <div v-if="searchMounted && activeConversation" v-show="searchOpen" class="search-slot">
+          <SearchBar :convId="activeConversation.conv_id" :convName="activeConversation.name" @navigate="navigateToMessage" @close="closeSearch" />
         </div>
       </div>
       <InsightsModal
         :open="insightsOpen"
         :convId="activeConversation?.conv_id || ''"
         :convName="activeConversation?.name || ''"
+        :collectedAt="activeConversation?.collected_at || 0"
+        :sparkDays="activeConversation?.spark_days || 0"
+        :sparkIcon="activeConversation?.spark_icon || ''"
         @close="insightsOpen = false"
       />
     </div>
@@ -314,10 +346,15 @@ async function openConversation(conv) {
 @media (max-width: 800px) {
   .search-slot { position: absolute; inset: 0 0 0 auto; width: min(340px, 100%); z-index: 120; box-shadow: -8px 0 28px #0003; }
 }
+/* 手机竖屏：查找面板占满聊天区，不留一条看不清的聊天缝 */
+@media (max-width: 600px) {
+  .search-slot { width: 100%; box-shadow: none; }
+}
 .search-toggle { padding: 5px 10px; background: var(--bg-secondary); color: var(--text-secondary); border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; cursor: pointer; white-space: nowrap; transition: color var(--dur-fast), border-color var(--dur-fast), transform var(--dur-fast); }
 .search-toggle:hover:not(:disabled), .search-toggle[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
 .search-toggle:active:not(:disabled) { transform: scale(0.97); }
 .search-toggle:disabled { opacity: .4; cursor: default; }
+.toolbar-cutoff { font-size: 12px; color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 .login-screen {
   display: flex;

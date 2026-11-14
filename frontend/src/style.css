@@ -279,3 +279,20 @@ html.theme-anim *::after {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ── 手机端禁止缩放 ──
+   touch-action: manipulation 管住双击缩放；iOS 上双指缩放还会被 index.html 里的
+   gesture 拦截；-webkit-tap-highlight-color 去掉安卓点按时的灰色方块。 */
+* {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 手机端输入框 ≥16px：iOS 聚焦输入框时，字号小于 16px 会自动放大整个页面（等于偷偷缩放） */
+@media (max-width: 768px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

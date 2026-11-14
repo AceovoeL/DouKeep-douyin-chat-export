@@ -25,8 +25,12 @@ const PANEL_HTML = path.resolve(
 /** 把面板页装进一个 DOM，手动执行它的内联脚本。 */
 function bootPanel() {
   const html = readFileSync(PANEL_HTML, 'utf8')
-  const match = html.match(/<script>([\s\S]*)<\/script>/)
-  if (!match) throw new Error('panel.html 里找不到内联脚本')
+  // 页面开头还有一小段「手机端禁止缩放」的脚本；启动脚本是后面那一大段，
+  // 所以取最后一个 <script> 块（原来的贪婪正则会把两段和中间的 HTML 全吞进来）。
+  const scriptStart = html.lastIndexOf('<script>')
+  const scriptEnd = html.lastIndexOf('</script>')
+  if (scriptStart < 0 || scriptEnd < scriptStart) throw new Error('panel.html 里找不到内联脚本')
+  const script = html.slice(scriptStart + '<script>'.length, scriptEnd)
 
   const dom = new JSDOM(html, {
     url: 'http://127.0.0.1:8000/panel',
@@ -41,7 +45,7 @@ function bootPanel() {
   const logged = []
   dom.window.console.error = (...args) => logged.push(args.map(String).join(' '))
   // 脚本正常跑完就会把标记打上；中途抛错的话 eval 直接把异常抛给用例
-  dom.window.eval(`${match[1]}\nwindow.__panelBooted = true;`)
+  dom.window.eval(`${script}\nwindow.__panelBooted = true;`)
   return { dom, window: dom.window, logged }
 }
 
@@ -166,6 +170,112 @@ describe('资源包弹窗', () => {
       status: 'failed', failed: 2, failed_names: ['加功德', '微笑'], error: '',
     })
     expect(win.document.getElementById('packNote').textContent).toContain('加功德')
+    dom.window.close()
+  })
+})
+
+/**
+ * 「概览 → 数据总览」：接口数据要画成第二排卡片 + 消息构成 + 数据范围 + 存储占用。
+ * 只 mock 一份 JSON 直接喂给渲染函数，不跑后端；数字格式和中文标签在这里钉住。
+ */
+describe('数据总览', () => {
+  // 用本机时区造时间戳，期望值就是同一个时区展开的结果，跑在哪个时区都不会错
+  const TS = Math.floor(new Date(2026, 10, 14, 16, 51, 38).getTime() / 1000)
+  const FIXTURE = {
+    available: true, stale: false, generated_at: 1763100000, collected_at: TS,
+    totals: { conversations: 2, messages: 10, users: 4, singles: 1, groups: 1, avg_messages: 5.0 },
+    activity: {
+      today: 4, last7: 6, last30: 7, active_days: 4, senders: 3,
+      first_message_time: 1700000000, last_message_time: 1763000000,
+    },
+    types: [
+      { key: 'text', count: 3, percent: 30.0, saved: 0 },
+      { key: 'image', count: 2, percent: 20.0, saved: 1 },
+      { key: 'emoji', count: 1, percent: 10.0, saved: 1 },
+      { key: 'video', count: 1, percent: 10.0, saved: 1 },
+      { key: 'share', count: 1, percent: 10.0, saved: 0 },
+      { key: 'other', count: 2, percent: 20.0, saved: 0 },
+    ],
+    media: {
+      images: { total: 2, saved: 1 },
+      emoji: { total: 1, saved: 1 },
+      videos: { total: 1, saved: 1 },
+      live_photo: { total: 1, saved: 1 },
+    },
+    voice: { success: 1, failed: 1, pending: 1, total: 3 },
+    storage: {
+      db_bytes: 2048, media_bytes: 692, media_files: 8, exports_bytes: 0,
+      total_bytes: 2740,
+      detail: [
+        { key: 'images', bytes: 100, files: 1 },
+        { key: 'emoji', bytes: 200, files: 1 },
+        { key: 'voice', bytes: 10, files: 1 },
+        { key: 'avatars', bytes: 50, files: 1 },
+        { key: 'videos', bytes: 300, files: 1 },
+        { key: 'other', bytes: 32, files: 3 },
+      ],
+    },
+    schedule: { enabled: true, next_run: 1763110000 },
+  }
+
+  it('把接口数据画成卡片、消息构成、数据范围与存储占用', async () => {
+    const { dom, window: win } = bootPanel()
+    win.fetch = async () => ({ ok: true, status: 200, json: async () => FIXTURE })
+    await win.loadOverview(true)
+    const doc = win.document
+
+    // 最上方「数据统计截止至」：跟聊天查看器同一个写法
+    const cutoff = doc.getElementById('ovCutoff')
+    expect(cutoff.hidden).toBe(false)
+    expect(cutoff.textContent).toBe('数据统计截止至 2026年11月14日 16:51:38')
+
+    expect(doc.getElementById('ovToday').textContent).toBe('4')
+    expect(doc.getElementById('ovWeek').textContent).toBe('6')
+    expect(doc.getElementById('ovActiveDays').textContent).toBe('4')
+    expect(doc.getElementById('ovSenders').textContent).toBe('3')
+
+    const bars = [...doc.querySelectorAll('#ovTypeBars .ov-bar-row')]
+    expect(bars).toHaveLength(6)
+    expect(bars[0].textContent).toContain('文字')
+    expect(bars[0].textContent).toContain('30.0%')
+    expect(bars[1].querySelector('.ov-bar-fill').style.width).toBe('20%')
+
+    const range = doc.getElementById('ovRangeList').textContent
+    expect(range).toContain('单聊')
+    expect(range).toContain('群聊')
+    expect(range).toContain('近 30 天消息')
+    expect(range).toContain('定时采集')
+    expect(range).toContain('已开启')
+
+    const local = doc.getElementById('ovLocalList').textContent
+    expect(local).toContain('视频消息')
+    expect(local).toContain('实况图视频')
+    expect(local).toContain('已保存 1 / 共 1')
+    expect(local).toContain('语音转写')
+    expect(local).toContain('待处理 1')
+
+    const storage = doc.getElementById('ovStorageList').textContent
+    expect(storage).toContain('数据库')
+    expect(storage).toContain('2.0 KB')
+    expect(storage).toContain('合计')
+    expect(storage).not.toContain('导出/备份文件')
+    expect(storage).not.toContain('视频消息')
+
+    expect(typeof win.refreshOverview).toBe('function')
+    expect(doc.getElementById('ovRefreshBtn')).not.toBeNull()
+    expect(doc.getElementById('ovError').hidden).toBe(true)
+    dom.window.close()
+  })
+
+  it('没有采集记录时，截止时间整行不显示', async () => {
+    const { dom, window: win } = bootPanel()
+    win.fetch = async () => ({
+      ok: true, status: 200, json: async () => ({ ...FIXTURE, collected_at: null }),
+    })
+    await win.loadOverview(true)
+    const cutoff = win.document.getElementById('ovCutoff')
+    expect(cutoff.hidden).toBe(true)
+    expect(cutoff.textContent).toBe('')
     dom.window.close()
   })
 })

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>抖音聊天记录</title>
     <script>
       // 在 Vue 加载前应用主题，防止闪烁
@@ -11,6 +11,11 @@
         var t = localStorage.getItem('theme');
         if (t && t !== 'dark') document.documentElement.setAttribute('data-theme', t);
       })();
+      // 手机端禁止缩放：iOS Safari 无视 user-scalable=no，双指缩放要拦 gesture 事件
+      // （双击缩放由 style.css 的 touch-action: manipulation 关掉）
+      ['gesturestart', 'gesturechange', 'gestureend'].forEach(function(type) {
+        document.addEventListener(type, function(e) { e.preventDefault(); }, { passive: false });
+      });
     </script>
   </head>
   <body>
