@@ -21,9 +21,11 @@ RECORD = {
     "to_version": "1.2.6",
     "at": 1760000000.0,
     "versions": [
-        {"version": "1.2.6", "subject": "更新完自动重启", "date": "2026-10-02"},
-        {"version": "1.2.6", "subject": "顺带修一处笔误", "date": "2026-10-02"},
-        {"version": "1.2.5", "subject": "定时自动检查更新", "date": "2026-10-02"},
+        {"version": "1.2.6",
+         "body": "## 功能新增\n1. 更新完自动重启\n2. 顺带修一处笔误",
+         "date": "2026-10-02"},
+        {"version": "1.2.5", "body": "## 问题修复\n1. 定时自动检查更新",
+         "date": "2026-10-02"},
     ],
 }
 
@@ -111,9 +113,9 @@ def test_startup_raises_the_notice_once(record_path):
     assert active is not None
     assert active["job"] == "update_done"
     assert "当前版本 v1.2.6" in active["message"]
-    # 弹窗里的「更新内容」：更新范围 + 逐版本说明（同一版本号合成一行）
+    # 弹窗里的「更新内容」：更新范围 + 逐版本说明（一个版本一行）
     assert "更新范围：v1.2.5 → v1.2.6" in active["detail"]
-    assert "- v1.2.6：更新完自动重启 ／ 顺带修一处笔误" in active["detail"]
+    assert "- v1.2.6：更新完自动重启；顺带修一处笔误" in active["detail"]
     assert "- v1.2.5：定时自动检查更新" in active["detail"]
     # 记录读完就删：再重启也不会重复弹
     assert not record_path.exists()
@@ -222,7 +224,7 @@ def test_user_click_keeps_the_same_information(record_path):
     alert = cp._public_job_alerts()[0]
     assert alert["resolved_by"] == "ignore"
     assert "当前版本 v1.2.6" in alert["message"]
-    assert "- v1.2.6：更新完自动重启 ／ 顺带修一处笔误" in alert["detail"]
+    assert "- v1.2.6：更新完自动重启；顺带修一处笔误" in alert["detail"]
 
 
 # ── 面板那一半 ────────────────────────────────────────────────────────────

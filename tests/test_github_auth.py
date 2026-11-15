@@ -36,12 +36,6 @@ def panel_config(tmp_path, monkeypatch):
     return path
 
 
-def _newer_tag(sha: str) -> list[dict]:
-    """一个比当前版本更新的版本标签（版本号跟着真实 VERSION 走）。"""
-    major, minor, _patch = (int(part) for part in version.VERSION.split("."))
-    return [{"version": f"{major}.{minor + 1}.0", "sha": sha * 40}]
-
-
 # ── 存取与格式 ──
 
 def test_save_and_load_round_trip(token_file):
@@ -127,8 +121,8 @@ def test_github_json_without_token_has_no_authorization(monkeypatch, token_file)
 
 
 def test_github_read_returns_response_headers(monkeypatch, token_file):
-    """响应头要跟着一起返回：远端 commit 总数是从分页 Link 头里读出来的。"""
-    link = '<https://api.github.com/repositories/1/commits?sha=main&per_page=1&page=20>; rel="last"'
+    """响应头跟着一起返回（Release 分页、限流提示都要看它）。"""
+    link = '<https://api.github.com/repositories/1/releases?per_page=30&page=2>; rel="last"'
 
     def fake_urlopen(request, timeout=None):
         return _FakeResponse({}, {"Link": link})
@@ -137,7 +131,7 @@ def test_github_read_returns_response_headers(monkeypatch, token_file):
 
     body, head = cp._github_read("https://api.github.com/user")
     assert body == {}
-    assert cp._last_page(head.get("Link")) == 20
+    assert head.get("Link") == link
 
 
 def test_github_json_reports_invalid_token(monkeypatch, token_file):
@@ -393,137 +387,6 @@ def test_token_present_but_no_repo_access(monkeypatch, token_file):
     payload = json.loads(response.body)
     assert payload["error_code"] == "repo_forbidden"
     assert "Token" in payload["error"]
-
-
-def test_git_auth_failure_maps_to_credentials_missing(monkeypatch, token_file):
-    """git 读版本标签时说缺凭据、API 也用不了时，给出「需要凭据」而不是网络错误。"""
-    async def reachable():
-        return True
-
-    def git_needs_auth():
-        raise cp._GitFetchAuthError("could not read Username")
-
-    monkeypatch.setattr(cp, "_remote_reachable", reachable)
-    monkeypatch.setattr(cp, "_fetch_remote_versions_via_git", git_needs_auth)
-
-    response = cp.asyncio.run(cp.update_check())
-    payload = json.loads(response.body)
-
-    assert response.status_code == 502
-    assert payload["error_code"] == "credentials_missing"
-    assert "Token" in payload["error"]
-
-
-def test_public_repo_without_token_falls_back_to_api(monkeypatch, token_file):
-    """公开仓库没填凭据时：本地 git 拿不到就改用**不带凭据**的 API，而不是报缺凭据。
-
-    仓库公开之后谁都能匿名读 API，只有私有仓库才真的需要 Token；以前没 Token 时
-    只走本地 git，git 一旦失败（目录里没有 .git、没装 git、Windows 上环境被换掉）
-    就被笼统地说成「需要私有仓库凭据」。
-    """
-    calls: list = []
-
-    async def reachable():
-        return True
-
-    def via_git(branch):
-        calls.append("git")
-        return None
-
-    async def via_api():
-        calls.append("api")
-        return 1, [{"sha": "c" * 40,
-                    "commit": {"message": "公开仓库的新提交", "author": {"date": "2026-10-02T00:00:00Z"}}}]
-
-    monkeypatch.setattr(cp, "_remote_reachable", reachable)
-    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: _newer_tag("c"))
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", via_git)
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", via_api)
-    monkeypatch.setattr(cp, "_order_oldest_first", lambda raw: list(raw))
-    monkeypatch.setattr(cp._version, "local_commit_count", lambda: 8)
-    monkeypatch.setattr(cp, "_update_cache", None)
-
-    result = cp.asyncio.run(cp.update_check())
-
-    assert result["update_available"] is True
-    assert result["versions"][0]["subject"] == "公开仓库的新提交"
-    assert calls == ["git", "api"], "git 走不通时才轮到匿名 API"
-
-
-def test_git_needing_auth_does_not_try_the_anonymous_api(monkeypatch, token_file):
-    """git 明确说要凭据（私有仓库）时，别再把匿名 API 试一遍 —— 白等一轮。"""
-    async def reachable():
-        return True
-
-    def git_needs_auth(branch):
-        raise cp._GitFetchAuthError("Authentication failed")
-
-    def api_must_not_run():
-        pytest.fail("git 已经说要凭据了，不该再试匿名 API")
-
-    monkeypatch.setattr(cp, "_remote_reachable", reachable)
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", git_needs_auth)
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", api_must_not_run)
-
-    with pytest.raises(cp._UpdateCheckError) as excinfo:
-        cp.asyncio.run(cp._fetch_ahead_best_source())
-
-    assert str(excinfo.value) == "credentials_missing"
-
-
-def test_api_is_used_first_when_token_present(monkeypatch, token_file):
-    """有 Token 时优先走 API（私有仓库也能读，而且快）。"""
-    calls: list = []
-
-    async def reachable():
-        return True
-
-    async def via_api():
-        calls.append("api")
-        return 1, [{"sha": "a" * 40, "commit": {"message": "新提交", "author": {"date": "2026-10-02T00:00:00Z"}}}]
-
-    def via_git(branch):
-        calls.append("git")
-        return None
-
-    github_auth.save(TOKEN)
-    monkeypatch.setattr(cp, "_remote_reachable", reachable)
-    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: _newer_tag("a"))
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", via_api)
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", via_git)
-    monkeypatch.setattr(cp, "_order_oldest_first", lambda raw: list(raw))
-    monkeypatch.setattr(cp._version, "local_commit_count", lambda: 8)
-    monkeypatch.setattr(cp, "_update_cache", None)
-
-    result = cp.asyncio.run(cp.update_check())
-
-    assert result["update_available"] is True
-    assert result["versions"][0]["subject"] == "新提交"
-    assert calls == ["api"], "有 Token 时不该再去 fetch"
-
-
-def test_git_fallback_when_token_lacks_permission(monkeypatch, token_file):
-    """Token 没这个仓库的权限时，退回本地 git（本机凭据可能已经能读）。"""
-    async def reachable():
-        return True
-
-    async def api_forbidden():
-        raise cp._UpdateCheckError("repo_forbidden")
-
-    def via_git(branch):
-        return 1, [{"sha": "b" * 40, "commit": {"message": "来自 git", "author": {"date": "2026-10-02T00:00:00Z"}}}]
-
-    github_auth.save(TOKEN)
-    monkeypatch.setattr(cp, "_remote_reachable", reachable)
-    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: _newer_tag("b"))
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_api", api_forbidden)
-    monkeypatch.setattr(cp, "_fetch_ahead_commits_via_git", via_git)
-    monkeypatch.setattr(cp, "_order_oldest_first", lambda raw: list(raw))
-    monkeypatch.setattr(cp._version, "local_commit_count", lambda: 8)
-    monkeypatch.setattr(cp, "_update_cache", None)
-
-    result = cp.asyncio.run(cp.update_check())
-    assert result["versions"][0]["subject"] == "来自 git"
 
 
 # ── git 侧的凭据注入 ──

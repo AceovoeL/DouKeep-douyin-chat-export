@@ -1,6 +1,6 @@
 """版本号：发版时手写，和 commit 个数无关。
 
-下面的换算表（序号 ↔ 三段版本号）只服务于「检查更新」时定位落后的提交，
+下面的换算表（序号 ↔ 三段版本号）只用来比较版本大小，
 **不再**用来推导 VERSION —— 这里只验证换算是自洽的。
 """
 from common import version
@@ -38,44 +38,6 @@ def test_shipped_version_is_a_legal_version():
     count = version.commit_count_for(version.VERSION)
     assert count is not None, f"VERSION 不是合法版本号: {version.VERSION}"
     assert version.version_string(count) == version.VERSION
-
-
-def test_shallow_clone_detection(tmp_path, monkeypatch):
-    """浅克隆要能被识别出来，否则 CI 里版本号会算错。
-
-    这里把 subprocess.run 也换掉：不依赖运行环境里真有没有 git，只验证
-    「.git/shallow 存在 → 不数提交」这条规则。
-    """
-    fake_root = tmp_path / "repo"
-    (fake_root / ".git").mkdir(parents=True)
-    monkeypatch.setattr(version, "REPO_ROOT", str(fake_root))
-
-    class _Result:
-        returncode = 0
-        stdout = "12\n"
-        stderr = ""
-
-    monkeypatch.setattr(version.subprocess, "run", lambda *a, **k: _Result())
-
-    assert version.is_shallow_clone() is False
-    assert version.local_commit_count() == 12       # 完整克隆：正常数出来
-
-    (fake_root / ".git" / "shallow").write_text("deadbeef\n", encoding="utf-8")
-    assert version.is_shallow_clone() is True
-    assert version.local_commit_count() is None, "浅克隆不能当成完整历史来数"
-
-
-def test_worktree_gitdir_pointer_is_followed(tmp_path, monkeypatch):
-    """worktree / submodule 里 .git 是个文件，shallow 标记在那个目录里。"""
-    fake_root = tmp_path / "wt"
-    real_git = tmp_path / "main" / ".git" / "worktrees" / "wt"
-    real_git.mkdir(parents=True)
-    (real_git / "shallow").write_text("deadbeef\n", encoding="utf-8")
-    fake_root.mkdir()
-    (fake_root / ".git").write_text(f"gitdir: {real_git}\n", encoding="utf-8")
-
-    monkeypatch.setattr(version, "REPO_ROOT", str(fake_root))
-    assert version.is_shallow_clone() is True
 
 
 def test_repository_flags():

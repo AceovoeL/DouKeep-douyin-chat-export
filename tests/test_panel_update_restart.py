@@ -18,9 +18,6 @@ from common import version
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PANEL_HTML = os.path.join(ROOT, "backend", "panel", "static", "panel.html")
 
-#: 假装的本地 commit 数（对应版本 1.0.7）
-LOCAL_COUNT = 8
-
 
 class _FakeTask:
     def __init__(self, coro):
@@ -276,41 +273,31 @@ class _FakeSignal:
 
 # ── 接口：谁来触发、响应里带了什么 ────────────────────────────────────────
 
-def _commit(sha: str, subject: str) -> dict:
-    return {
-        "sha": sha * 7,
-        "parents": [],
-        "commit": {"message": subject, "author": {"date": "2026-10-02T12:00:00Z"}},
-    }
-
-
-def _newer_tag(sha: str) -> list[dict]:
-    """一个比当前版本更新的版本标签（版本号跟着真实 VERSION 走）。"""
+def _newer_version() -> str:
+    """比当前版本新的版本号（跟着真实 VERSION 走）。"""
     major, minor, _patch = (int(part) for part in version.VERSION.split("."))
-    return [{"version": f"{major}.{minor + 1}.0", "sha": sha * 7}]
+    return f"{major}.{minor + 1}.0"
+
+
+def _newer_releases() -> list[dict]:
+    """一条已发布的版本记录（_fetch_remote_releases 的产出）。"""
+    return [{"version": _newer_version(), "title": "", "body": "新提交",
+             "url": "", "date": "2026-10-02"}]
 
 
 @pytest.fixture
 def updatable(monkeypatch, tmp_path):
     """把「检查更新」固定成「远端有一个新版本」，网络一律封死。"""
-    async def fetch():
-        return 1, [_commit("a", "新提交")]
-
     async def reachable():
         return True
 
-    monkeypatch.setattr(cp, "_fetch_ahead_best_source", fetch)
-    # 版本号从标签读：给一个比本地新的标签，才有「可以更新」这回事
-    monkeypatch.setattr(cp, "_fetch_remote_versions", lambda: _newer_tag("a"))
+    # 版本号和更新内容都来自 Release：给一个比本地新的版本，才有「可以更新」这回事
+    monkeypatch.setattr(cp, "_fetch_remote_releases", _newer_releases)
     monkeypatch.setattr(cp, "_remote_reachable", reachable)
-    monkeypatch.setattr(cp, "_git_run", lambda args, **kwargs: None)
-    monkeypatch.setattr(cp, "_git_head", lambda: None)
     monkeypatch.setattr(cp, "_remote_repository", lambda: version.REPOSITORY_URL)
     monkeypatch.setattr(cp._github_auth, "TOKEN_PATH", str(tmp_path / "github_token"))
     monkeypatch.setattr(cp, "_update_cache", None)
-    monkeypatch.setattr(version, "local_commit_count", lambda: LOCAL_COUNT)
     monkeypatch.setattr(cp, "_scrape_state", {**cp._scrape_state, "status": "idle"})
-    return LOCAL_COUNT
 
 
 @pytest.fixture
@@ -343,12 +330,12 @@ def test_update_run_plans_the_restart(monkeypatch, updatable, capture_run_update
     assert result["status"] == "started"
     assert result["auto_restart"] is True
     assert capture_run_update == [{
-        "from": version.VERSION, "to": _newer_tag("a")[0]["version"], "allow_dirty": False,
+        "from": version.VERSION, "to": _newer_version(), "allow_dirty": False,
         "restart": {"host": "127.0.0.1", "port": 8123},
     }]
     # 逐版本变更要先记在更新状态里：重启后弹「更新完成」提示要用它显示更新内容
     assert cp._update_state["versions"]
-    assert cp._update_state["versions"][0]["subject"] == "新提交"
+    assert cp._update_state["versions"][0]["body"] == "新提交"
 
 
 def test_update_run_can_skip_the_restart(monkeypatch, updatable, capture_run_update):

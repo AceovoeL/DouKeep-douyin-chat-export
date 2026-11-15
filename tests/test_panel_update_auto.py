@@ -51,8 +51,8 @@ def clean_state(monkeypatch):
 def _check_result(**overrides) -> dict:
     result = {
         "ok": True, "update_available": True, "current_version": version.VERSION,
-        "remote_version": "9.9.9", "behind": 1,
-        "versions": [{"version": "9.9.9", "subject": "某个新功能"}],
+        "remote_version": "9.9.9",
+        "versions": [{"version": "9.9.9", "body": "## 功能新增\n1. 某个新功能"}],
     }
     result.update(overrides)
     return result

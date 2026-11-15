@@ -372,10 +372,9 @@ def test_scheduled_check_records_result_and_notifies(monkeypatch):
         assert refresh is True, "定时检查要绕过 30 秒缓存，否则永远看到旧结果"
         return {
             "ok": True, "update_available": True, "current_version": "1.2.4",
-            "remote_version": "1.2.5", "behind": 1,
+            "remote_version": "1.2.5",
             "versions": [
-                {"version": "1.2.5", "subject": "定时检查更新"},
-                {"version": "1.2.5", "subject": "顺带修一处笔误"},
+                {"version": "1.2.5", "body": "## 功能新增\n1. 定时检查更新\n2. 顺带修一处笔误"},
             ],
         }
 
@@ -391,7 +390,7 @@ def test_scheduled_check_records_result_and_notifies(monkeypatch):
     assert cp._update_schedule_state["last_run"] is not None
     assert cp._update_schedule_state["last_result"] == {
         "ok": True, "update_available": True, "current_version": "1.2.4",
-        "remote_version": "1.2.5", "behind": 1, "error": "",
+        "remote_version": "1.2.5", "error": "",
         # 自动更新的开关关着：这一栏是空的，行为跟以前一样（只通知）
         "auto_update": None,
     }
@@ -400,7 +399,7 @@ def test_scheduled_check_records_result_and_notifies(monkeypatch):
     title, desp = sent[0]
     assert "发现新版本 v1.2.5" in title
     assert "**当前版本**：v1.2.4" in desp
-    assert "- v1.2.5：定时检查更新 ／ 顺带修一处笔误" in desp
+    assert "- v1.2.5：定时检查更新；顺带修一处笔误" in desp
     assert "立即更新" in desp
 
 
@@ -409,7 +408,7 @@ def test_scheduled_check_is_quiet_when_up_to_date(monkeypatch):
 
     async def fake_collect(*, refresh=False):
         return {"ok": True, "update_available": False, "current_version": "1.2.4",
-                "remote_version": "1.2.4", "behind": 0, "versions": []}
+                "remote_version": "1.2.4", "versions": []}
 
     async def fake_notify(title, desp):
         sent.append(title)
@@ -456,13 +455,12 @@ def test_update_schedule_loop_runs_once_then_stops(monkeypatch):
     assert cp._update_schedule_state["next_run"] is None
 
 
-def test_update_versions_text_groups_one_version_per_line():
+def test_update_versions_text_uses_one_line_per_version():
     text = cp._update_versions_text({"versions": [
-        {"version": "1.2.5", "subject": "第二件事"},
-        {"version": "1.2.5", "subject": "第一件事"},
-        {"version": "1.2.4", "subject": "更早的事"},
+        {"version": "1.2.5", "body": "## 功能新增\n1. 第二件事\n2. 第一件事"},
+        {"version": "1.2.4", "body": "## 问题修复\n1. 更早的事"},
     ]})
-    assert text.splitlines() == ["- v1.2.5：第二件事 ／ 第一件事", "- v1.2.4：更早的事"]
+    assert text.splitlines() == ["- v1.2.5：第二件事；第一件事", "- v1.2.4：更早的事"]
 
 
 def test_update_schedule_text_says_it_in_words():

@@ -2073,19 +2073,12 @@ async def panel_overview(refresh: int = 0):
 
 # ── About / self-update ──
 #
-# 「远端版本」直接读 GitHub 上现成的版本标签（v1.4.2 这种），有没有新版本只看
-# 版本号大小：以前是数 commit 条数再换算，攒着几个改动一起发版时算出来的号会和
-# 真正的发版号对不上。落后的 commit 只用来列出「每个版本改了什么」，标号同样取自
-# 标签（标签指向的那个提交就是该版本的最后一个提交），于是跨多个版本更新时能
-# 逐版本列出更新内容。
+# 「远端版本」和「每个版本改了什么」都直接读 GitHub 上的 Release：版本号是 Release
+# 的标签（vX.Y.Z），更新内容是 Release 正文（发版时用 docs/releases/vX.Y.Z.md 建的
+# 中文说明）。有没有新版本只看版本号大小，既不数 commit，也不要求本地有 .git。
 GITHUB_API = "https://api.github.com"
-#: 一次读多少条版本标签（够挑出最新版本，也够给落后的提交标版本）。
-_VERSION_TAG_PAGE_SIZE = 100
-# 一次检测最多读几页提交（compare 接口每页 250 条、提交列表接口每页 100 条，
-# 两者上限不同），避免在很长的历史上反复请求。
-_UPDATE_PAGE_SIZE = 250
-_COMMITS_PAGE_SIZE = 100
-_UPDATE_MAX_PAGES = 4
+#: 一次读多少个 Release（GitHub 按发布时间倒序给，这里再按版本号排一遍）。
+_RELEASE_PAGE_SIZE = 30
 _UPDATE_TIMEOUT = 15.0
 # 检测结果缓存：点一次「检查更新」不该因为网络慢而每次都等十几秒。
 _UPDATE_CACHE_TTL = 30.0
@@ -2116,10 +2109,6 @@ def _check_log_add(text: str) -> None:
 
 class _UpdateCheckError(Exception):
     """检测更新失败（网络不通 / 仓库不存在 / 凭据无效 / API 限流）。"""
-
-
-class _GitFetchAuthError(Exception):
-    """git 明确说「缺凭据 / 认证失败」——比「返回 None」有用，面板能给出准确提示。"""
 
 
 def _github_token() -> str:
@@ -2174,162 +2163,10 @@ def _github_json(url: str, *, quiet_404: bool = False, token: str | None = None)
     return _github_read(url, quiet_404=quiet_404, token=token)[0]
 
 
-def _last_page(link: str) -> int | None:
-    """从 GitHub 分页用的 ``Link`` 响应头里取出最后一页的页号。
-
-    提交列表接口带上 ``per_page=1`` 时，"last" 那一页的页号正好就是 commit 总数，
-    所以「远端分支上一共有多少个 commit」只要一个请求就能问出来。
-    """
-    match = re.search(r'[?&]page=(\d+)[^>]*>;\s*rel="last"', link or "")
-    return int(match.group(1)) if match else None
-
-
-def _local_commit_count() -> int:
-    """本地 git 历史是第几个 commit；读不到（没有 .git / 浅克隆）返回 0。
-
-    版本号不跟 commit 数挂钩（见 common/version.py），这个数只用来把落后的提交
-    「定位」出来、按版本分组显示。读不到就干脆不猜 —— 只按 GitHub 上的版本标签
-    判断有没有新版本。
-    """
-    return int(_version.local_commit_count() or 0)
-
-
-def _fetch_ahead_commits(slug: str, branch: str, base: str) -> tuple[int, list[dict]]:
-    """远端比 ``base`` 多出来的提交，返回 (总数, 列表)，顺序是「旧 → 新」。
-
-    用 compare 接口而不是提交列表：它直接给出「落后的 commit」，数量与本地
-    历史里的 commit 序号能对上，于是每个 commit 都能算出它对应的版本号。
-
-    注意：compare 接口给的就是「旧 → 新」，而提交列表接口恰好相反（最新在前）
-    —— 两个接口方向不一致，正是以前版本号和更新内容张冠李戴的原因，别凭印象翻。
-    """
-    raw: list[dict] = []
-    total = 0
-    for page in range(1, _UPDATE_MAX_PAGES + 1):
-        url = (
-            f"{GITHUB_API}/repos/{slug}/compare/{base}...{branch}"
-            f"?per_page={_UPDATE_PAGE_SIZE}&page={page}"
-        )
-        _check_log_add(f"向 GitHub 请求远端提交（第 {page} 页）…")
-        payload = _github_json(url)
-        if not isinstance(payload, dict):
-            raise _UpdateCheckError("bad_response")
-        if page == 1:
-            try:
-                total = int(payload.get("total_commits") or 0)
-            except (TypeError, ValueError):
-                total = 0
-        chunk = payload.get("commits")
-        if not isinstance(chunk, list):
-            break
-        _check_log_add(f"第 {page} 页返回 {len(chunk)} 条提交")
-        raw.extend(item for item in chunk if isinstance(item, dict))
-        if len(chunk) < _UPDATE_PAGE_SIZE:
-            break
-    return total, raw
-
-
-async def _fetch_ahead_commits_via_api() -> tuple[int, list[dict]]:
-    """走 GitHub API 拿「落后的 commit」（私有仓库靠 Token 读，且不依赖 tag）。
-
-    首选拿本地 HEAD 那个 commit 当比对基准：compare 接口一次请求就给出落后的全部
-    提交，逐条说明也齐全。以前这里用的是 ``vVERSION`` 标签，但标签得有人在远端建
-    出来，实际上常常没有，于是「检查更新」永远失败。本地没有 git 记录（从别人那儿
-    拷来的副本、没装 git）或这个 commit 远端不认时，退回按 commit 条数比对。
-    """
-    slug = _version.REPOSITORY_SLUG
-    branch = _version.REPOSITORY_BRANCH
-    base = await asyncio.to_thread(_git_head)
-    if base:
-        _check_log_add(f"用 GitHub API 比对本地的 {base[:7]} 与远端 {branch}")
-        # 两次 HTTP 都放线程里跑：endpoint 是 async 的，别让最长十几秒的网络等待
-        # 把整个事件循环（连同面板轮询）卡住。
-        payload = await asyncio.to_thread(
-            _github_json,
-            f"{GITHUB_API}/repos/{slug}/compare/{base}...{branch}?per_page=1",
-            quiet_404=True,
-        )
-        if payload is not None:
-            return await asyncio.to_thread(_fetch_ahead_commits, slug, branch, base)
-        _check_log_add("本地这个 commit 远端不认（历史被改写过？），改成按提交条数比对")
-    else:
-        _check_log_add(
-            f"本地没有 git 记录，按提交条数比对本地的 v{_version.VERSION} 与远端 {branch}"
-        )
-    return await asyncio.to_thread(
-        _fetch_ahead_commits_by_count, slug, branch, _local_commit_count()
-    )
-
-
-def _fetch_ahead_commits_by_count(
-    slug: str, branch: str, local_count: int
-) -> tuple[int, list[dict]]:
-    """按 commit 条数比对远端（本地没有 git 记录时的做法）。
-
-    「远端总数 - 本地条数」就是落后的条数；历史是线性的，落后的那些一定是远端
-    最新的一批。这里只是在给提交清单定位，版本号另有出处（GitHub 上的标签）。
-    本地读不到 git 历史（local_count 为 0）时不猜条数，直接交空清单。
-    """
-    if local_count <= 0:
-        _check_log_add("本地读不到 git 历史，跳过多余提交的定位（只按版本号判断）")
-        return 0, []
-    total = _remote_commit_total(slug, branch)
-    _check_log_add(f"远端 {branch} 一共 {total} 个 commit（本地 {local_count} 个）")
-    if total < 1:
-        raise _UpdateCheckError("no_remote_commits")
-    behind = total - local_count
-    if behind <= 0:
-        return 0, []
-    raw = _fetch_newest_commits(slug, branch, behind)
-    # 提交列表接口是「最新在前」，统一翻成「旧 → 新」再往上交：只有方向一致，
-    # 每条提交才能按「越新版本号越高」标出来。
-    raw.reverse()
-    _check_log_add(f"远端比本地多 {behind} 个 commit，取到 {len(raw)} 条说明")
-    return behind, raw
-
-
-def _remote_commit_total(slug: str, branch: str) -> int:
-    """远端分支上一共有多少个 commit（不依赖 tag）。"""
-    payload, head = _github_read(
-        f"{GITHUB_API}/repos/{slug}/commits?sha={branch}&per_page=1"
-    )
-    last_page = _last_page((head.get("Link") if head is not None else "") or "")
-    if last_page:
-        return last_page
-    return len(payload) if isinstance(payload, list) else 0
-
-
-def _fetch_newest_commits(slug: str, branch: str, count: int) -> list[dict]:
-    """远端最新的 ``count`` 个 commit（GitHub 的顺序：最新在前）。"""
-    raw: list[dict] = []
-    pages = min((count + _COMMITS_PAGE_SIZE - 1) // _COMMITS_PAGE_SIZE, _UPDATE_MAX_PAGES)
-    for page in range(1, pages + 1):
-        _check_log_add(f"向 GitHub 请求远端提交（第 {page} 页）…")
-        payload = _github_json(
-            f"{GITHUB_API}/repos/{slug}/commits"
-            f"?sha={branch}&per_page={_COMMITS_PAGE_SIZE}&page={page}"
-        )
-        if not isinstance(payload, list):
-            raise _UpdateCheckError("bad_response")
-        chunk = [item for item in payload if isinstance(item, dict)]
-        _check_log_add(f"第 {page} 页返回 {len(chunk)} 条提交")
-        raw.extend(chunk)
-        if len(payload) < _COMMITS_PAGE_SIZE:
-            break
-    return raw[:count]
 
 
 #: 版本标签的形状：v1.4.2 / 1.4.2（别的标签一律不认，免得把 "backup" 之类当版本）。
 _VERSION_TAG_RE = re.compile(r"^[vV]?(\d+\.\d+\.\d+)$")
-
-#: git 说「要凭据 / 认证失败」时的 stderr 特征（用来把「缺凭据」和「网络不通」分开）。
-_GIT_AUTH_MARKERS = (
-    "could not read username",        # 没凭据
-    "authentication failed",
-    "invalid username or password",
-    "403", "401",
-    "terminal prompts disabled",
-)
 
 
 def _tag_version(name: str) -> str | None:
@@ -2338,144 +2175,53 @@ def _tag_version(name: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _fetch_remote_versions_via_api() -> list[dict]:
-    """读 GitHub 上的版本标签，返回 [{"version": "1.4.2", "sha": "…"}]。
+def _release_entry(item: dict) -> dict | None:
+    """一条 GitHub Release → 面板要的形状；草稿、预发布、非版本标签都跳过。
 
-    附注标签的 sha 是标签对象本身，commit.sha 才是它指向的那个提交 ——
-    给落后的提交标版本号时要用后者。
+    「每个版本改了什么」直接取 Release 正文：它本来就是发版时用
+    docs/releases/vX.Y.Z.md 建出来的中文说明，比一串 commit 标题可读，
+    而且不需要本地有 .git、也不需要数提交。
     """
-    _check_log_add("向 GitHub 读取版本标签…")
+    if not isinstance(item, dict):
+        return None
+    if item.get("draft") or item.get("prerelease"):
+        return None                      # 还没发布 / 预发布：不能当成新版本推给用户
+    version = _tag_version(item.get("tag_name"))
+    if not version:
+        return None
+    return {
+        "version": version,
+        "title": str(item.get("name") or "").strip(),
+        "body": str(item.get("body") or ""),
+        "url": str(item.get("html_url") or ""),
+        "date": _iso_date(item.get("published_at") or item.get("created_at") or ""),
+    }
+
+
+def _fetch_remote_releases() -> list[dict]:
+    """GitHub 上已发布的版本，按版本号从新到旧。
+
+    一条请求就把版本号、发布说明、发布页地址和日期都拿回来了；有没有新版本、
+    每个版本改了什么，全看这一份。
+    """
+    _check_log_add("向 GitHub 读取已发布的版本…")
     payload = _github_json(
         f"{GITHUB_API}/repos/{_version.REPOSITORY_SLUG}"
-        f"/tags?per_page={_VERSION_TAG_PAGE_SIZE}"
+        f"/releases?per_page={_RELEASE_PAGE_SIZE}"
     )
     if not isinstance(payload, list):
         raise _UpdateCheckError("bad_response")
-    versions: list[dict] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        version = _tag_version(item.get("name"))
-        commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
-        sha = str(commit.get("sha") or item.get("sha") or "")
-        if version and sha:
-            versions.append({"version": version, "sha": sha})
-    _check_log_add(f"GitHub 上有 {len(versions)} 个版本标签")
-    return versions
-
-
-def _fetch_remote_versions_via_git() -> list[dict] | None:
-    """用本地 git 读远端标签（私有仓库、没 Token 时用）；读不到返回 None。"""
-    _check_log_add("用 git ls-remote 读取远端版本标签…")
-    result = _git_run(
-        ["ls-remote", "--tags", "origin"], timeout=20, prompt_off=True, with_token=True
+    releases = [entry for entry in (_release_entry(item) for item in payload) if entry]
+    releases.sort(
+        key=lambda item: _version.version_key(item["version"]), reverse=True
     )
-    if result is None:
-        return None
-    if result.returncode != 0:
-        stderr = (result.stderr or "").lower()
-        if any(marker in stderr for marker in _GIT_AUTH_MARKERS):
-            raise _GitFetchAuthError((result.stderr or "").strip()[-200:])
-        return None
-    plain: dict[str, str] = {}
-    peeled: dict[str, str] = {}
-    for line in (result.stdout or "").splitlines():
-        parts = line.split()
-        if len(parts) != 2 or not parts[1].startswith("refs/tags/"):
-            continue
-        sha, name = parts[0], parts[1][len("refs/tags/"):]
-        if name.endswith("^{}"):          # 附注标签解引用后的才是那个提交
-            peeled[name[:-3]] = sha
-        else:
-            plain[name] = sha
-    versions: list[dict] = []
-    for name, sha in plain.items():
-        version = _tag_version(name)
-        if version:
-            versions.append({"version": version, "sha": peeled.get(name, sha)})
-    _check_log_add(f"远端有 {len(versions)} 个版本标签")
-    return versions
+    _check_log_add(f"取到 {len(releases)} 个已发布的版本")
+    return releases
 
 
-def _fetch_remote_versions() -> list[dict]:
-    """GitHub 上现成的版本号（判断有没有新版本只看它）。
-
-    有 Token 时优先走 API（私有仓库也能读）；没有 Token 时先问本地 git（那台机器
-    的凭据可能已经能读私有仓库），git 也不行再试一次不带凭据的 API —— 公开仓库
-    本来就允许匿名读。
-    """
-    errors: list[_UpdateCheckError] = []
-    if _github_token():
-        _check_log_add("检测到可用的 Token，优先走 GitHub API 读版本标签")
-        try:
-            versions = _fetch_remote_versions_via_api()
-        except _UpdateCheckError as exc:
-            errors.append(exc)
-            _check_log_add("API 读不到版本标签，改问本地 git")
-        else:
-            if versions:
-                return versions
-            errors.append(_UpdateCheckError("no_remote_version"))
-    else:
-        _check_log_add("没有可用的 Token，先用本地 git 读远端版本标签")
-    try:
-        versions = _fetch_remote_versions_via_git()
-    except _GitFetchAuthError as exc:
-        _check_log_add(f"git 说需要凭据：{str(exc)[:120]}")
-        versions = None
-        if not errors:
-            raise _UpdateCheckError("credentials_missing") from exc
-    if versions:
-        return versions
-    if errors:
-        raise errors[0]
-    _check_log_add("本地 git 读不到远端标签，改用不带凭据的 GitHub API 再试一次")
-    versions = _fetch_remote_versions_via_api()
-    if not versions:
-        raise _UpdateCheckError("no_remote_version")
-    return versions
-
-
-def _latest_version(versions: list[dict]) -> str:
-    """标签里版本号最大的那个（不按接口返回的顺序猜）。"""
-    return max(versions, key=lambda item: _version.version_key(item["version"]))["version"]
-
-
-def _label_versions(
-    ordered: list[dict], versions: list[dict], current_version: str
-) -> list[dict]:
-    """给每条落后的 commit 标上它属于哪个版本（版本号来自 GitHub 的标签）。
-
-    标签指向的那个提交就是该版本的最后一个提交：从上一个标签之后到它，都算这个
-    版本。标签之后还没发版的提交归到最新版本那一组，免得面板上出现没有版本号的
-    空白卡片。
-    """
-    current_key = _version.version_key(current_version)
-    newer = sorted(
-        (item for item in versions
-         if _version.version_key(item["version"]) > current_key),
-        key=lambda item: _version.version_key(item["version"]),
-    )
-    if not newer:
-        return []
-    newest = newer[-1]["version"]
-    position = {str(item.get("sha") or ""): index for index, item in enumerate(ordered)}
-    labels: list[str | None] = [None] * len(ordered)
-    last = -1
-    for tag in newer:
-        index = position.get(str(tag.get("sha") or ""))
-        if index is None or index <= last:
-            continue
-        for i in range(last + 1, index + 1):
-            labels[i] = tag["version"]
-        last = index
-    for index, label in enumerate(labels):
-        if label is None:
-            labels[index] = newest if index > last else newer[0]["version"]
-    return [
-        {**_commit_entry(item), "version": label}
-        for item, label in zip(ordered, labels)
-    ]
+def _latest_version(releases: list[dict]) -> str:
+    """版本号最大的那个（不按接口返回的顺序猜）。"""
+    return max(releases, key=lambda item: _version.version_key(item["version"]))["version"]
 
 
 async def _remote_reachable() -> bool:
@@ -2493,113 +2239,53 @@ async def _remote_reachable() -> bool:
     return payload is not None
 
 
-async def _fetch_ahead_best_source() -> tuple[int, list[dict]]:
-    """选一条路拿「落后的 commit」。
-
-    有 Token（见 _github_token）时直接用 API：私有仓库也能读，一条
-    请求就拿到版本与逐条提交说明，不必等 git。**没有** Token 时先试本地 git（本机凭据
-    可能已经能读那个私有仓库），git 也不行再用不带凭据的 API 兜一次 —— 公开仓库本来就
-    允许匿名读，不该因为「没填凭据」就报「需要私有仓库凭据」。
-    """
-    errors: list[_UpdateCheckError] = []
-    if _github_token():
-        _check_log_add("检测到可用的 Token，优先走 GitHub API")
-        try:
-            return await _fetch_ahead_commits_via_api()
-        except _UpdateCheckError as exc:
-            errors.append(exc)           # Token 可能没有这个仓库的权限，再试 git
-            _check_log_add("API 这条路走不通，改试本地 git")
-    else:
-        _check_log_add("没有可用的 Token，先用本地 git 拉取远端")
-    git_needs_auth = False
-    try:
-        fetched = await asyncio.to_thread(_fetch_ahead_commits_via_git, _version.REPOSITORY_BRANCH)
-    except _GitFetchAuthError as exc:
-        # git 要登录：这个仓库多半是私有的（公开仓库 git 不会要凭据）
-        git_needs_auth = True
-        _check_log_add(f"git 说需要凭据：{str(exc)[:120]}")
-        fetched = None
-    if fetched is not None:
-        return fetched
-    if errors:
-        raise errors[0]                  # 用过 Token 时 API 的说法更准（凭据/权限）
-    if git_needs_auth:
-        raise _UpdateCheckError("credentials_missing")
-    # 没用 Token、git 又拿不到远端（目录里没有 .git、没装 git、网络或代理挡住）：
-    # 公开仓库不带凭据也能读 API，最后再试一次，别把「读不到」说成「缺凭据」
-    _check_log_add("本地 git 拿不到远端，改用不带凭据的 GitHub API 再试一次")
-    return await _fetch_ahead_commits_via_api()
-
-
 async def _collect_update_uncached() -> dict:
-    """检测更新：远端版本号直接读 GitHub 上的版本标签，不再按 commit 数推算。
+    """检测更新：远端版本号和逐版本说明都直接读 GitHub 上的 Release。
 
-    「有没有新版本」只看版本号大小（本地 VERSION 与远端最新标签比），落后的那些
-    commit 只用来列出更新内容，每条按它所属的版本分组，于是跨多个版本更新时能
-    逐版本看到改了什么。
+    有没有新版本只看版本号大小（本地 VERSION 与最新 Release 比）；更新内容是每个
+    Release 的正文，原样交给面板渲染 —— 本地没有 .git、没装 git 都不影响。
     """
     current = _version.VERSION
     if not _version.version_key(current):
         raise _UpdateCheckError("bad_local_version")
     _check_log_add(f"本地版本 v{current}")
 
-    # 先做一次便宜的「仓库在不在」预检，不可达就别去读标签了
+    # 先做一次便宜的「仓库在不在」预检，不可达就别去读 Release 了
     _check_log_add("先确认更新源读得到…")
     if not await _remote_reachable():
         raise _UpdateCheckError(
             "repo_missing" if not _github_token() else "repo_forbidden"
         )
-    _check_log_add("更新源读得到，开始读远端版本号")
+    _check_log_add("更新源读得到，开始读已发布的版本")
 
-    tags = await asyncio.to_thread(_fetch_remote_versions)
-    remote_version = _latest_version(tags)
-    available = _version.version_key(remote_version) > _version.version_key(current)
+    releases = await asyncio.to_thread(_fetch_remote_releases)
+    if not releases:
+        raise _UpdateCheckError("no_remote_version")
+    remote_version = _latest_version(releases)
+    current_key = _version.version_key(current)
+    # 只留比本地新的版本，最新排在最前面（面板从上往下就是升级顺序）
+    newer = [
+        item for item in releases
+        if _version.version_key(item["version"]) > current_key
+    ]
+    newer.sort(key=lambda item: _version.version_key(item["version"]), reverse=True)
+    available = bool(newer)
     _check_log_add(
         f"GitHub 上最新的版本是 v{remote_version}"
         + ("，比本地新" if available else "，已经是最新的")
     )
 
-    behind = 0
-    ordered: list[dict] = []
-    if available:
-        # 逐条更新内容只是「看着方便」：拿不到也不影响已经确定下来的版本号
-        try:
-            total, raw = await _fetch_ahead_best_source()
-            ordered = await asyncio.to_thread(_order_oldest_first, raw)
-            behind = max(total, len(ordered))
-            _check_log_add(f"远端比本地多 {behind} 个 commit")
-        except _UpdateCheckError as exc:
-            _check_log_add(f"没拿到落后的提交清单（{exc}），只按版本号判断")
-
-    versions = await asyncio.to_thread(_label_versions, ordered, tags, current)
-    # 面板按「最新在前」显示
-    versions.reverse()
     repository = await asyncio.to_thread(_remote_repository)
-    # 「查看变更」点开的是这个版本自己的 Release 发布页（CI 打 vX.Y.Z 标签时会自动建），
-    # 里面有这一版的中文更新说明，比一长串 commit 好读。本地版本还没打标签时退回发布页列表。
-    tag_versions = {str(item.get("version") or "") for item in tags}
-    target_version = remote_version if available else current
-    release_url = (
-        f"{repository}/releases/tag/v{target_version}"
-        if target_version in tag_versions else f"{repository}/releases"
-    )
-    # compare_url 留着兜底：release_url 拿不到时还能点去提交页。
-    base_sha = await asyncio.to_thread(_git_head)
-    branch = _version.REPOSITORY_BRANCH
-    compare_url = (
-        f"{repository}/compare/{base_sha}...{branch}"
-        if available and base_sha else f"{repository}/commits/{branch}"
-    )
+    # 「查看变更」点开的是这个版本自己的发布页；没有发布页时退回发布页列表。
+    release_url = (newer[0]["url"] if newer else "") or f"{repository}/releases"
     return {
         "ok": True,
         "current_version": current,
         "remote_version": remote_version,
         "update_available": available,
-        "behind": behind,
-        "versions": versions,
+        "versions": newer,
         "repository_url": repository,
         "release_url": release_url,
-        "compare_url": compare_url,
         "updatable": _version.is_fork_repository(repository),
     }
 
@@ -2619,7 +2305,6 @@ async def _collect_update(*, refresh: bool = False) -> dict:
 def _invalidate_update_cache() -> None:
     global _update_cache
     _update_cache = None
-
 
 
 def _repo_slug(url: str) -> str:
@@ -2663,21 +2348,9 @@ def _iso_date(value: str) -> str:
     return parsed.astimezone(timezone.utc).date().isoformat()
 
 
-def _commit_entry(raw: dict) -> dict:
-    commit = raw.get("commit") if isinstance(raw.get("commit"), dict) else {}
-    message = str(commit.get("message") or "").splitlines()
-    subject = message[0].strip() if message else ""
-    author = commit.get("author") if isinstance(commit.get("author"), dict) else {}
-    date = _iso_date(author.get("date") or "")
-    sha = str(raw.get("sha") or "")
-    return {"sha": sha[:7], "sha_full": sha, "subject": subject, "date": date}
-
-
 def _local_version_payload() -> dict:
-    count = _version.local_commit_count()
     return {
         "version": _version.VERSION,
-        "git_commit_count": count,
         "repository_url": _remote_repository(),
         "fork_url": _version.REPOSITORY_URL,
         "upstream_url": _version.UPSTREAM_REPOSITORY_URL,
@@ -2697,8 +2370,7 @@ def _update_error_message(code: str) -> str:
         "rate_limited": "GitHub 接口访问次数用完了，请稍后再试",
         "network": "连不上 GitHub，请检查网络或代理",
         "bad_response": "GitHub 返回了无法解析的内容",
-        "no_remote_commits": "更新源里还没有提交记录",
-        "no_remote_version": "更新源上还没有 vX.Y.Z 形式的版本标签，判断不了最新版本",
+        "no_remote_version": "更新源上还没有发布过任何版本（Release），判断不了最新版本",
         "bad_local_version": "读不到本地版本号，请检查 common/version.py 里的 VERSION",
     }
     if code.startswith("http_"):
@@ -2716,8 +2388,6 @@ def _raise_update_error(code: str, detail: str = ""):
 def _update_error_code(exc: Exception) -> str:
     if isinstance(exc, _UpdateCheckError):
         return str(exc)
-    if isinstance(exc, _GitFetchAuthError):
-        return "credentials_missing"
     return "unknown"
 
 
@@ -3009,160 +2679,9 @@ def _git_run(
         return None
 
 
-def _is_ancestor(old: str, new: str) -> bool | None:
-    """``old`` 是不是 ``new`` 的祖先（也就是更旧）；问不出来返回 None。
-
-    以前这里问的是「本地存不存在这个 commit」，但 git fetch 之后落后的那几条也
-    都躺在本地对象库里，答案往往两边都是「有」，先后还是分不出来。直接问祖先
-    关系才真的能定序；有一个 sha 本地不认识（浅克隆、历史被改写过）时 git 报错，
-    那种情况返回 None，交给调用方走兜底。
-    """
-    if not old or not new:
-        return None
-    result = _git_run(["merge-base", "--is-ancestor", old, new], timeout=15)
-    if result is None:
-        return None
-    if result.returncode == 0:
-        return True                      # 是祖先
-    if result.returncode == 1:
-        return False                     # 两者都在本地，但互不为祖先
-    return None                          # 128 等：git 不认识这两个 sha
-
-
-def _git_head() -> str | None:
-    result = _git_run(["rev-parse", "HEAD"], timeout=15)
-    if result is None or result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
-
-
-def _fetch_ahead_commits_via_git(branch: str) -> tuple[int, list[dict]] | None:
-    """用本地 git 问远端：先 fetch，再列 HEAD..origin/<branch>。
-
-    比走 GitHub API 稳：私有仓库、限流、tag 缺失都不影响，而且返回的 sha /
-    日期 / 标题一应俱全。远端连不上时返回 None，交给 API 兜底。
-
-    fetch 加了两道刹车：速度低于 1KB/s 持续 5 秒就中止，整体最多等 20 秒 ——
-    更新源不可达时（例如仓库还没公开）不至于让面板转上半分钟。
-    """
-    head = _git_head()
-    if not head:
-        return None
-    _check_log_add(f"git fetch origin {branch}（最多等 20 秒）…")
-    fetch = _git_run(
-        ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=5",
-         "fetch", "--quiet", "origin", branch],
-        timeout=20, prompt_off=True, with_token=True,
-    )
-    if fetch is None:
-        return None                      # git 不可用或超时：交给调用方兜底
-    if fetch.returncode != 0:
-        stderr = (fetch.stderr or "").lower()
-        if any(marker in stderr for marker in _GIT_AUTH_MARKERS):
-            raise _GitFetchAuthError((fetch.stderr or "").strip()[-200:])
-        return None                      # 其他原因（远端不存在等）走 API 兜底
-    result = _git_run(["rev-list", "--count", f"HEAD..origin/{branch}"], timeout=30)
-    if result is None or result.returncode != 0:
-        return None
-    try:
-        total = int(result.stdout.strip())
-    except ValueError:
-        return None
-
-    raw: list[dict] = []
-    if total:
-        _check_log_add(f"远端比本地多 {total} 个 commit，正在读取它们的说明")
-        # 与 GitHub 的 commit 对象保持同样的形状，上游解析逻辑只有一份
-        result = _git_run([
-            "log", "--no-color", "--date=iso-strict",
-            "--pretty=format:%H%x1f%aI%x1f%P%x1f%s%x1e",
-            f"HEAD..origin/{branch}",
-        ], timeout=60)
-        if result is None or result.returncode != 0:
-            return None
-        for record in result.stdout.split("\x1e"):
-            record = record.strip()
-            if not record:
-                continue
-            sha, _, rest = record.partition("\x1f")
-            date, _, rest = rest.partition("\x1f")
-            parents, _, subject = rest.partition("\x1f")
-            raw.append({
-                "sha": sha,
-                "parents": [{"sha": item} for item in parents.split()],
-                "commit": {"message": subject, "author": {"date": date}},
-            })
-        # git log 与提交列表接口一样是「最新在前」，翻成「旧 → 新」（理由同上）
-        raw.reverse()
-    return total, raw
-
-
-def _parents_of(item: dict) -> list[str]:
-    """这一条提交的父提交 sha（GitHub 的响应里有，本地 git 那条路也补上了）。"""
-    parents = item.get("parents")
-    if not isinstance(parents, list):
-        return []
-    shas: list[str] = []
-    for parent in parents:
-        sha = parent.get("sha") if isinstance(parent, dict) else parent
-        if isinstance(sha, str) and sha:
-            shas.append(sha)
-    return shas
-
-
-def _order_by_parents(raw: list[dict]) -> list[dict] | None:
-    """按父提交关系定序；看不出方向时返回 None。
-
-    落后的这些提交在历史上是连着的：最新那条的父提交也在列表里，最旧那条的父提交
-    在列表外（它就是本地已有的那个 commit）。于是「谁的父提交在列表里」就等于
-    「谁更靠后」，不必猜接口给的是哪个方向。
-    """
-    known = {str(item.get("sha") or "") for item in raw}
-    known.discard("")
-    if not known:
-        return None
-    first_newer = any(sha in known for sha in _parents_of(raw[0]))
-    last_newer = any(sha in known for sha in _parents_of(raw[-1]))
-    if first_newer == last_newer:
-        return None                      # 只有一端能证明自己更靠后时才算数
-    return list(reversed(raw)) if first_newer else list(raw)
-
-
-def _order_by_ancestry(raw: list[dict]) -> list[dict] | None:
-    """按本地 git 的祖先关系定序；问不出来返回 None（老数据里没有 parents 时用）。"""
-    first = str(raw[0].get("sha") or "")
-    last = str(raw[-1].get("sha") or "")
-    if _is_ancestor(first, last) is True:
-        return list(raw)                 # 第一条是最后一条的祖先 → 已经是「旧 → 新」
-    if _is_ancestor(last, first) is True:
-        return list(reversed(raw))
-    return None
-
-
-def _order_oldest_first(raw: list[dict]) -> list[dict]:
-    """把 commit 列表排成「旧 → 新」。
-
-    方向不能凭印象猜：GitHub 的提交列表接口是「最新在前」，而 compare 接口是
-    「旧在前」（文档没写清，实测如此）。以前一律按「最新在前」反过来，于是 compare
-    那条路上每条提交都拿到了隔壁那条的版本号 —— 面板上就表现成「v1.2.1」旁边写着
-    v1.2.0 的更新内容，跨多个 commit 的更新里整体错位。
-
-    现在按证据定序：先看父提交关系（两个 API 都给、本地 git 那条路也补了），再问
-    本地 git 的祖先关系；两样都问不出来时才按调用方的约定，认为交过来的已经是
-    「旧 → 新」（三个来源都各自归一过了）。
-    """
-    if len(raw) < 2:
-        return list(raw)
-    for decide in (_order_by_parents, _order_by_ancestry):
-        ordered = decide(raw)
-        if ordered is not None:
-            return ordered
-    return list(raw)
-
-
 @control_router.get("/api/update/check")
 async def update_check(refresh: bool = False, check_id: str = ""):
-    """去远端仓库看有没有新版本，并列出本地缺少的每个 commit。
+    """去远端仓库看有没有新版本，并列出每个新版本的更新内容。
 
     ``check_id`` 是面板自己生成的这次检测的编号（同一个编号也用来读进度日志）：
     检测一开始就把日志清空并换成这个编号，面板于是不会读到上一次的旧进度。
@@ -3218,26 +2737,30 @@ def _update_schedule_text(schedule: dict | None = None) -> str:
     return _simple_rule_text(_normalize_update_schedule(schedule)["rule"])
 
 
+def _release_summary(body: str, limit: int = 3) -> str:
+    """把 Release 正文压成通知里的一句话：去掉 Markdown 记号，只留前几条。"""
+    parts: list[str] = []
+    for raw in str(body or "").splitlines():
+        text = raw.strip()
+        if not text or text.startswith("#"):
+            continue
+        text = re.sub(r"^(?:[-*]|\d+[.)])\s+", "", text)
+        text = text.replace("\\-", "").replace("**", "").strip()
+        if text:
+            parts.append(text)
+        if len(parts) >= limit:
+            break
+    return "；".join(parts)
+
+
 def _update_versions_text(result: dict) -> str:
-    """通知正文里的逐版本说明：同一版本号的多个 commit 合成一行（最新在前）。"""
-    groups: list[tuple[str, list[str]]] = []
-    for item in result.get("versions") or []:
+    """通知正文里的逐版本说明：一个版本一行（最新在前）。"""
+    lines: list[str] = []
+    for item in (result.get("versions") or [])[:3]:
         version = str(item.get("version") or "")
-        subject = str(item.get("subject") or "")
-        if groups and groups[-1][0] == version:
-            groups[-1][1].append(subject)
-        else:
-            groups.append((version, [subject]))
-    return "\n".join(
-        f"- v{version}：{' ／ '.join(text for text in subjects if text)}"
-        for version, subjects in groups
-    )
-
-
-def _behind_text(result: dict) -> str:
-    """「（落后 N 个 commit）」这半句；读不到提交清单时整句都不写。"""
-    behind = int(result.get("behind") or 0)
-    return f"（落后 {behind} 个 commit）" if behind else ""
+        summary = _release_summary(str(item.get("body") or ""))
+        lines.append(f"- v{version}：{summary}" if summary else f"- v{version}")
+    return "\n".join(lines)
 
 
 async def _notify_update_available(result: dict) -> None:
@@ -3245,7 +2768,7 @@ async def _notify_update_available(result: dict) -> None:
     remote = str(result.get("remote_version") or "")
     lines = [
         f"**当前版本**：v{result.get('current_version') or _version.VERSION}",
-        f"**远端版本**：v{remote}{_behind_text(result)}",
+        f"**远端版本**：v{remote}",
     ]
     versions = _update_versions_text(result)
     if versions:
@@ -3278,7 +2801,6 @@ async def _run_update_check_once() -> dict:
         "update_available": bool(result.get("update_available")),
         "current_version": result.get("current_version") or _version.VERSION,
         "remote_version": result.get("remote_version") or "",
-        "behind": int(result.get("behind") or 0),
         "error": result.get("error") or "",
         "auto_update": auto,
     }
@@ -3382,7 +2904,7 @@ async def _notify_auto_update_skipped(result: dict, code: str, detail: str) -> N
         f"抖音聊天导出 · 发现新版本 v{remote}（这次没自动更新）",
         "\n".join([
             f"**当前版本**：v{result.get('current_version') or _version.VERSION}",
-            f"**远端版本**：v{remote}{_behind_text(result)}",
+            f"**远端版本**：v{remote}",
             "",
             f"**这次没自动更新**：{_auto_update_skip_text(code, detail)}",
             "",
@@ -3409,7 +2931,7 @@ async def _handle_new_version(result: dict) -> dict | None:
     _check_log_add(f"自动更新已开始：v{started['from_version']} → v{started['to_version']}")
     lines = [
         f"**当前版本**：v{started['from_version']}",
-        f"**目标版本**：v{started['to_version']}{_behind_text(result)}",
+        f"**目标版本**：v{started['to_version']}",
         "",
         "正在后台拉代码、装依赖、构建前端，"
         + ("完成后会自动重启服务。" if started["auto_restart"] else "完成后需要手动重启服务。"),

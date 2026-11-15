@@ -760,23 +760,30 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   font-size: calc(12px * var(--font-scale)); font-weight: 700; color: var(--accent);
   letter-spacing: 0.2px; font-family: var(--panel-mono);
 }
-.ab-rel-range { font-size: calc(11px * var(--font-scale)); color: var(--text3); }
-.ab-rel-latest { margin-left: auto; font-size: 10px; font-weight: 600; color: var(--accent); opacity: 0.75; }
-.ab-rel-body { padding: 9px 12px 10px; }
-.ab-commit { display: flex; gap: 9px; align-items: flex-start; padding: 3px 0; font-size: calc(12px * var(--font-scale)); }
-.ab-commit + .ab-commit { border-top: 1px dashed color-mix(in srgb, var(--border) 55%, transparent); padding-top: 6px; margin-top: 3px; }
-.ab-sha {
-  flex-shrink: 0; font-family: var(--panel-mono); font-size: 11px; color: var(--accent);
-  background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px;
+.ab-rel-date { font-size: calc(11px * var(--font-scale)); color: var(--text3); font-variant-numeric: tabular-nums; }
+.ab-rel-link {
+  margin-left: auto; font-size: calc(11px * var(--font-scale)); color: var(--accent);
+  text-decoration: none; font-weight: 600; white-space: nowrap;
 }
-.ab-subject { flex: 1; min-width: 0; color: var(--text); line-height: 1.55; word-break: break-word; }
-.ab-date { flex: 0 0 auto; font-size: 11px; color: var(--text3); font-variant-numeric: tabular-nums; }
-.ab-version-steps { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
-/* 弹窗里这块是固定可见的版本总览，下面可滚动的才是每个版本的详情 */
-.ab-version-steps-box { margin-bottom: 12px; padding-bottom: 11px; border-bottom: 1px dashed var(--border); }
-.ab-version-step { display: flex; align-items: baseline; gap: 8px; font-size: calc(12px * var(--font-scale)); color: var(--text2); }
-.ab-version-step .ab-step-v { font-family: var(--panel-mono); font-size: 11px; color: var(--accent); flex-shrink: 0; }
-.ab-version-step .ab-step-subject { flex: 1; min-width: 0; word-break: break-word; }
+.ab-rel-link:hover { text-decoration: underline; }
+.ab-rel-latest { font-size: 10px; font-weight: 600; color: var(--accent); opacity: 0.75; }
+.ab-rel-body { padding: 10px 12px 11px; }
+/* Release 正文渲染出来的 Markdown：只认标题 / 列表 / 加粗 / 代码 / 链接这几种写法 */
+.ab-md { font-size: calc(12px * var(--font-scale)); color: var(--text2); line-height: 1.72; }
+.ab-md h4 { margin: 11px 0 6px; font-size: calc(12px * var(--font-scale)); font-weight: 700; color: var(--text); }
+.ab-md h4:first-child { margin-top: 0; }
+.ab-md p { margin: 0 0 7px; }
+.ab-md p:last-child { margin-bottom: 0; }
+.ab-md ol, .ab-md ul { margin: 0 0 8px; padding-left: 20px; }
+.ab-md li { margin: 2px 0; }
+.ab-md li::marker { color: var(--text3); }
+.ab-md strong { color: var(--text); font-weight: 600; }
+.ab-md code {
+  padding: 1px 5px; border-radius: 4px; background: var(--bg3);
+  font-family: var(--panel-mono); font-size: calc(11px * var(--font-scale));
+}
+.ab-md a { color: var(--accent); text-decoration: none; }
+.ab-md a:hover { text-decoration: underline; }
 .ab-loading { padding: 14px; text-align: center; font-size: calc(12px * var(--font-scale)); color: var(--text3); }
 
 /* 更新确认弹窗：比普通确认框大，里面是逐版本的更新内容。
@@ -795,7 +802,7 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 }
 @media (max-width: 780px) {
   .about-grid { grid-template-columns: 1fr; }
-  .ab-date { display: none; }
+  .ab-rel-date { display: none; }
 }
 
 /* ── 环境检测弹窗（「关于」页的按钮） ── */
@@ -1600,7 +1607,6 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
     </div>
     <div class="ab-dialog-body">
       <div class="ab-dialog-sub" data-i18n="aboutUpdateDetailTitle">各版本更新内容</div>
-      <div id="updateModalSteps" class="ab-version-steps ab-version-steps-box"></div>
       <div class="ab-rels" id="updateModalRels"></div>
     </div>
     <!-- 说明与勾选放在滚动区外面：版本再多也一直看得见 -->
@@ -3048,7 +3054,7 @@ const T = {
     aboutCheckLogFailed: (msg) => `检查结束：没有查到结果（${msg}）`,
     aboutUpdateConfirmTitle: '发现新版本',
     aboutUpdateDetailTitle: '各版本更新内容',
-    aboutUpdateNoDetail: '没拿到逐条更新内容（网络或权限原因），仍然可以直接更新。',
+    aboutReleaseEmpty: '这一版没有填写更新说明。',
     aboutUpdateStepsNote: '依次执行：拉取代码 → 装 Python 依赖 → 构建前端，然后自动重启后端服务。工作区有未提交改动时会先中止，不覆盖本地修改。',
     aboutUpdateAutoRestart: '更新完成后自动重启服务（推荐；取消勾选则需自己重启）',
     aboutUpdateRestarting: '更新完成，正在自动重启服务…',
@@ -3090,8 +3096,8 @@ const T = {
     aboutUpdateCancelled: '更新已取消。',
     aboutUpdateStarted: (v) => `开始更新到 ${v}…`,
     aboutUpdateLatestTag: '最新',
+    aboutReleaseLink: '发布页',
     aboutVersionFrom: (v) => `版本 ${v}`,
-    aboutCommits: (n) => `${n} 个 commit`,
     /* 环境检测 */
     envCheckTitle: '环境检测',
     envCheckBtn: '环境检测',
@@ -3724,7 +3730,7 @@ const T = {
     aboutCheckLogFailed: (msg) => `Done: no result (${msg})`,
     aboutUpdateConfirmTitle: 'New version available',
     aboutUpdateDetailTitle: 'What changed, per version',
-    aboutUpdateNoDetail: "Couldn't fetch the per-version notes (network or permission) — you can still update.",
+    aboutReleaseEmpty: 'This release has no notes.',
     aboutUpdateStepsNote: 'Runs in order: pull code, install Python dependencies, build the frontend, restart the service. Uncommitted changes stop the run before anything is overwritten.',
     aboutUpdateAutoRestart: 'Restart the service automatically after updating (recommended; uncheck to restart it yourself)',
     aboutUpdateRestarting: 'Update finished — restarting the service automatically…',
@@ -3766,8 +3772,8 @@ const T = {
     aboutUpdateCancelled: 'Update cancelled.',
     aboutUpdateStarted: (v) => `Updating to ${v}…`,
     aboutUpdateLatestTag: 'latest',
+    aboutReleaseLink: 'Release',
     aboutVersionFrom: (v) => `v${v} and older`,
-    aboutCommits: (n) => `${n} commit${n > 1 ? 's' : ''}`,
     /* Environment check */
     envCheckTitle: 'Environment check',
     envCheckBtn: 'Check environment',
@@ -8510,7 +8516,7 @@ function setFontPickerHint(key, args) {
    「关于」页只做两件事：显示作者/仓库信息，以及从远端仓库检查并执行更新。
    检测结果只放在内存里（切换语言要重绘），更新进度则来自后端的 /update/status。 */
 let aboutInfo = null;        // /panel/api/update/info 的结果
-let updateCheckData = null;  // 最近一次检测结果（含逐版本 commit 列表）
+let updateCheckData = null;  // 最近一次检测结果（含每个版本的发布说明）
 let updateConfirmData = null;
 let updatePollTimer = null;
 let updateStatusData = null;
@@ -8637,96 +8643,124 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// 后端给的 versions 与 GitHub 的 commit 列表一致：最新在前。相邻的同一个版本号
-// 合成一组（组内保持提交顺序），第一组就是最新版本。
-function groupVersions(versions) {
-  const groups = [];
-  (versions || []).forEach(v => {
-    const last = groups[groups.length - 1];
-    if (last && last.version === v.version) last.commits.push(v);
-    else groups.push({ version: v.version, commits: [v] });
+/* ── 极简 Markdown 渲染（只给 Release 正文用）─────────────────────────────
+   发版说明跟着 docs/releases/vX.Y.Z.md 走，格式固定：## 标题、有序/无序列表、
+   加粗、代码、[链接](地址)。这里只认这几种写法，不做完整 Markdown。
+   所有文字先转义再加标签，所以正文里写脚本标签也只会原样显示成文字。 */
+function renderMarkdown(text) {
+  const esc = (raw) => String(raw || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  const BT = String.fromCharCode(96);       // 反引号：行内代码用
+  const inline = (raw) => esc(raw)
+    .replace(new RegExp(BT + '([^' + BT + ']+)' + BT, 'g'), '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+             '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\\-/g, '-');
+  const box = document.createElement('div');
+  box.className = 'ab-md';
+  const lines = String(text || '').split(/\r?\n/);
+  let list = null;          // 正在收集的 ol / ul
+  const flush = () => { list = null; };
+  const openList = (tag) => {
+    if (list && list.tagName.toLowerCase() === tag) return list;
+    const el = document.createElement(tag);
+    box.appendChild(el);
+    list = el;
+    return el;
+  };
+  lines.forEach((raw) => {
+    const line = raw.trim();
+    if (!line) { flush(); return; }
+    const head = line.match(/^#{1,6}\s+(.*)$/);
+    if (head) {
+      flush();
+      const h = document.createElement('h4');
+      h.innerHTML = inline(head[1]);
+      box.appendChild(h);
+      return;
+    }
+    const ordered = line.match(/^\d+[.)]\s+(.*)$/);
+    if (ordered) {
+      const li = document.createElement('li');
+      li.innerHTML = inline(ordered[1]);
+      openList('ol').appendChild(li);
+      return;
+    }
+    const bullet = line.match(/^[-*]\s+(.*)$/);
+    if (bullet) {
+      const li = document.createElement('li');
+      li.innerHTML = inline(bullet[1]);
+      openList('ul').appendChild(li);
+      return;
+    }
+    flush();
+    const p = document.createElement('p');
+    p.innerHTML = inline(line);
+    box.appendChild(p);
   });
-  return groups.map((g, index) => ({ version: g.version, commits: g.commits, latest: index === 0 }));
+  return box;
 }
 
-function versionRangeText(group, prevGroup) {
-  const range = prevGroup ? `v${prevGroup.version} → v${group.version}` : `v${group.version}`;
-  const head = group.latest ? 'v' + group.version : '';
-  return [head, range, t('aboutCommits', group.commits.length)].filter(Boolean).join(' · ');
-}
-
-function renderRelList(container, versions, emptyKey) {
-  if (!container) return null;
-  container.innerHTML = '';
-  if (!versions || !versions.length) {
-    const empty = document.createElement('div');
-    empty.className = 'ab-loading';
-    empty.textContent = emptyKey ? t(emptyKey) : '';
-    container.appendChild(empty);
-    return null;
-  }
-  const groups = groupVersions(versions);
-  const steps = buildVersionSteps(groups);
-  groups.forEach((group, index) => container.appendChild(buildRelCard(group, groups[index + 1])));
-  return steps;
-}
-
-function buildVersionSteps(groups) {
-  const steps = document.createElement('div');
-  steps.className = 'ab-version-steps';
-  groups.forEach(group => {
-    const row = document.createElement('div');
-    row.className = 'ab-version-step';
-    const label = document.createElement('span');
-    label.className = 'ab-step-v';
-    label.textContent = 'v' + group.version;
-    const subject = document.createElement('span');
-    subject.className = 'ab-step-subject';
-    subject.textContent = group.commits.map(c => c.subject).filter(Boolean).join(' ／ ');
-    row.append(label, subject);
-    steps.appendChild(row);
-  });
-  return steps;
-}
-
-function buildRelCard(group, prevGroup) {
+/* 一个版本一张卡：版本号 + 发布日期 + 发布页链接，下面是 Release 正文。 */
+function buildReleaseCard(item, latest) {
   const card = document.createElement('div');
   card.className = 'ab-rel';
   const head = document.createElement('div');
   head.className = 'ab-rel-head';
   const v = document.createElement('span');
   v.className = 'ab-rel-v';
-  v.textContent = 'v' + group.version;
-  const range = document.createElement('span');
-  range.className = 'ab-rel-range';
-  range.textContent = versionRangeText(group, prevGroup);
+  v.textContent = 'v' + item.version;
   head.appendChild(v);
-  head.appendChild(range);
-  if (group.latest) {
+  if (item.date) {
+    const date = document.createElement('span');
+    date.className = 'ab-rel-date';
+    date.textContent = item.date;
+    head.appendChild(date);
+  }
+  if (latest) {
     const tag = document.createElement('span');
     tag.className = 'ab-rel-latest';
     tag.textContent = t('aboutUpdateLatestTag');
     head.appendChild(tag);
   }
+  if (item.url) {
+    const link = document.createElement('a');
+    link.className = 'ab-rel-link';
+    link.href = item.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = t('aboutReleaseLink') + ' ↗';
+    head.appendChild(link);
+  }
   const body = document.createElement('div');
   body.className = 'ab-rel-body';
-  group.commits.forEach(commit => {
-    const row = document.createElement('div');
-    row.className = 'ab-commit';
-    const sha = document.createElement('span');
-    sha.className = 'ab-sha';
-    sha.textContent = commit.sha || '';
-    const subject = document.createElement('span');
-    subject.className = 'ab-subject';
-    subject.textContent = commit.subject || '';
-    const date = document.createElement('span');
-    date.className = 'ab-date';
-    date.textContent = commit.date || '';
-    row.append(sha, subject, date);
-    body.appendChild(row);
-  });
+  if (item.body && item.body.trim()) {
+    body.appendChild(renderMarkdown(item.body));
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'ab-loading';
+    empty.textContent = t('aboutReleaseEmpty');
+    body.appendChild(empty);
+  }
   card.append(head, body);
   return card;
+}
+
+/* 后端给的 versions 已经是「最新在前、一个版本一项」，正文直接来自 GitHub 的
+   发布说明，这里只负责画出来。 */
+function renderReleaseList(container, versions) {
+  if (!container) return;
+  container.innerHTML = '';
+  if (!versions || !versions.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ab-loading';
+    empty.textContent = t('aboutReleaseEmpty');
+    container.appendChild(empty);
+    return;
+  }
+  versions.forEach((item, index) => container.appendChild(buildReleaseCard(item, index === 0)));
 }
 
 async function loadPanelInfo() {
@@ -8815,14 +8849,14 @@ function renderUpdateResult(data, options = {}) {
     text.textContent = t('aboutUpdateAvailable', data.remote_version, data.current_version);
     if (link) {
       link.hidden = false;
-      link.href = data.release_url || data.compare_url || data.repository_url || '#';
+      link.href = data.release_url || data.repository_url || '#';
     }
     setUpdateDot(true);
   } else {
     text.textContent = t('aboutUpToDate', data.current_version);
     if (link) {
       link.hidden = false;
-      link.href = data.release_url || data.compare_url || data.repository_url || '#';
+      link.href = data.release_url || data.repository_url || '#';
     }
     setUpdateDot(false);
   }
@@ -8849,8 +8883,7 @@ function renderUpdateResult(data, options = {}) {
   const list = document.createElement('div');
   list.className = 'ab-rels';
   details.appendChild(list);
-  const steps = renderRelList(list, data.versions, 'aboutUpdateNoDetail');
-  if (steps) details.insertBefore(steps, list);
+  renderReleaseList(list, data.versions);
 }
 
 /* ── 「检查更新」的实时进度日志 ────────────────────────────────────────────
@@ -8960,19 +8993,9 @@ function openUpdateModal(data) {
   const modal = document.getElementById('updateModal');
   const range = document.getElementById('updateModalRange');
   if (range) {
-    const behind = Number(data.behind) > 0 ? ' · ' + t('aboutCommits', data.behind) : '';
-    range.textContent = `v${data.current_version} → v${data.remote_version}${behind}`;
+    range.textContent = 'v' + data.current_version + ' → v' + data.remote_version;
   }
-  const stepsBox = document.getElementById('updateModalSteps');
-  if (stepsBox) {
-    stepsBox.innerHTML = '';
-    const steps = renderRelList(document.getElementById('updateModalRels'), data.versions, 'aboutUpdateNoDetail');
-    if (steps) stepsBox.appendChild(steps);
-  } else {
-    renderRelList(document.getElementById('updateModalRels'), data.versions, 'aboutUpdateNoDetail');
-  }
-  const ok = document.getElementById('updateModalOk');
-  if (ok) ok.disabled = false;
+  renderReleaseList(document.getElementById('updateModalRels'), data.versions);
   if (modal) modal.removeAttribute('hidden');
 }
 
