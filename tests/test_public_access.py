@@ -217,7 +217,7 @@ def test_download_rejects_a_tiny_response(cfg_file, monkeypatch):
 
 
 def test_download_can_be_cancelled(cfg_file, monkeypatch):
-    """下到一半被叫停：已经下好的那截留着，不会接着往下拖。"""
+    """下到一半被叫停：立刻收手，没下完的 .part 删掉（不留断点续传）。"""
     state = {"chunks": 0}
 
     class _Response:
@@ -235,11 +235,70 @@ def test_download_can_be_cancelled(cfg_file, monkeypatch):
             return False
 
     monkeypatch.setattr(cf.urllib.request, "urlopen", lambda req, timeout=None: _Response())
+    monkeypatch.setattr(cf, "cached_latest_digest", lambda: "")
+    monkeypatch.setattr(cf, "latest_version", lambda **kwargs: "")
     # 写完第一块之后才叫停：循环下一次就该退出（而不是再拖一整块）
     with pytest.raises(cf.TunnelError) as err:
         cf.download_binary(cancelled=lambda: state["chunks"] > 0)
     assert err.value.code == "cancelled"
-    assert os.path.getsize(cf._partial_path()) <= cf._CHUNK     # 没白下一整份
+    assert not os.path.exists(cf._partial_path())
+
+
+def test_cancel_breaks_a_stalled_download_immediately(cfg_file, monkeypatch):
+    """点了停止：卡住的网络读取要被立刻掐断，没下完的 .part 也不留。"""
+    state = {"started": threading.Event(), "closed": False}
+
+    class _StalledResponse:
+        status = 200
+        headers = {}
+
+        def read1(self, size):
+            state["started"].set()
+            while not state["closed"]:          # 模拟网速极慢、一块数据都还没到
+                time.sleep(0.01)
+            raise ValueError("read of closed file")
+
+        def close(self):
+            state["closed"] = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cf.urllib.request, "urlopen",
+                        lambda req, timeout=None: _StalledResponse())
+    monkeypatch.setattr(cf, "cached_latest_digest", lambda: "")
+    monkeypatch.setattr(cf, "latest_version", lambda **kwargs: "")
+    result = {}
+
+    def worker():
+        try:
+            cf.download_binary(cancelled=lambda: state["closed"])
+        except cf.TunnelError as exc:
+            result["code"] = exc.code
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert state["started"].wait(2), "下载没有开始"
+    began = time.monotonic()
+    cf.abort_download()                      # 等价于面板上点了「停止」
+    thread.join(5)
+    assert not thread.is_alive(), "停止没有立刻生效"
+    assert time.monotonic() - began < 2
+    assert result.get("code") == "cancelled"
+    assert not os.path.exists(cf._partial_path())
+
+
+def test_cancel_update_drops_a_stale_partial_file(cfg_file, monkeypatch):
+    """在「检查」阶段点停止：上次留下的半截文件也不该继续留着续传。"""
+    monkeypatch.setattr(cf, "mount_status", lambda: {})
+    os.makedirs(paths.CLOUDFLARED_DIR, exist_ok=True)
+    with open(cf._partial_path(), "wb") as handle:
+        handle.write(b"y" * 1024)
+    cf.cancel_update()
+    assert not os.path.exists(cf._partial_path())
 
 
 # ── 挂载流程 ──
@@ -1526,14 +1585,18 @@ def test_download_uses_read1_so_stopping_is_not_slow(cfg_file, monkeypatch):
 
 
 def test_download_stops_before_any_request_when_already_cancelled(cfg_file, monkeypatch):
-    """已经点了停止：连网络都不该碰，立刻收工。"""
+    """已经点了停止：连网络都不该碰，立刻收工；上次留下的半截文件也删掉。"""
     opened = []
     monkeypatch.setattr(cf.urllib.request, "urlopen",
                         lambda *args, **kwargs: opened.append(1))
+    os.makedirs(paths.CLOUDFLARED_DIR, exist_ok=True)
+    with open(cf._partial_path(), "wb") as handle:
+        handle.write(b"y" * 1024)
     with pytest.raises(cf.TunnelError) as err:
         cf.download_binary(None, lambda: True)
     assert err.value.code == "cancelled"
     assert opened == []
+    assert not os.path.exists(cf._partial_path())
 
 
 def test_download_can_keep_the_part_for_an_update(cfg_file, monkeypatch):

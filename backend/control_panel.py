@@ -17,6 +17,7 @@ from threading import Lock, Thread
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from backend import visit_count
 from pydantic import BaseModel
 
 from backend import database
@@ -1982,6 +1983,7 @@ async def _run_video_backfill():
 @control_router.get("", response_class=HTMLResponse)
 @control_router.get("/", response_class=HTMLResponse)
 async def panel_page():
+    visit_count.ping()
     return HTMLResponse(
         content=PANEL_HTML,
         headers={"Content-Type": "text/html; charset=utf-8"},

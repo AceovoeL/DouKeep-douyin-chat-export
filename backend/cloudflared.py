@@ -71,8 +71,8 @@ _CHECK_TIMEOUT = 10
 _CHECK_TTL = 30 * 60
 #: 检查失败后隔多久再试（秒）：断网时别点一次就等满一个超时
 _CHECK_FAIL_TTL = 5 * 60
-#: 点「我已放入指定位置」后，等旧的下载线程收工的最长时间（秒）：一轮分块最多卡在
-#: 一次网络读取上，留足余量；还没停下就报错让用户重试，不硬闯。
+#: 点「我已放入指定位置」后，等旧的下载线程收工的最长时间（秒）。连接会被
+#: abort_download 立刻掐断，这里只是给收尾留点余量；还没停下就报错让用户重试。
 _MANUAL_TAKEOVER_WAIT = 180
 
 #: cloudflared 自己的凭据目录（cert.pem 与隧道凭据都在这里）
@@ -195,6 +195,42 @@ def _partial_path() -> str:
     return os.path.join(paths.CLOUDFLARED_DIR, binary_name() + ".part")
 
 
+def _drop_partial(path: str | None = None) -> None:
+    """删掉没下完的临时文件（用户点了「停止」就不再留着占地方、下次续传）。"""
+    try:
+        os.remove(path or _partial_path())
+    except OSError:
+        pass
+
+
+#: 正在下载的连接。用户点「停止」时直接关掉它：阻塞中的网络读取会立刻退出，
+#: 不用等下一块数据或 60 秒读超时。只在一次下载期间有值。
+_active_downloads_lock = threading.Lock()
+_active_downloads: set = set()
+
+
+def _track_download(response) -> None:
+    with _active_downloads_lock:
+        _active_downloads.add(response)
+
+
+def _untrack_download(response) -> None:
+    with _active_downloads_lock:
+        _active_downloads.discard(response)
+
+
+def abort_download() -> None:
+    """立刻掐断正在进行的下载（用户点「停止」时调用）。"""
+    with _active_downloads_lock:
+        responses = list(_active_downloads)
+        _active_downloads.clear()
+    for response in responses:
+        try:
+            response.close()
+        except Exception:
+            pass
+
+
 def manual_path() -> str:
     """用户自己下载的 cloudflared 该放进哪个文件（面板把这个绝对路径写出来）。
 
@@ -234,6 +270,9 @@ def _fetch_into(url: str, part: str, received: int, progress=None, cancelled=Non
 
     416 说明 ``.part`` 已经是完整的一份（上次下完但没替换成功）：删掉从头下，
     别让「续传」卡在一个永远完不成的状态里。
+
+    用户点「停止」时这里会立刻收手（``abort_download`` 把连接关掉），并且把已经
+    写进 ``.part`` 的那截删掉：停止就是停止，不留断点续传给下次。
     """
     if cancelled and cancelled():
         raise TunnelError("cancelled")         # 还没连就先被叫停：一个字节都不碰
@@ -248,35 +287,54 @@ def _fetch_into(url: str, part: str, received: int, progress=None, cancelled=Non
             pass
         received = 0
         response = urllib.request.urlopen(_release_request(url, 0), timeout=_READ_TIMEOUT)
-    with response:
-        # 206 = 服务器同意续传；200 = 它不支持，只能从头再来
-        if received and getattr(response, "status", 200) != 206:
-            received = 0
-        total = received + int(response.headers.get("Content-Length") or 0)
-        if progress:
-            progress(received, total)
-        # read1 是「有多少先给多少」：普通 read(n) 要攒满 n 字节才返回，网速慢时攒一个块
-        # 要十几秒，取消也得等它 —— 用户点了「停止」，不该再干等十几秒。
-        reader = getattr(response, "read1", None) or response.read
-        with open(part, "ab" if received else "wb") as handle:
-            while True:
-                if cancelled and cancelled():
-                    raise TunnelError("cancelled")
-                chunk = reader(_CHUNK)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                received += len(chunk)
-                if progress:
-                    progress(received, total)
+    stopped = False
+    try:
+        with response:
+            _track_download(response)
+            # 206 = 服务器同意续传；200 = 它不支持，只能从头再来
+            if received and getattr(response, "status", 200) != 206:
+                received = 0
+            total = received + int(response.headers.get("Content-Length") or 0)
+            if progress:
+                progress(received, total)
+            # read1 是「有多少先给多少」：普通 read(n) 要攒满 n 字节才返回，网速慢时攒一个块
+            # 要十几秒，取消也得等它 —— 用户点了「停止」，不该再干等十几秒。
+            reader = getattr(response, "read1", None) or response.read
+            with open(part, "ab" if received else "wb") as handle:
+                while True:
+                    if cancelled and cancelled():
+                        stopped = True
+                        break
+                    try:
+                        chunk = reader(_CHUNK)
+                    except (OSError, ValueError):
+                        # 连接被 abort_download 从外面关掉时，阻塞中的读取就是这样退出的
+                        if cancelled and cancelled():
+                            stopped = True
+                            break
+                        raise
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    received += len(chunk)
+                    if progress:
+                        progress(received, total)
+    finally:
+        _untrack_download(response)
+    if stopped:
+        _drop_partial(part)
+        raise TunnelError("cancelled")
     return received
 
 
 def download_binary(progress=None, cancelled=None, *, promote: bool = True) -> str:
-    """下载 cloudflared（支持断点续传、中途可取消），返回可执行文件路径。
+    """下载 cloudflared（支持断了续传、中途可取消），返回可执行文件路径。
 
     ``progress(received, total)`` 每读一块调一次；``total`` 可能为 0（服务器没给长度）。
-    ``cancelled()`` 返回真就停手 —— 已经下好的那截留在 ``.part`` 里，下次接着下。
+    ``cancelled()`` 返回真就**立刻**停手，并删掉没下完的 ``.part`` —— 用户点的是
+    「停止」，不是「暂停」，下次更新从头下，不拿半截旧文件接着续。
+
+    网络自己断掉（超时、镜像 502）仍保留 ``.part``，重试时从断点续传。
 
     ``promote=False`` 时**不**把 ``.part`` 改成正式文件名，只返回 ``.part`` 路径：
     更新流程要先把文件放到 staging、校验能运行，再决定什么时候替换。
@@ -286,7 +344,8 @@ def download_binary(progress=None, cancelled=None, *, promote: bool = True) -> s
     part = _partial_path()
     received = os.path.getsize(part) if os.path.isfile(part) else 0
     if cancelled and cancelled():
-        raise TunnelError("cancelled")         # 一上来就被叫停：连都不连
+        _drop_partial(part)                    # 一上来就被叫停：连都不连，半截文件也不留
+        raise TunnelError("cancelled")
     failure = ""
     # 官方发布包的 SHA-256（问 GitHub 拿的）：镜像站给的文件对不上这份摘要就不认。
     # 问不到（接口不通 / 老版 GitHub 没这个字段）时退回只查大小 —— 跟以前一样。
@@ -300,14 +359,23 @@ def download_binary(progress=None, cancelled=None, *, promote: bool = True) -> s
         except Exception:
             expected_digest = ""
     for url in release_urls():
+        if cancelled and cancelled():
+            _drop_partial(part)
+            raise TunnelError("cancelled")
         try:
             received = _fetch_into(url, part, received, progress, cancelled)
         except TunnelError:
             raise                          # 用户点了取消：别偷偷换下一个地址接着下
         except OSError as exc:             # 镜像超时 / 被墙 / 502：换下一个地址
+            if cancelled and cancelled():
+                _drop_partial(part)
+                raise TunnelError("cancelled")
             failure = str(exc)
             received = os.path.getsize(part) if os.path.isfile(part) else 0
             continue
+        if cancelled and cancelled():
+            _drop_partial(part)
+            raise TunnelError("cancelled")
         if expected_digest and not _file_matches_digest(part, expected_digest):
             # 文件下完了但和官方摘要对不上：这份不能要（镜像投毒 / 传坏了），
             # 删掉从下一个地址重新下 —— 官方地址也一样要过这道校验。
@@ -318,6 +386,9 @@ def download_binary(progress=None, cancelled=None, *, promote: bool = True) -> s
                 pass
             received = 0
             continue
+        if cancelled and cancelled():
+            _drop_partial(part)
+            raise TunnelError("cancelled")
         break
     else:
         raise TunnelError("download_failed", failure or "no download source")
@@ -1651,6 +1722,7 @@ class MountJob:
         ``start()`` 才会把它清干净。
         """
         self._cancel.set()
+        abort_download()                       # 挂载时也可能正在下载，立刻掐断
         if self._login:
             self._login.stop()
         self._set(state="idle", step="", auth_url="", download=None)
@@ -1929,9 +2001,10 @@ class UpdateJob:
         return self._cancel.is_set()
 
     def cancel(self) -> dict:
-        """只置取消标志；后台线程在下载检查点看到后自己收工。"""
+        """立上取消标志并立刻掐断下载连接，后台线程随即收工。"""
         if self.state == "running" and not self._cancel.is_set():
             self._cancel.set()
+            abort_download()
             self.add_log("已请求取消，正在停下…")
         return self.snapshot()
 
@@ -1963,6 +2036,8 @@ class UpdateJob:
             self._launch_manual()
             return
         self._cancel.set()
+        abort_download()                       # 立刻掐断连接，别等下一块数据
+        _drop_partial()                        # 半截文件也不留给下次
         self.add_log("已停止项目内的下载，改用你放进指定位置的文件…")
         threading.Thread(target=self._take_over, args=(worker,), daemon=True).start()
 
@@ -2424,8 +2499,14 @@ def install_manual() -> tuple[bool, str]:
 
 
 def cancel_update() -> dict:
-    """请求取消更新（只对下载阶段有效）并返回最新状态。"""
+    """请求取消更新（只对下载阶段有效）并返回最新状态。
+
+    先把取消标志立上，再掐断连接：正在阻塞的下载会立刻退出，没下完的 ``.part``
+    一并删掉 —— 用户点的是「停止」，不留断点续传给下次。
+    """
     UPDATE_JOB.cancel()
+    abort_download()
+    _drop_partial()
     return mount_status()
 
 

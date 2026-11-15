@@ -560,6 +560,7 @@ app.include_router(chatlab_router)
 
 # 表情包同步：某个人发过的表情包目录 + 图片（按内容 MD5 去重）
 from backend.stickers import stickers_router
+from backend import visit_count
 app.include_router(stickers_router)
 
 
@@ -605,6 +606,7 @@ if os.path.isdir(_frontend_dist):
 
     @app.get("/")
     def serve_frontend_root():
+        visit_count.ping()
         return FileResponse(_index_html, headers=_SHELL_HEADERS)
 
     @app.get("/{full_path:path}")
