@@ -107,6 +107,7 @@ def _fast_settle(monkeypatch, settle=0.05, wait=1.0, poll=0.02):
     monkeypatch.setattr(web_scraper, "CONV_SCROLL_SETTLE_SECONDS", settle)
     monkeypatch.setattr(web_scraper, "CONV_NICKNAME_WAIT_SECONDS", wait)
     monkeypatch.setattr(web_scraper, "CONV_NICKNAME_POLL_SECONDS", poll)
+    monkeypatch.setattr(web_scraper, "CONV_BOTTOM_CLICK_SETTLE_SECONDS", 0.0)
 
 
 def test_every_scroll_waits_before_the_caller_reads_the_dom(monkeypatch):

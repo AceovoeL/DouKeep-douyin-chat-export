@@ -83,6 +83,17 @@ CONV_NICKNAME_POLL_SECONDS = 0.5
 #: 滚到底之后还要连着几轮「滚不动 + 没新增」才算读完整份列表。
 CONV_LIST_STABLE_ROUNDS = 3
 
+# 抖音网页版还有个毛病：只进聊天页、什么也不干，会话列表可能只渲染出一部分，
+# 滑到底就再也翻不动了。这时候点一下列表最底部那个会话（= 切到那个聊天），页面会
+# 把列表重新拉一遍，之前没加载出来的会话往往就补上了。所以「贴底且连续几轮没新增」
+# 时先点一下，再接着往下翻，翻不动才收工。
+#: 每份列表最多点几次（防止列表真的到头了还在原地反复点）。
+CONV_BOTTOM_CLICK_MAX_ROUNDS = 6
+#: 连着几次点了也没多出会话，就别再点了（抖音压根不打算给更多）。
+CONV_BOTTOM_CLICK_GIVE_UP_ROUNDS = 2
+#: 点完会话后等它把列表重排、再渲染一轮昵称的时间。
+CONV_BOTTOM_CLICK_SETTLE_SECONDS = 2.0
+
 
 def _filter_conversations(conversations, name_filter):
     """Panel selections are exact nicknames, including short names like 'n'."""
@@ -689,8 +700,13 @@ class WebChatScraper:
         seen = {}  # key -> conv info (保持插入顺序 = 列表自上而下)
         stable_rounds = 0
         confirmed_bottom = False
+        nudges = 0                # 已经点过几次「最底部会话」
+        fruitless_nudges = 0      # 连着几次点了也没多出会话
+        seen_at_nudge = 0
 
-        for _ in range(120):
+        # 上限放宽到 240 轮：每点一次「最底部会话」都要从头再翻一遍列表，
+        # 长列表（90 多个会话）点几次就要多花几十轮。
+        for _ in range(240):
             convs = await self._read_conv_list_items()
 
             added = 0
@@ -714,12 +730,37 @@ class WebChatScraper:
             # 滚到底才异步拉下一页，刚贴底那几轮经常只是「还没渲染出来」，不是没有了。
             # 达标后再多读一轮确认——贴底那一瞬间列表可能刚好又插进来几条，直接收工
             # 就会漏掉它们（刷新出来 45 个而不是 94 个）。
-            if reached_bottom and stable_rounds >= CONV_LIST_STABLE_ROUNDS:
+            if not (reached_bottom and stable_rounds >= CONV_LIST_STABLE_ROUNDS):
+                confirmed_bottom = False
+                continue
+
+            # 贴底且连续几轮没新增：先别收工。抖音网页版有时只渲染出一部分会话，
+            # 点一下列表最底部那个会话会让它把列表重新刷新一遍（见
+            # _click_bottom_conversation），点完再接着往下滑，能翻就继续收。
+            if nudges:
+                if len(seen) > seen_at_nudge:
+                    fruitless_nudges = 0
+                else:
+                    fruitless_nudges += 1
+            if (nudges >= CONV_BOTTOM_CLICK_MAX_ROUNDS
+                    or fruitless_nudges >= CONV_BOTTOM_CLICK_GIVE_UP_ROUNDS):
                 if confirmed_bottom:
                     break
                 confirmed_bottom = True
                 continue
-            confirmed_bottom = False
+
+            seen_at_nudge = len(seen)
+            if await self._click_bottom_conversation():
+                nudges += 1
+                stable_rounds = 0
+                confirmed_bottom = False
+                print(f"  [*] 尝试刷新列表（第 {nudges} 次）...")
+                continue
+
+            # 点不到（列表空了 / 元素被虚拟滚动换掉）：按原来的「到底了」收工
+            if confirmed_bottom:
+                break
+            confirmed_bottom = True
 
         # 回到顶部，后续点击流程从熟悉的起点开始
         await self._scroll_conv_list_to_top()
@@ -918,6 +959,44 @@ class WebChatScraper:
         await self._settle_after_conv_scroll()
         return at_bottom
 
+    async def _click_bottom_conversation(self):
+        """点一下会话列表最底部的那个会话，让抖音把会话列表重新刷新一次。
+
+        抖音网页版有个毛病：只进聊天页、什么也不干，列表可能只渲染出一部分，滑到
+        底就再也翻不动。点一下最底部那个会话（= 切到那个聊天）会触发一次列表重渲染，
+        之前没加载出来的会话往往就补上了 —— 点完再往下滑，通常还能继续翻。
+
+        真点到了返回 True；列表是空的、或者元素刚好被虚拟滚动换掉点不动时返回 False，
+        调用方照旧按「已经到底」处理。
+        """
+        try:
+            items = await self.page.query_selector_all(SEL_CONV_ITEM)
+            if not items:
+                return False
+            target = items[-1]
+            # 最底部那个会话如果本来就开着，点它不会有任何状态变化（页面不会重渲染），
+            # 所以这种情况改点倒数第二个 —— 仍然贴着列表底部。
+            try:
+                active = await target.evaluate(
+                    "el => !!(el.className || '').includes('curConversation')"
+                    " || !!el.querySelector('[class*=\"curConversation\"]')"
+                )
+            except Exception:
+                active = False
+            if active and len(items) > 1:
+                target = items[-2]
+            try:
+                await target.click(timeout=3000)
+            except Exception:
+                # 虚拟滚动的列表项随时会被替换，普通点击失败时强制再点一次
+                await target.click(timeout=3000, force=True)
+            # 切会话会让列表重排、并再来一轮「先 uid 后昵称」的渲染
+            await asyncio.sleep(CONV_BOTTOM_CLICK_SETTLE_SECONDS)
+            await self._settle_after_conv_scroll()
+            return True
+        except Exception:
+            return False
+
     async def _find_and_click_conversation(self, target_name, timeout_s=None, poll_s=None):
         """Find a conversation by name and click it.
 
@@ -934,6 +1013,9 @@ class WebChatScraper:
         click uses Playwright's element handle — JS `.click()` only fires a
         `click` event, while React listens for `pointerdown`/`mousedown`,
         so a JS click was identified but wouldn't activate the conversation.
+
+        贴底还是没找到时，先点一下最底部那个会话让抖音重新刷新一次列表（它有时只
+        渲染出一部分会话），再接着往下翻；点几次都没用才回到顶部重新等昵称渲染。
         """
         timeout_s = CONV_FIND_TIMEOUT_S if timeout_s is None else timeout_s
         poll_s = CONV_FIND_POLL_S if poll_s is None else poll_s
@@ -959,6 +1041,7 @@ class WebChatScraper:
 
         await self._scroll_conv_list_to_top()
 
+        bottom_clicks = 0
         while time.monotonic() < deadline:
             clicked = await _try_click(await self._match_conversation_in_dom(target_name))
             if clicked:
@@ -970,6 +1053,16 @@ class WebChatScraper:
 
             reached_bottom = await self._scroll_conv_list_down()
             if reached_bottom:
+                # 到底还没找到：可能只是抖音没把剩下的会话渲染出来，点一下最底部
+                # 那个会话逼它重刷列表，下一轮接着往下翻（次数有限，见
+                # CONV_BOTTOM_CLICK_MAX_ROUNDS）。
+                nudged = (bottom_clicks < CONV_BOTTOM_CLICK_MAX_ROUNDS
+                          and await self._click_bottom_conversation())
+                if nudged:
+                    bottom_clicks += 1
+                    print(f"  [*] 尝试刷新列表（第 {bottom_clicks} 次）...")
+                # 不管是刚点了会话还是点不动，都回到顶部重新往下翻：刷新出来的
+                # 会话可能出现在列表任意位置，从头扫一遍才不会漏。
                 await self._scroll_conv_list_to_top()
 
             remaining = deadline - time.monotonic()
