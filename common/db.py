@@ -55,6 +55,8 @@ def init_db():
             display_count INTEGER,
             spark_days INTEGER,
             spark_icon TEXT,
+            -- 「1 天后消失」这类即将熄灭的原文；有值时 spark_days 是 0
+            spark_note TEXT,
             collected_at INTEGER
         );
 
@@ -151,6 +153,11 @@ def init_db():
         conn.execute("ALTER TABLE conversations ADD COLUMN spark_icon TEXT")
     except sqlite3.OperationalError:
         pass  # 列已存在
+    # 同样是火花：旧库没有「N 天后消失」这句话的列，启动时补上
+    try:
+        conn.execute("ALTER TABLE conversations ADD COLUMN spark_note TEXT")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
     # 迁移：这个会话本次第一次调用消息 API 的时间（数据洞察的「数据统计截至」）
     try:
         conn.execute("ALTER TABLE conversations ADD COLUMN collected_at INTEGER")
@@ -202,21 +209,28 @@ def update_conversation_stats(conn, conv_id):
     )
 
 
-def update_conversation_spark(conn, conv_id, days, icon=None):
-    """记录会话的火花天数；icon 传 None 时保留上一次存好的图。"""
+def update_conversation_spark(conn, conv_id, days, icon=None, note=None):
+    """记录会话的火花天数；icon 传 None 时保留上一次存好的图。
+
+    ``note`` 是「1 天后消失」这种即将熄灭的原文：这时天数不是它，
+    页面上只画灰色火花 + 这句话（见 frontend/src/components/SparkBadge.vue）。
+    """
     conn.execute(
         """UPDATE conversations SET
              spark_days = ?,
-             spark_icon = COALESCE(?, spark_icon)
+             spark_icon = COALESCE(?, spark_icon),
+             spark_note = ?
            WHERE conv_id = ?""",
-        (int(days or 0), icon or None, conv_id),
+        (int(days or 0), icon or None, str(note or "").strip() or None, conv_id),
     )
 
 
 def clear_conversation_spark(conn, conv_id):
-    """这个会话当前没有火花：天数和图标一起清掉。"""
+    """这个会话当前没有火花：天数、图标和「N 天后消失」一起清掉。"""
     conn.execute(
-        "UPDATE conversations SET spark_days = 0, spark_icon = NULL WHERE conv_id = ?",
+        """UPDATE conversations
+              SET spark_days = 0, spark_icon = NULL, spark_note = NULL
+            WHERE conv_id = ?""",
         (conv_id,),
     )
 

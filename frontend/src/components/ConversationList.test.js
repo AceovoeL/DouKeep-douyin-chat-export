@@ -147,4 +147,26 @@ describe('会话列表的加载态', () => {
     expect(icon).not.toBeNull()
     expect(icon.getAttribute('src')).toBe('/media/spark_icons/blue_normal.png')
   })
+
+  it('火花快熄灭时是灰色图标 + 「1 天后消失」，不显示天数', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        items: [{
+          conv_id: 'c1', name: '小明', message_count: 10, display_count: 10,
+          spark_days: 0, spark_icon: 'spark_icons/gray_normal.png',
+          spark_note: '1 天后消失',
+        }],
+        total: 1,
+      }),
+    })))
+
+    mount()
+    await flush()
+
+    expect(host.querySelector('.spark-note').textContent).toBe('1 天后消失')
+    expect(host.querySelector('.spark-days')).toBeNull()
+    const icon = host.querySelector('.spark-icon')
+    expect(icon.getAttribute('src')).toBe('/media/spark_icons/gray_normal.png')
+  })
 })

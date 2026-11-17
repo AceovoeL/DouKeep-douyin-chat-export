@@ -154,6 +154,7 @@ def test_get_conversations_includes_spark_fields(temp_db):
     items, _ = database.get_conversations()
     assert items[0]["spark_days"] == 101
     assert items[0]["spark_icon"] == "spark_icons/blue_normal.png"
+    assert items[0]["spark_note"] is None
 
 
 def test_reader_exposes_collected_at(temp_db):

@@ -324,6 +324,7 @@ async function openConversation(conv) {
         :collectedAt="activeConversation?.collected_at || 0"
         :sparkDays="activeConversation?.spark_days || 0"
         :sparkIcon="activeConversation?.spark_icon || ''"
+        :sparkNote="activeConversation?.spark_note || ''"
         @close="insightsOpen = false"
       />
     </div>

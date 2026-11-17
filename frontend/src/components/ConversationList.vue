@@ -27,7 +27,11 @@
         <div class="conv-info">
           <div class="conv-title">
             <span class="conv-name">{{ conv.name || '未命名' }}</span>
-            <SparkBadge :days="conv.spark_days || 0" :icon="conv.spark_icon || ''" />
+            <SparkBadge
+              :days="conv.spark_days || 0"
+              :icon="conv.spark_icon || ''"
+              :note="conv.spark_note || ''"
+            />
           </div>
           <div class="conv-meta">
             <span>{{ shownCount(conv) }} 条消息</span>

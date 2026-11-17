@@ -14,6 +14,10 @@ FLAME_URL = (
     "https://lf3-static.bytednsdoc.com/obj/eden-cn/tp_upfbvk/"
     "ljhwZthlaukjlkulzlp/flame_icon/normal/blue_normal.png"
 )
+GRAY_URL = (
+    "https://lf3-static.bytednsdoc.com/obj/eden-cn/tp_upfbvk/"
+    "ljhwZthlaukjlkulzlp/flame_icon/normal/gray_normal.png"
+)
 
 
 class FakePage:
@@ -91,6 +95,26 @@ def test_icon_failure_keeps_old_icon(temp_db, monkeypatch):
                 ._extract_and_save_conv_spark("c1"))
 
     assert tuple(_row(conn)) == (200, "spark_icons/old.png", None)
+
+
+def test_expiring_spark_keeps_note_instead_of_days(temp_db, monkeypatch):
+    """「1 天后消失」是倒计时，不是 1 天火花：天数记 0，句子单独留下。"""
+    conn = connect(foreign_keys=True)
+    insert_conversation(conn, "c1", "会话")
+    update_conversation_spark(conn, "c1", 50, "spark_icons/blue_normal.png")
+    conn.commit()
+    monkeypatch.setattr(
+        "extractor.web_scraper.save_spark_icon",
+        lambda url: "spark_icons/gray_normal.png",
+    )
+
+    page = FakePage({"days": 0, "icon": GRAY_URL, "note": "1 天后消失"})
+    asyncio.run(_scraper(conn, page)._extract_and_save_conv_spark("c1"))
+
+    row = conn.execute(
+        "SELECT spark_days, spark_icon, spark_note FROM conversations WHERE conv_id='c1'"
+    ).fetchone()
+    assert tuple(row) == (0, "spark_icons/gray_normal.png", "1 天后消失")
 
 
 def test_marks_first_api_call_time(temp_db):

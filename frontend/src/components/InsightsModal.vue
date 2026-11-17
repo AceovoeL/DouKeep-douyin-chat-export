@@ -11,6 +11,7 @@ const props = defineProps({
   collectedAt: { type: Number, default: 0 },
   sparkDays: { type: Number, default: 0 },
   sparkIcon: { type: String, default: '' },
+  sparkNote: { type: String, default: '' },
   open: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close'])
@@ -186,11 +187,11 @@ const fmtCount = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : String(n 
           <button class="insights-close" aria-label="关闭" @click="emit('close')">✕</button>
         </header>
 
-        <div v-if="cutoffText || sparkDays > 0" class="insights-meta">
+        <div v-if="cutoffText || sparkDays > 0 || sparkNote" class="insights-meta">
           <span v-if="cutoffText" class="insights-cutoff">{{ cutoffText }}</span>
-          <span v-if="sparkDays > 0" class="insights-spark">
-            <span class="insights-spark-label">火花天数</span>
-            <SparkBadge :days="sparkDays" :icon="sparkIcon" />
+          <span v-if="sparkDays > 0 || sparkNote" class="insights-spark">
+            <span class="insights-spark-label">{{ sparkNote ? '火花' : '火花天数' }}</span>
+            <SparkBadge :days="sparkDays" :icon="sparkIcon" :note="sparkNote" />
           </span>
         </div>
 

@@ -8,7 +8,11 @@
       <div class="msg-header" v-if="!isStatic">
         <div class="msg-title-row">
           <h3>{{ conversation.name || '未命名' }}</h3>
-          <SparkBadge :days="conversation.spark_days || 0" :icon="conversation.spark_icon || ''" />
+          <SparkBadge
+            :days="conversation.spark_days || 0"
+            :icon="conversation.spark_icon || ''"
+            :note="conversation.spark_note || ''"
+          />
         </div>
         <span class="msg-total">{{ total }} 条消息</span>
         <!-- 只要这个会话有两个以上的人就可以设置「我」：群聊同样需要
