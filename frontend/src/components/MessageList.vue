@@ -796,6 +796,9 @@ const bubbleCatalog = ref({})
 const total = ref(0)
 const loading = ref(false)
 let scrollLocked = false  // 防止程序化滚动触发无限加载
+// 最近一次「跳到第 seq 条」是由谁发起的加载。会话切换和 jumpToSeq 变化经常在
+// 同一次刷新里一起发生，用这个标记让两个 watcher 只加载一次。
+let loadedJumpSeq = null
 const hasOlder = ref(false)
 const hasNewer = ref(false)
 const listRef = ref(null)
@@ -1767,13 +1770,15 @@ async function fetchMessages(convId, beforeSeq = null, afterSeq = null, replace 
   } catch (e) {
     if (requestId !== messageRequestId || props.conversation?.conv_id !== convId) return
     loadError.value = `消息加载失败（${e.message}），请重试；持续失败请查看服务端日志`
-    // Don't leave the spinner (and scroll lock) stuck forever on a failed load.
-    loading.value = false
     scrollLocked = false
     console.error('加载消息失败', e)
     return
+  } finally {
+    // 转圈只归「最新这一次请求」管：被新请求顶掉的旧请求早退时不能去关新请求的转圈，
+    // 但也不能漏关自己的 —— 以前两个 return 会把 loading 永远留成 true，
+    // 表现就是点搜索结果后一直转圈。
+    if (requestId === messageRequestId) loading.value = false
   }
-  loading.value = false
 
   // 清理缓存
   resetParseCaches()
@@ -1864,6 +1869,35 @@ async function jumpToBottom() {
   if (!props.conversation) return
   // 重新加载最新消息（无 beforeSeq / afterSeq）
   await fetchMessages(props.conversation.conv_id)
+}
+
+// 跳到指定 seq：先取目标前 50 条开始的一页（目标基本都在这一页里），
+// 万一不在（消息中间有被过滤掉的空洞）就再往后补几页，最后滚动并高亮。
+async function loadAroundJump(convId, seq) {
+  messages.value = []
+  resetParseCaches()
+  const targetSeq = Math.max(0, seq - 50)
+  await fetchMessages(convId, null, targetSeq, true)
+  for (let extra = 0; extra < 3; extra++) {
+    if (props.conversation?.conv_id !== convId) return
+    if (!messages.value.length || messages.value.some(m => m.seq === seq)) break
+    if (!hasNewer.value) break
+    // 个别异常行没有 seq，凑出 NaN 会让请求参数非法，这里只取有效序号
+    const seqs = messages.value.map(m => Number(m.seq)).filter(n => Number.isFinite(n))
+    if (!seqs.length) break
+    await fetchMessages(convId, null, Math.max(...seqs))
+    await nextTick()
+  }
+  if (props.conversation?.conv_id !== convId) return
+  await nextTick()
+  const targetMsg = messages.value.find(m => m.seq === seq)
+  const el = targetMsg && listRef.value?.querySelector(`[data-msgid="${targetMsg.msg_id}"]`)
+  if (el) {
+    el.scrollIntoView({ block: 'center' })
+    highlightMsgId.value = targetMsg.msg_id
+    setTimeout(() => { highlightMsgId.value = null }, 3000)
+  }
+  emit('jumped')
 }
 
 // 无限滚动：滚动到顶部或底部时自动加载更多
@@ -1987,10 +2021,15 @@ watch(() => props.conversation, (conv) => {
       return
     }
     fetchSenders(conv.conv_id)
-    // 如果有 jumpToSeq，由 jumpToSeq watcher 处理加载
-    if (!props.jumpToSeq) {
-      fetchMessages(conv.conv_id)
-    }
+    // 搜索 / 日期 / 引用跳转：会话切换和 jumpToSeq 往往同时发生，统一在这里发起
+    // 加载。以前把活留给 jumpToSeq watcher，那个 watcher 一旦因为值没变而不触发，
+    // 界面就会停在「加载中…」一直转。
+    const jumpSeq = props.jumpToSeq ?? null
+    loadedJumpSeq = jumpSeq
+    if (jumpSeq) loadAroundJump(conv.conv_id, jumpSeq)
+    else fetchMessages(conv.conv_id)
+  } else {
+    loading.value = false
   }
 }, { immediate: true })
 
@@ -2006,24 +2045,12 @@ watch(() => props.embeddedMessages, (items) => {
 watch(() => props.selfUidOverride, (uid) => { selfUid.value = uid || '' })
 
 watch(() => props.jumpToSeq, async (seq) => {
-  if (seq && props.conversation) {
-    messages.value = []
-    resetParseCaches()
-    const targetSeq = Math.max(0, seq - 50)
-    await fetchMessages(props.conversation.conv_id, null, targetSeq, true)
-    await nextTick()
-    // 精确滚动到目标消息并高亮
-    const targetMsg = messages.value.find(m => m.seq === seq)
-    if (targetMsg && listRef.value) {
-      const el = listRef.value.querySelector(`[data-msgid="${targetMsg.msg_id}"]`)
-      if (el) {
-        el.scrollIntoView({ block: 'center' })
-        highlightMsgId.value = targetMsg.msg_id
-        setTimeout(() => { highlightMsgId.value = null }, 3000)
-      }
-    }
-    emit('jumped')
-  }
+  if (!seq || !props.conversation) return
+  // 同一个会话里只换了目标消息时，会话 watcher 不会跑，由这里兜底；
+  // 会话也换了的话它已经在同一次刷新里加载过，别重复请求同一页。
+  if (loadedJumpSeq === seq) return
+  loadedJumpSeq = seq
+  await loadAroundJump(props.conversation.conv_id, seq)
 })
 </script>
 

@@ -238,7 +238,12 @@ def resolve_display_count(conn, conversation, *, warm=False):
 def find_referenced_video(msg_id):
     """A related_share_video contains a video ID, not a message ID.
 
-    Locate the nearest preceding original share in the same conversation.
+    抖音把「评论 + 引用的视频」拆成两条消息：评论（aweType=700）只带视频
+    itemId，真正的分享卡片（aweType=800）是另一条，两者发送时间只差几毫秒，
+    因此卡片可能排在评论**前面**，也可能排在**后面**（库里两种都有）。
+    这里先向回找 5 条、再向回之后的那 5 条向前找，一轮找不到就把窗口各扩
+    大 5 条继续找，直到会话两头都查完；前后都有人引用同一个视频时，靠得
+    近的那条优先（同一窗口内先回后前）。
     """
     from .forwarded import content_json
     conn = get_db()
@@ -251,17 +256,38 @@ def find_referenced_video(msg_id):
         item_id = str(video.get("itemId") or "")
         if not item_id.isdigit():
             return None
-        rows = conn.execute(
-            "SELECT * FROM messages WHERE conv_id=? AND seq<? "
-            "AND raw_data LIKE ? ORDER BY seq DESC",
-            (source["conv_id"], source["seq"], f"%{item_id}%"),
-        )
-        for candidate in rows:
+        bounds = conn.execute(
+            "SELECT MIN(seq) AS lo, MAX(seq) AS hi FROM messages WHERE conv_id=?",
+            (source["conv_id"],),
+        ).fetchone()
+        candidates = {}
+        for candidate in conn.execute(
+            "SELECT * FROM messages WHERE conv_id=? AND raw_data LIKE ?",
+            (source["conv_id"], f"%{item_id}%"),
+        ):
             message = dict(candidate)
             cj = content_json(message)
-            if str(cj.get("itemId") or "") == item_id and not cj.get("related_share_video"):
-                return message
-        return None
+            if str(cj.get("itemId") or "") != item_id or cj.get("related_share_video"):
+                continue
+            candidates[message["seq"]] = message
+        if not candidates:
+            return None
+        seq = source["seq"]
+        lo, hi = bounds["lo"], bounds["hi"]
+        step = 5
+        offset = 0
+        while True:
+            back_start = seq - offset - step
+            for candidate_seq in range(seq - offset - 1, back_start - 1, -1):
+                if candidate_seq in candidates:
+                    return candidates[candidate_seq]
+            forward_start = seq + offset + 1
+            for candidate_seq in range(forward_start, forward_start + step):
+                if candidate_seq in candidates:
+                    return candidates[candidate_seq]
+            offset += step
+            if back_start <= lo and forward_start + step > hi:
+                return None
     finally:
         conn.close()
 

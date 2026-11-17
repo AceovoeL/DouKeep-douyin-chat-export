@@ -202,7 +202,9 @@ function hydrateConversationMeta(convId) {
     .then((res) => (res.ok ? res.json() : null))
     .then((detail) => {
       if (!detail || activeConversation.value?.conv_id !== convId) return
-      activeConversation.value = { ...activeConversation.value, ...detail }
+      // 就地合并，别换成新对象：换对象会让 MessageList 的会话 watcher 再跑一次，
+      // 把正在进行的「跳转到搜索结果」那次加载顶成过期请求（表现是一直转圈、跳不过去）。
+      Object.assign(activeConversation.value, detail)
     })
     .catch(() => {})
 }
