@@ -15,7 +15,7 @@ import urllib.request
 from datetime import datetime, timezone
 from threading import Lock, Thread
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from backend import visit_count
 from pydantic import BaseModel
@@ -960,12 +960,24 @@ class ExportRequest(BaseModel):
     #: txt 里昵称怎么写：full（照原样，默认）/ number（[0]、[1]…）/ letter（[A]、[B]…）。
     #: 见 extractor/exporter.py 的 NAME_STYLE_*；认不出来的值一律按 full 处理。
     name_style: str = "full"
+    #: 可选日期区间（秒级时间戳，含起点、不含终点）。面板导出纯文本 TXT 时由
+    #: 「全部导出 / 部分导出」弹窗给出；留空表示整份导出。
+    start_ts: int | None = None
+    end_ts: int | None = None
 
 
 class HtmlExportRequest(BaseModel):
     """单文件 HTML 导出参数：一个会话（或全部会话打包）+ 可选日期区间。"""
     conversation: str = ""
     all: bool = False
+    start_ts: int | None = None
+    end_ts: int | None = None
+
+
+class TxtRangeRequest(BaseModel):
+    """纯文本 TXT 弹窗用的日期区间参数：选中的会话 + 可选起止时间戳。"""
+
+    names: list[str] | None = None
     start_ts: int | None = None
     end_ts: int | None = None
 
@@ -4476,6 +4488,62 @@ async def html_export_conversations():
     finally:
         conn.close()
 
+@control_router.get("/api/export/txt/daily")
+async def txt_export_daily(names: list[str] = Query(default=[])):
+    """TXT 导出弹窗的日历数据：所选会话合起来按天统计消息量。"""
+    wanted = [str(name).strip() for name in (names or []) if str(name).strip()]
+    if not wanted:
+        return {"items": []}
+    conn = database.connect()
+    try:
+        marks = ",".join("?" for _ in wanted)
+        rows = conn.execute(
+            "SELECT date(m.timestamp + 8 * 3600, 'unixepoch') AS date, COUNT(*) AS count "
+            "FROM messages m JOIN conversations c ON c.conv_id = m.conv_id "
+            f"WHERE c.name IN ({marks}) AND m.timestamp > 0 "
+            "GROUP BY date ORDER BY date ASC",
+            wanted,
+        ).fetchall()
+        return {"items": [{"date": r["date"], "count": r["count"]} for r in rows]}
+    finally:
+        conn.close()
+
+
+@control_router.post("/api/export/txt/estimate")
+async def estimate_txt_export(req: TxtRangeRequest):
+    """预估纯文本导出的消息条数与文本大小（不真正生成文件）。"""
+    if req.start_ts and req.end_ts and req.start_ts >= req.end_ts:
+        return JSONResponse({"error": "日期区间无效：开始要早于结束"}, status_code=400)
+    wanted = [str(name).strip() for name in (req.names or []) if str(name).strip()]
+    if not wanted:
+        return JSONResponse({"error": "请先选择会话"}, status_code=400)
+    conn = database.connect()
+    try:
+        marks = ",".join("?" for _ in wanted)
+        sql = (
+            "SELECT COUNT(*) AS messages, COALESCE(SUM(LENGTH(m.content)), 0) AS text_chars "
+            "FROM messages m JOIN conversations c ON c.conv_id = m.conv_id "
+            f"WHERE c.name IN ({marks})"
+        )
+        params: list = list(wanted)
+        if req.start_ts:
+            sql += " AND m.timestamp >= ?"
+            params.append(req.start_ts)
+        if req.end_ts:
+            sql += " AND m.timestamp < ?"
+            params.append(req.end_ts)
+        row = conn.execute(sql, params).fetchone()
+        messages = row["messages"] or 0
+        # 中文在 UTF-8 里约 3 字节/字；每行还有「[昵称]」和换行之类的开销，按 40 字节估。
+        estimated = (row["text_chars"] or 0) * 3 + messages * 40
+        return {
+            "messages": messages,
+            "estimated_bytes": estimated,
+        }
+    finally:
+        conn.close()
+
+
 @control_router.post("/api/export/html/estimate")
 async def estimate_html_export(req: HtmlExportRequest):
     """预估单文件 HTML 导出的消息数与文件大小（不真正生成文件）。
@@ -4530,7 +4598,6 @@ async def estimate_html_export(req: HtmlExportRequest):
             "messages": len(messages),
             "media_count": media_count,
             "estimated_bytes": estimated,
-            "estimated_mb": round(estimated / (1024 * 1024), 1),
         }
     finally:
         conn.close()
@@ -4651,6 +4718,9 @@ async def start_export(req: ExportRequest):
             status_code=400,
         )
 
+    if req.start_ts and req.end_ts and req.start_ts >= req.end_ts:
+        return JSONResponse({"error": "日期区间无效：开始要早于结束"}, status_code=400)
+
     _export_state["status"] = "running"
     _export_state["file_path"] = None
     _export_state["message"] = "正在导出..."
@@ -4666,7 +4736,10 @@ async def start_export(req: ExportRequest):
         _save_config(cfg)
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _do_export, req.format, req.filter, convs or None, name_style)
+    await loop.run_in_executor(
+        None, _do_export, req.format, req.filter, convs or None, name_style,
+        req.start_ts, req.end_ts,
+    )
     return {
         "status": _export_state["status"],
         "message": _export_state["message"],
@@ -4867,7 +4940,15 @@ def _install_database(staged_path: str) -> str | None:
     return os.path.basename(backup_path) if moved_db else None
 
 
-def _do_export(fmt: str, filter_name: str, conversations: list | None, name_style: str = "full"):
+def _do_export(
+    fmt: str,
+    filter_name: str,
+    conversations: list | None,
+    name_style: str = "full",
+    start_ts: int | None = None,
+    end_ts: int | None = None,
+):
+    """导出入口；start_ts / end_ts 是可选日期区间（含起点、不含终点）。"""
     try:
         from extractor.exporter import NAME_STYLE_FULL, ChatLabExporter, build_export_filename
         import zipfile
@@ -4898,6 +4979,8 @@ def _do_export(fmt: str, filter_name: str, conversations: list | None, name_styl
                 output_format=fmt,
                 output_dir=data_dir,
                 name_style=name_style,
+                start_ts=start_ts,
+                end_ts=end_ts,
             )
             output_path = exporter.export()
             if not output_path or not os.path.exists(output_path):
@@ -4931,7 +5014,8 @@ def _do_export(fmt: str, filter_name: str, conversations: list | None, name_styl
                 path = os.path.join(tmp_dir, filename)
                 try:
                     ChatLabExporter(
-                        conv_name=name, output_format=fmt, name_style=name_style
+                        conv_name=name, output_format=fmt, name_style=name_style,
+                        start_ts=start_ts, end_ts=end_ts,
                     ).export(path)
                     if os.path.exists(path):
                         produced.append((name, path))

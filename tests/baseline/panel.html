@@ -1309,6 +1309,10 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 /* 年/月下拉浮层：淡入（animation 在 hidden 移除时自动播放一次） */
 #hdpOverlay:not([hidden]) { animation: hdp-overlay-in .16s ease; }
 @keyframes hdp-overlay-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+/* TXT 导出弹窗沿用同一套日历与切换动画（HTML 弹窗那份样式只管自己的 id） */
+#txtExportModal .ap-modal-dialog { height:auto; max-height:min(80vh, 720px); }
+#txtExportModal .ap-modal-body { overflow-y:auto; }
+#txpOverlay:not([hidden]) { animation: hdp-overlay-in .16s ease; }
 
 /* ── 手机端禁止缩放 ──
    touch-action: manipulation 管住双击缩放；iOS 上双指缩放由 <head> 里的 gesture 拦截。 */
@@ -1407,13 +1411,13 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
         <label for="htmlScopePart">部分导出（选日期区间）</label>
       </div>
 
-      <div id="htmlExportDateSection" style="display:none;margin-top:12px">
+      <div id="hdpDateSection" style="display:none;margin-top:12px">
         <div class="hdp-triggers">
           <div class="hdp-trigger" id="hdpStartTrigger">开始日期</div>
           <span class="hdp-sep">至</span>
           <div class="hdp-trigger" id="hdpEndTrigger">结束日期</div>
         </div>
-        <div class="hdp-calendar" id="htmlDateCal">
+        <div class="hdp-calendar" id="hdpCal">
           <div class="hdp-head">
             <button type="button" class="hdp-nav" id="hdpPrev" aria-label="上个月">‹</button>
             <div class="hdp-title">
@@ -1426,7 +1430,7 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
           <div class="hdp-grid" id="hdpGrid"></div>
           <div class="hdp-overlay" id="hdpOverlay" hidden></div>
         </div>
-        <div class="meta" id="htmlDateRangeText" style="margin-top:6px">未选择日期区间（导出全部消息）</div>
+        <div class="meta" id="hdpRangeText" style="margin-top:6px">未选择日期区间（导出全部消息）</div>
       </div>
 
       <div class="meta" id="htmlEstimate" style="margin-top:12px"></div>
@@ -1438,6 +1442,50 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   </div>
 </div>
 
+<div id="txtExportModal" class="ap-modal" hidden onclick="if(event.target===this)closeTxtExport()">
+  <div class="ap-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="txtExportTitle" style="max-width:640px">
+    <div class="ap-modal-head">
+      <div class="ap-modal-title" id="txtExportTitle">导出纯文本 TXT</div>
+      <button type="button" class="ap-modal-close" onclick="closeTxtExport()" aria-label="关闭">✕</button>
+    </div>
+    <div class="ap-modal-body" style="padding:14px 18px">
+      <div class="toggle" style="margin-bottom:12px">
+        <input type="radio" name="txtExportScope" id="txtScopeAll" value="all" checked onchange="onTxtScopeChange()">
+        <label for="txtScopeAll">全部导出（所选会话的所有消息）</label>
+        <input type="radio" name="txtExportScope" id="txtScopePart" value="part" onchange="onTxtScopeChange()">
+        <label for="txtScopePart">部分导出（选日期区间）</label>
+      </div>
+
+      <div id="txpDateSection" style="display:none;margin-top:12px">
+        <div class="hdp-triggers">
+          <div class="hdp-trigger" id="txpStartTrigger">开始日期</div>
+          <span class="hdp-sep">至</span>
+          <div class="hdp-trigger" id="txpEndTrigger">结束日期</div>
+        </div>
+        <div class="hdp-calendar" id="txpCal">
+          <div class="hdp-head">
+            <button type="button" class="hdp-nav" id="txpPrev" aria-label="上个月">‹</button>
+            <div class="hdp-title">
+              <button type="button" class="hdp-unit" id="txpYearBtn">2026年</button>
+              <button type="button" class="hdp-unit" id="txpMonthBtn">10月</button>
+            </div>
+            <button type="button" class="hdp-today" id="txpToday">今日</button>
+            <button type="button" class="hdp-nav" id="txpNext" aria-label="下个月">›</button>
+          </div>
+          <div class="hdp-grid" id="txpGrid"></div>
+          <div class="hdp-overlay" id="txpOverlay" hidden></div>
+        </div>
+        <div class="meta" id="txpRangeText" style="margin-top:6px">未选择日期区间（导出全部消息）</div>
+      </div>
+
+      <div class="meta" id="txtEstimate" style="margin-top:12px"></div>
+    </div>
+    <div class="ap-modal-foot">
+      <button type="button" class="btn" onclick="closeTxtExport()">取消</button>
+      <button type="button" class="btn btn-primary" id="txtExportGo" onclick="runTxtExport()">导出</button>
+    </div>
+  </div>
+</div>
 <div id="confirmModal" class="confirm-modal" hidden onclick="if(event.target===this)closeConfirmModal(false)">
   <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle" aria-describedby="confirmModalMessage">
     <div class="confirm-head">
@@ -4074,7 +4122,8 @@ function fmtOverviewNum(n) {
   return Number(n || 0).toLocaleString();
 }
 
-function fmtOverviewBytes(n) {
+/* 文件大小：按 B / KB / MB / GB / TB 自动挑单位（数据总览、日志、导出预估共用） */
+function fmtBytes(n) {
   const value = Number(n || 0);
   if (value < 1024) return value + ' B';
   const units = ['KB', 'MB', 'GB', 'TB'];
@@ -4210,18 +4259,18 @@ function renderOverview() {
   if (storageEl) {
     const st = d.storage || {};
     const items = [
-      [t('ovStorageDb'), fmtOverviewBytes(st.db_bytes)],
-      [t('ovStorageMedia'), fmtOverviewBytes(st.media_bytes) + ' · ' + t('ovFiles', fmtOverviewNum(st.media_files))],
+      [t('ovStorageDb'), fmtBytes(st.db_bytes)],
+      [t('ovStorageMedia'), fmtBytes(st.media_bytes) + ' · ' + t('ovFiles', fmtOverviewNum(st.media_files))],
     ];
     // 只有确实存在导出 / 备份文件时才显示这一行，不拿内部小文件凑数
     if (st.exports_bytes > 0) {
-      items.push([t('ovStorageExports'), fmtOverviewBytes(st.exports_bytes)]);
+      items.push([t('ovStorageExports'), fmtBytes(st.exports_bytes)]);
     }
-    items.push([t('ovStorageTotal'), fmtOverviewBytes(st.total_bytes)]);
+    items.push([t('ovStorageTotal'), fmtBytes(st.total_bytes)]);
     (st.detail || []).filter(item => item.bytes || item.files).forEach(item => {
       items.push([
         t(OV_STORAGE_LABELS[item.key] || 'ovStorageOther'),
-        fmtOverviewBytes(item.bytes) + ' · ' + t('ovFiles', fmtOverviewNum(item.files)),
+        fmtBytes(item.bytes) + ' · ' + t('ovFiles', fmtOverviewNum(item.files)),
       ]);
     });
     storageEl.innerHTML = items.map(pair => ovKvRow(pair[0], pair[1])).join('');
@@ -5646,6 +5695,16 @@ async function startExport() {
     openHtmlExport(picked[0]);
     return;
   }
+  // 纯文本 TXT 也走弹窗：先选「全部还是一段日期」，再真正导出。
+  if (format === 'txt') {
+    const picked = [...selectedMap.export];
+    if (picked.length === 0) {
+      setDynText(document.getElementById('exportMsg'), t('exportNeedConv'));
+      return;
+    }
+    openTxtExport(picked);
+    return;
+  }
   const conversations = [...selectedMap.export];
   const msg = document.getElementById('exportMsg');
   // 一个都没勾就别发了：后端会拒绝（400），这里先把话说清楚，别让按钮看着像坏了
@@ -5693,34 +5752,339 @@ function updateDatabaseFileName(input) {
 
 /* ── 单文件 HTML 导出（单日历日期区间选择器：两次点击选区间，年/月下拉快速跳转） ── */
 
-const htmlExport = {
-  scope: "all",
-  convName: "",
-  convId: "",
-  viewY: 2026, viewM: 1,   // 当前日历显示的年月
-  anchor: null,             // 两次点击的第一下（起始日期 YYYY-MM-DD）
-  previewEnd: null,         // anchor 期间鼠标悬停的日期（实时预览区间终点）
-  startTs: null,
-  endTs: null,
-  months: [],               // 该会话有消息的日期集合（Set<YYYY-MM-DD>）
-  minDate: null, maxDate: null,
-  estTimer: null,
-  overlay: null,            // "year" | "month" | null（下拉列表打开状态）
-};
+/* ── 日期区间选择器（单日历：两次点击选区间，年/月下拉快速跳转） ──
+   导出 HTML 和导出纯文本 TXT 的弹窗选日期逻辑完全一样，所以抽成一个小部件：
+   每个弹窗持有一份状态（当前年月、已选区间、有消息的日期），只是数据源和
+   「选好之后做什么」不同。 */
 
+function dateToTs(date) {
+  return Math.floor(new Date(date + "T00:00:00").getTime() / 1000);
+}
+
+function tsToDate(ts) {
+  const d = new Date(ts * 1000);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+function createRangePicker(cfg) {
+  const el = (suffix) => document.getElementById(cfg.idPrefix + suffix);
+  const state = {
+    viewY: new Date().getFullYear(),
+    viewM: new Date().getMonth() + 1,
+    anchor: null,          // 两次点击的第一下（起始日期 YYYY-MM-DD）
+    previewEnd: null,      // anchor 期间鼠标悬停的日期（实时预览区间终点）
+    startTs: null,
+    endTs: null,
+    months: new Set(),     // 有消息的日期集合
+    minDate: null,
+    maxDate: null,
+    overlay: null,         // "year" | "month" | null（下拉列表打开状态）
+  };
+  let heightAnim = null;
+
+  function reset() {
+    state.anchor = null;
+    state.previewEnd = null;
+    state.startTs = null;
+    state.endTs = null;
+    state.months = new Set();
+    state.minDate = null;
+    state.maxDate = null;
+    state.overlay = null;
+    const now = new Date();
+    state.viewY = now.getFullYear();
+    state.viewM = now.getMonth() + 1;
+  }
+
+  // 有消息的日期从接口来；默认显示最后一个有消息的月
+  function setDays(items) {
+    state.months = new Set((items || []).filter((it) => it.count > 0).map((it) => it.date));
+    state.minDate = items && items.length ? items[0].date : null;
+    state.maxDate = items && items.length ? items[items.length - 1].date : null;
+    if (state.maxDate) {
+      const [y, m] = state.maxDate.split("-").map(Number);
+      state.viewY = y;
+      state.viewM = m;
+    }
+    render();
+  }
+
+  // 高度过渡拆成两步：lock（内容变化前锁住当前高度）+ tween（内容变化后补间到新高度）。
+  // 这样 before 永远是变化前的真实高度，after 是变化后的自然高度，过渡一定成立。
+  function lockHeight() {
+    const dialog = document.querySelector("#" + cfg.modalId + " .ap-modal-dialog");
+    if (!dialog) return;
+    if (heightAnim) { cancelAnimationFrame(heightAnim); heightAnim = null; }
+    const h = dialog.offsetHeight;
+    if (h) dialog.style.height = h + "px";
+  }
+
+  function tweenHeight() {
+    const dialog = document.querySelector("#" + cfg.modalId + " .ap-modal-dialog");
+    if (!dialog) return;
+    const before = parseFloat(dialog.style.height) || dialog.offsetHeight;
+    dialog.style.height = "auto";       // 解锁，量内容自然高度
+    const after = dialog.offsetHeight;
+    if (Math.abs(after - before) < 2) {
+      dialog.style.height = "";
+      return;
+    }
+    const duration = 220;
+    const t0 = performance.now();
+    const ease = (t) => 1 - Math.pow(1 - t, 3);   // easeOutCubic
+    const step = (now) => {
+      const t = Math.min((now - t0) / duration, 1);
+      dialog.style.height = (before + (after - before) * ease(t)) + "px";
+      if (t < 1) {
+        heightAnim = requestAnimationFrame(step);
+      } else {
+        dialog.style.height = "";          // 补间完成，恢复自适应
+        heightAnim = null;
+      }
+    };
+    heightAnim = requestAnimationFrame(step);
+  }
+
+  // 两次点击：第一下定起点；第二下定终点；已选好区间后再点 = 清掉重来
+  function onDayClick(date) {
+    if (!state.anchor) {
+      if (state.startTs) {
+        state.startTs = null;
+        state.endTs = null;
+      }
+      state.anchor = date;
+      state.previewEnd = date;
+    } else {
+      const range = date >= state.anchor ? [state.anchor, date] : [date, state.anchor];
+      state.anchor = null;
+      state.previewEnd = null;
+      state.startTs = dateToTs(range[0]);
+      state.endTs = dateToTs(range[1]) + 86400;
+    }
+    render();
+    if (cfg.onRangeChange) cfg.onRangeChange();
+  }
+
+  // anchor 期间鼠标悬停：实时预览将要选中的区间。不重画整个日历（重画会让每个
+  // 预览格的淡入动画重放一遍，看起来是闪烁），只对变化的格子增删 preview 类。
+  function onDayHover(date) {
+    if (!state.anchor || state.previewEnd === date) return;
+    const prev = state.previewEnd;
+    state.previewEnd = date;
+    const grid = el("Grid");
+    if (!grid) return;
+    const anchor = state.anchor;
+    const lo = date >= anchor ? anchor : date;
+    const hi = date >= anchor ? date : anchor;
+    const prevLo = prev >= anchor ? anchor : prev;
+    const prevHi = prev >= anchor ? prev : anchor;
+    for (const cell of grid.querySelectorAll(".hdp-day[data-date]")) {
+      const d = cell.dataset.date;
+      const inNew = d > lo && d < hi;
+      const inOld = d > prevLo && d < prevHi;
+      if (inNew && !inOld) cell.classList.add("preview");
+      else if (!inNew && inOld) cell.classList.remove("preview");
+    }
+  }
+
+  // 更新顶部「开始日期 / 结束日期」触发框
+  function updateTriggers() {
+    const st = el("StartTrigger");
+    const en = el("EndTrigger");
+    if (!st || !en) return;
+    if (state.anchor) {
+      st.textContent = state.anchor;
+      st.classList.add("filled");
+      en.textContent = "结束日期";
+      en.classList.remove("filled");
+    } else if (state.startTs) {
+      st.textContent = tsToDate(state.startTs);
+      st.classList.add("filled");
+      en.textContent = tsToDate(state.endTs - 1);
+      en.classList.add("filled");
+    } else {
+      st.textContent = "开始日期";
+      st.classList.remove("filled");
+      en.textContent = "结束日期";
+      en.classList.remove("filled");
+    }
+    updateRangeText();
+  }
+
+  function updateRangeText() {
+    const text = el("RangeText");
+    if (!text) return;
+    if (state.anchor) {
+      text.textContent = "已选开始日期 " + state.anchor + "，再点一下选结束日期。";
+      return;
+    }
+    if (!state.startTs) {
+      text.textContent = cfg.rangeTextEmpty;
+      return;
+    }
+    text.textContent = "导出区间：" + tsToDate(state.startTs) + " 至 " + tsToDate(state.endTs - 1);
+  }
+
+  // 年/月下拉浮层：点年份展开年份列表、点月份展开 1-12 月
+  function renderOverlay() {
+    const ov = el("Overlay");
+    if (!ov) return;
+    if (!state.overlay) {
+      ov.hidden = true;
+      ov.innerHTML = "";
+      return;
+    }
+    ov.hidden = false;
+    ov.innerHTML = "";
+    if (state.overlay === "year") {
+      if (!state.minDate || !state.maxDate) return;
+      const minY = Number(state.minDate.split("-")[0]);
+      const maxY = Number(state.maxDate.split("-")[0]);
+      for (let y = minY; y <= maxY; y++) {
+        const opt = document.createElement("div");
+        opt.className = "hdp-option" + (y === state.viewY ? " current" : "");
+        opt.textContent = y + "年";
+        opt.onclick = () => { state.viewY = y; state.overlay = null; render(); };
+        ov.appendChild(opt);
+      }
+    } else {
+      for (let m = 1; m <= 12; m++) {
+        const opt = document.createElement("div");
+        opt.className = "hdp-option" + (m === state.viewM ? " current" : "");
+        opt.textContent = m + "月";
+        opt.onclick = () => { state.viewM = m; state.overlay = null; render(); };
+        ov.appendChild(opt);
+      }
+    }
+    ov.hidden = false;
+  }
+
+  // 画单月日历
+  function render() {
+    const grid = el("Grid");
+    if (!grid) return;
+    // 渲染前锁住当前高度：等下面 DOM 撑开后，由结尾的补间平滑过渡过去
+    lockHeight();
+    el("YearBtn").textContent = state.viewY + "年";
+    el("MonthBtn").textContent = state.viewM + "月";
+    grid.innerHTML = "";
+    if (!state.months.size) {
+      grid.innerHTML = '<div class="meta" style="grid-column:1/-1">' + cfg.emptyDaysText + "</div>";
+      updateTriggers();
+      renderOverlay();
+      tweenHeight();
+      return;
+    }
+    for (const dow of ["日", "一", "二", "三", "四", "五", "六"]) {
+      const cell = document.createElement("div");
+      cell.className = "hdp-dow";
+      cell.textContent = dow;
+      grid.appendChild(cell);
+    }
+    const y = state.viewY, m = state.viewM;
+    const first = new Date(y, m - 1, 1);
+    const daysInMonth = new Date(y, m, 0).getDate();
+    for (let i = 0; i < first.getDay(); i++) {
+      const cell = document.createElement("div");
+      cell.className = "hdp-day empty";
+      grid.appendChild(cell);
+    }
+    const anchor = state.anchor;
+    const previewRange = anchor && state.previewEnd
+      ? (state.previewEnd >= anchor ? [anchor, state.previewEnd] : [state.previewEnd, anchor])
+      : null;
+    const sel = state.startTs ? [tsToDate(state.startTs), tsToDate(state.endTs - 1)] : null;
+    for (let day = 1; day <= daysInMonth; day++) {
+      const date = y + "-" + String(m).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+      const cell = document.createElement("div");
+      const has = state.months.has(date);
+      cell.className = "hdp-day " + (has ? "has-msg" : "no-msg");
+      cell.textContent = day;
+      cell.dataset.date = date;   // 增量预览按日期找格子（见 onDayHover）
+      if (anchor && date === anchor) cell.classList.add("anchor");
+      // 已确认的区间：实底色
+      if (sel && date >= sel[0] && date <= sel[1]) {
+        cell.classList.add(date === sel[0] || date === sel[1] ? "edge" : "in-range");
+      }
+      // anchor 期间的实时预览区间：浅色主题色
+      if (previewRange && date >= previewRange[0] && date <= previewRange[1] && date !== anchor) {
+        cell.classList.add("preview");
+      }
+      if (has) {
+        cell.onclick = () => onDayClick(date);
+        cell.onmouseenter = () => onDayHover(date);
+      }
+      grid.appendChild(cell);
+    }
+    updateTriggers();
+    renderOverlay();
+    tweenHeight();
+  }
+
+  function bind() {
+    const prev = el("Prev"), next = el("Next"), today = el("Today");
+    const yBtn = el("YearBtn"), mBtn = el("MonthBtn");
+    if (!prev || !next || !today || !yBtn || !mBtn) return;
+    prev.onclick = () => {
+      state.overlay = null;
+      state.viewM -= 1;
+      if (state.viewM < 1) { state.viewM = 12; state.viewY -= 1; }
+      render();
+    };
+    next.onclick = () => {
+      state.overlay = null;
+      state.viewM += 1;
+      if (state.viewM > 12) { state.viewM = 1; state.viewY += 1; }
+      render();
+    };
+    today.onclick = () => {
+      const now = new Date();
+      state.overlay = null;
+      state.viewY = now.getFullYear();
+      state.viewM = now.getMonth() + 1;
+      render();
+    };
+    yBtn.onclick = () => {
+      state.overlay = state.overlay === "year" ? null : "year";
+      render();
+    };
+    mBtn.onclick = () => {
+      state.overlay = state.overlay === "month" ? null : "month";
+      render();
+    };
+    // 点年份/月份下拉外面的区域 → 关闭下拉
+    document.addEventListener("click", (ev) => {
+      if (!state.overlay) return;
+      const cal = el("Cal");
+      if (cal && cal.contains(ev.target)) return;
+      state.overlay = null;
+      render();
+    });
+  }
+
+  bind();
+  return { state, reset, setDays, render, lockHeight, tweenHeight };
+}
+
+/* ── 单文件 HTML 导出（全部 / 部分 + 日期区间，实时预估条数与大小） ── */
+
+const htmlExport = { scope: "all", convName: "", convId: "", estTimer: null };
 let htmlExportCloseTimer = null;
+
+const htmlPicker = createRangePicker({
+  modalId: "htmlExportModal",
+  idPrefix: "hdp",
+  rangeTextEmpty: "未选择日期区间（导出全部消息）",
+  emptyDaysText: "这个会话还没有消息。",
+  onRangeChange: () => updateHtmlEstimate(),
+});
 
 function openHtmlExport(convName) {
   const modal = document.getElementById("htmlExportModal");
   if (!modal) return;
   htmlExport.convName = convName || "";
   htmlExport.scope = "all";
-  htmlExport.anchor = null;
-  htmlExport.previewEnd = null;
-  htmlExport.startTs = null;
-  htmlExport.endTs = null;
-  htmlExport.months = [];
-  htmlExport.overlay = null;
+  htmlPicker.reset();
   document.getElementById("htmlScopeAll").checked = true;
   document.getElementById("htmlExportTitle").textContent = convName
     ? "导出单文件 HTML · " + convName
@@ -5742,11 +6106,11 @@ function closeHtmlExport() {
 function onHtmlScopeChange() {
   const all = document.getElementById("htmlScopeAll").checked;
   htmlExport.scope = all ? "all" : "part";
-  lockHtmlDialogHeight();
-  document.getElementById("htmlExportDateSection").style.display = all ? "none" : "";
+  htmlPicker.lockHeight();
+  document.getElementById("hdpDateSection").style.display = all ? "none" : "";
   updateHtmlEstimate();
-  if (!all && !htmlExport.months.length) loadHtmlCalendar();
-  tweenHtmlDialogHeight();
+  if (!all && !htmlPicker.state.months.size) loadHtmlCalendar();
+  htmlPicker.tweenHeight();
 }
 
 // 拉这个会话的每日消息量（面板自己的接口，自动带 token）
@@ -5761,259 +6125,26 @@ function loadHtmlCalendar() {
       return fetch("/panel/api/export/html/daily?conv_id=" + encodeURIComponent(item.conv_id));
     })
     .then((r) => (r.ok ? r.json() : Promise.reject()))
-    .then((s) => {
-      const items = s.items || [];
-      htmlExport.months = new Set(items.filter((it) => it.count > 0).map((it) => it.date));
-      if (items.length) {
-        htmlExport.minDate = items[0].date;
-        htmlExport.maxDate = items[items.length - 1].date;
-        // 默认显示最后有消息的那个月
-        const [y, m] = htmlExport.maxDate.split("-").map(Number);
-        htmlExport.viewY = y;
-        htmlExport.viewM = m;
-      }
-      renderHtmlCal();
-    })
+    .then((s) => htmlPicker.setDays(s.items || []))
     .catch(() => {
       const grid = document.getElementById("hdpGrid");
       if (grid) grid.innerHTML = '<div class="meta">日历加载失败，请重试。</div>';
     });
 }
 
-function dateToTs(date) {
-  return Math.floor(new Date(date + "T00:00:00").getTime() / 1000);
-}
-
-function tsToDate(ts) {
-  const d = new Date(ts * 1000);
-  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-}
-
-// 两次点击：第一下定起点；第二下定终点；已选好区间后再点 = 清掉重来
-function onHtmlDayClick(date) {
-  if (!htmlExport.anchor) {
-    if (htmlExport.startTs) {
-      htmlExport.startTs = null;
-      htmlExport.endTs = null;
-    }
-    htmlExport.anchor = date;
-    htmlExport.previewEnd = date;
-  } else {
-    const range = date >= htmlExport.anchor
-      ? [htmlExport.anchor, date]
-      : [date, htmlExport.anchor];
-    htmlExport.anchor = null;
-    htmlExport.previewEnd = null;
-    htmlExport.startTs = dateToTs(range[0]);
-    htmlExport.endTs = dateToTs(range[1]) + 86400;
-    updateHtmlEstimate();
-  }
-  renderHtmlCal();
-}
-
-// anchor 期间鼠标悬停：实时预览将要选中的区间。
-// 不重画整个日历（重画会让每个预览格的淡入动画重放一遍，看起来是闪烁），
-// 只对变化的格子增删 preview 类：新进区间的淡入一次、离开区间的直接撤掉。
-function onHtmlDayHover(date) {
-  if (!htmlExport.anchor || htmlExport.previewEnd === date) return;
-  const prev = htmlExport.previewEnd;
-  htmlExport.previewEnd = date;
-  const grid = document.getElementById("hdpGrid");
-  if (!grid) return;
-  const anchor = htmlExport.anchor;
-  const lo = date >= anchor ? anchor : date;
-  const hi = date >= anchor ? date : anchor;
-  const prevLo = prev >= anchor ? anchor : prev;
-  const prevHi = prev >= anchor ? prev : anchor;
-  for (const el of grid.querySelectorAll(".hdp-day[data-date]")) {
-    const d = el.dataset.date;
-    const inNew = d > lo && d < hi;
-    const inOld = d > prevLo && d < prevHi;
-    if (inNew && !inOld) el.classList.add("preview");
-    else if (!inNew && inOld) el.classList.remove("preview");
-  }
-}
-
-// 画单月日历
-function renderHtmlCal() {
-  const grid = document.getElementById("hdpGrid");
-  if (!grid) return;
-  // 渲染前锁住当前高度：等下面 DOM 撑开后，由结尾的补间平滑过渡过去
-  lockHtmlDialogHeight();
-  document.getElementById("hdpYearBtn").textContent = htmlExport.viewY + "年";
-  document.getElementById("hdpMonthBtn").textContent = htmlExport.viewM + "月";
-  grid.innerHTML = "";
-  if (!htmlExport.months.size) {
-    grid.innerHTML = '<div class="meta" style="grid-column:1/-1">这个会话还没有消息。</div>';
-    updateHtmlTriggers();
-    return;
-  }
-  for (const dow of ["日", "一", "二", "三", "四", "五", "六"]) {
-    const el = document.createElement("div");
-    el.className = "hdp-dow";
-    el.textContent = dow;
-    grid.appendChild(el);
-  }
-  const y = htmlExport.viewY, m = htmlExport.viewM;
-  const first = new Date(y, m - 1, 1);
-  const daysInMonth = new Date(y, m, 0).getDate();
-  for (let i = 0; i < first.getDay(); i++) {
-    const el = document.createElement("div");
-    el.className = "hdp-day empty";
-    grid.appendChild(el);
-  }
-  const anchor = htmlExport.anchor;
-  const previewRange = anchor && htmlExport.previewEnd
-    ? (htmlExport.previewEnd >= anchor
-        ? [anchor, htmlExport.previewEnd]
-        : [htmlExport.previewEnd, anchor])
-    : null;
-  const sel = htmlExport.startTs
-    ? [tsToDate(htmlExport.startTs), tsToDate(htmlExport.endTs - 1)]
-    : null;
-  for (let day = 1; day <= daysInMonth; day++) {
-    const date = y + "-" + String(m).padStart(2, "0") + "-" + String(day).padStart(2, "0");
-    const el = document.createElement("div");
-    const has = htmlExport.months.has(date);
-    el.className = "hdp-day " + (has ? "has-msg" : "no-msg");
-    el.textContent = day;
-    el.dataset.date = date;   // 增量预览按日期找格子（见 onHtmlDayHover）
-    if (anchor && date === anchor) el.classList.add("anchor");
-    // 已确认的区间：实底色
-    if (sel && date >= sel[0] && date <= sel[1]) {
-      el.classList.add(date === sel[0] || date === sel[1] ? "edge" : "in-range");
-    }
-    // anchor 期间的实时预览区间：浅色主题色
-    if (previewRange && date >= previewRange[0] && date <= previewRange[1]
-        && date !== anchor) {
-      el.classList.add("preview");
-    }
-    if (has) {
-      el.onclick = () => onHtmlDayClick(date);
-      el.onmouseenter = () => onHtmlDayHover(date);
-    }
-    grid.appendChild(el);
-  }
-  updateHtmlTriggers();
-  renderHtmlOverlay();
-  tweenHtmlDialogHeight();
-}
-
-// 更新顶部「开始日期 / 结束日期」触发框
-function updateHtmlTriggers() {
-  const st = document.getElementById("hdpStartTrigger");
-  const en = document.getElementById("hdpEndTrigger");
-  if (htmlExport.anchor) {
-    st.textContent = htmlExport.anchor;
-    st.classList.add("filled");
-    en.textContent = "结束日期";
-    en.classList.remove("filled");
-  } else if (htmlExport.startTs) {
-    st.textContent = tsToDate(htmlExport.startTs);
-    st.classList.add("filled");
-    en.textContent = tsToDate(htmlExport.endTs - 1);
-    en.classList.add("filled");
-  } else {
-    st.textContent = "开始日期";
-    st.classList.remove("filled");
-    en.textContent = "结束日期";
-    en.classList.remove("filled");
-  }
-  updateHtmlRangeText();
-}
-
-function updateHtmlRangeText() {
-  const el = document.getElementById("htmlDateRangeText");
-  if (!el) return;
-  if (htmlExport.anchor) {
-    el.textContent = "已选开始日期 " + htmlExport.anchor + "，再点一下选结束日期。";
-    return;
-  }
-  if (!htmlExport.startTs) {
-    el.textContent = "未选择日期区间（导出全部消息）";
-    return;
-  }
-  el.textContent = "导出区间：" + tsToDate(htmlExport.startTs) + " 至 " + tsToDate(htmlExport.endTs - 1);
-}
-
-// 年/月下拉浮层：点年份展开年份列表、点月份展开 1-12 月
-function renderHtmlOverlay() {
-  const ov = document.getElementById("hdpOverlay");
-  if (!ov) return;
-  if (!htmlExport.overlay) {
-    ov.hidden = true;
-    ov.innerHTML = "";
-    return;
-  }
-  ov.hidden = false;
-  ov.innerHTML = "";
-  if (htmlExport.overlay === "year") {
-    const [minY] = htmlExport.minDate.split("-").map(Number);
-    const [maxY] = htmlExport.maxDate.split("-").map(Number);
-    for (let y = minY; y <= maxY; y++) {
-      const el = document.createElement("div");
-      el.className = "hdp-option" + (y === htmlExport.viewY ? " current" : "");
-      el.textContent = y + "年";
-      el.onclick = () => { htmlExport.viewY = y; htmlExport.overlay = null; renderHtmlCal(); };
-      ov.appendChild(el);
-    }
-  } else {
-    for (let m = 1; m <= 12; m++) {
-      const el = document.createElement("div");
-      el.className = "hdp-option" + (m === htmlExport.viewM ? " current" : "");
-      el.textContent = m + "月";
-      el.onclick = () => { htmlExport.viewM = m; htmlExport.overlay = null; renderHtmlCal(); };
-      ov.appendChild(el);
-    }
-  }
-  ov.hidden = false;
-}
-
-function bindHtmlCalControls() {
-  document.getElementById("hdpPrev").onclick = () => {
-    htmlExport.overlay = null;
-    htmlExport.viewM -= 1;
-    if (htmlExport.viewM < 1) { htmlExport.viewM = 12; htmlExport.viewY -= 1; }
-    renderHtmlCal();
-  };
-  document.getElementById("hdpNext").onclick = () => {
-    htmlExport.overlay = null;
-    htmlExport.viewM += 1;
-    if (htmlExport.viewM > 12) { htmlExport.viewM = 1; htmlExport.viewY += 1; }
-    renderHtmlCal();
-  };
-  document.getElementById("hdpToday").onclick = () => {
-    const now = new Date();
-    htmlExport.overlay = null;
-    htmlExport.viewY = now.getFullYear();
-    htmlExport.viewM = now.getMonth() + 1;
-    renderHtmlCal();
-  };
-  document.getElementById("hdpYearBtn").onclick = () => {
-    htmlExport.overlay = htmlExport.overlay === "year" ? null : "year";
-    renderHtmlCal();
-  };
-  document.getElementById("hdpMonthBtn").onclick = () => {
-    htmlExport.overlay = htmlExport.overlay === "month" ? null : "month";
-    renderHtmlCal();
-  };
-}
-
+// 预估不可少：全部导出也要先告诉用户「多少条消息、文件多大」。
+// 部分导出带上区间；全部导出不带区间（后端就按整份算）。
 function updateHtmlEstimate() {
   const el = document.getElementById("htmlEstimate");
   if (!el) return;
   const go = document.getElementById("htmlExportGo");
-  if (htmlExport.scope === "all") {
-    el.textContent = "将导出这个会话的全部消息。";
-    if (go) go.disabled = false;
-    return;
-  }
-  if (!htmlExport.startTs) {
+  const part = htmlExport.scope === "part";
+  if (part && !htmlPicker.state.startTs) {
     el.textContent = "请先在日历上点两下选择日期区间。";
     if (go) go.disabled = true;
     return;
   }
-  if (go) go.disabled = true;
+  if (go) go.disabled = part;          // 区间还没算完先别让点导出
   el.textContent = "正在估算大小…";
   clearTimeout(htmlExport.estTimer);
   htmlExport.estTimer = setTimeout(() => {
@@ -6022,67 +6153,18 @@ function updateHtmlEstimate() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         conversation: htmlExport.convName,
-        start_ts: htmlExport.startTs,
-        end_ts: htmlExport.endTs,
+        start_ts: part ? htmlPicker.state.startTs : null,
+        end_ts: part ? htmlPicker.state.endTs : null,
       }),
     })
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => {
-        el.textContent = "预计 " + d.messages + " 条消息（含 " + d.media_count + " 张本机图片），导出文件约 " + d.estimated_mb + " MB。";
+        el.textContent = "预计 " + d.messages + " 条消息（含 " + d.media_count + " 张本机图片），导出文件约 " + fmtBytes(d.estimated_bytes) + "。";
         if (go) go.disabled = false;
       })
-      .catch(() => { el.textContent = "预估失败，请重试。"; });
+      .catch(() => { el.textContent = "预估失败，请重试。"; if (go) go.disabled = false; });
   }, 300);
 }
-// 高度过渡拆成两步：lock（内容变化前锁住当前高度）+ tween（内容变化后补间到新高度）。
-// 这样 before 永远是变化前的真实高度，after 是变化后的自然高度，过渡一定成立。
-let _htmlHeightAnim = null;
-
-function lockHtmlDialogHeight() {
-  const dialog = document.querySelector("#htmlExportModal .ap-modal-dialog");
-  if (!dialog) return;
-  if (_htmlHeightAnim) { cancelAnimationFrame(_htmlHeightAnim); _htmlHeightAnim = null; }
-  const h = dialog.offsetHeight;
-  if (h) dialog.style.height = h + "px";
-}
-
-function tweenHtmlDialogHeight() {
-  const dialog = document.querySelector("#htmlExportModal .ap-modal-dialog");
-  if (!dialog) return;
-  const before = parseFloat(dialog.style.height) || dialog.offsetHeight;
-  dialog.style.height = "auto";       // 解锁，量内容自然高度
-  const after = dialog.offsetHeight;
-  if (Math.abs(after - before) < 2) {
-    dialog.style.height = "";
-    return;
-  }
-  const duration = 220;
-  const t0 = performance.now();
-  const ease = (t) => 1 - Math.pow(1 - t, 3);   // easeOutCubic
-  const step = (now) => {
-    const t = Math.min((now - t0) / duration, 1);
-    dialog.style.height = (before + (after - before) * ease(t)) + "px";
-    if (t < 1) {
-      _htmlHeightAnim = requestAnimationFrame(step);
-    } else {
-      dialog.style.height = "";          // 补间完成，恢复自适应
-      _htmlHeightAnim = null;
-    }
-  };
-  _htmlHeightAnim = requestAnimationFrame(step);
-}
-
-// 点年份/月份下拉外面的区域 → 关闭下拉
-document.addEventListener("click", (ev) => {
-  if (!htmlExport.overlay) return;
-  const cal = document.getElementById("htmlDateCal");
-  if (cal && cal.contains(ev.target)) return;
-  htmlExport.overlay = null;
-  renderHtmlCal();
-});
-
-// 面板脚本加载后绑定一次（按钮是静态存在的）
-bindHtmlCalControls();
 
 function runHtmlExport() {
   const go = document.getElementById("htmlExportGo");
@@ -6090,8 +6172,8 @@ function runHtmlExport() {
   const msg = document.getElementById("exportMsg");
   const body = {
     conversation: htmlExport.convName,
-    start_ts: htmlExport.scope === "all" ? null : htmlExport.startTs,
-    end_ts: htmlExport.scope === "all" ? null : htmlExport.endTs,
+    start_ts: htmlExport.scope === "all" ? null : htmlPicker.state.startTs,
+    end_ts: htmlExport.scope === "all" ? null : htmlPicker.state.endTs,
   };
   fetch("/panel/api/export/html", {
     method: "POST",
@@ -6109,6 +6191,137 @@ function runHtmlExport() {
     })
     .catch((e) => {
       if (msg) setDynText(msg, "HTML 导出失败: " + (e.message || e));
+      setStatusEl(document.getElementById("exportStatus"), "idle");
+    });
+}
+
+/* ── 纯文本 TXT 导出（全部 / 部分 + 日期区间，实时预估条数与大小） ── */
+
+const txtExport = { scope: "all", convs: [], estTimer: null };
+let txtExportCloseTimer = null;
+
+const txtPicker = createRangePicker({
+  modalId: "txtExportModal",
+  idPrefix: "txp",
+  rangeTextEmpty: "未选择日期区间（导出全部消息）",
+  emptyDaysText: "所选会话还没有消息。",
+  onRangeChange: () => updateTxtEstimate(),
+});
+
+function openTxtExport(convs) {
+  const modal = document.getElementById("txtExportModal");
+  if (!modal) return;
+  txtExport.convs = (convs || []).slice();
+  txtExport.scope = "all";
+  txtPicker.reset();
+  document.getElementById("txtScopeAll").checked = true;
+  document.getElementById("txtExportTitle").textContent = txtExport.convs.length === 1
+    ? "导出纯文本 TXT · " + txtExport.convs[0]
+    : "导出纯文本 TXT";
+  onTxtScopeChange();
+  modal.hidden = false;
+  clearTimeout(txtExportCloseTimer);
+  requestAnimationFrame(() => modal.classList.add("show"));
+}
+
+function closeTxtExport() {
+  const modal = document.getElementById("txtExportModal");
+  if (!modal || modal.hidden) return;
+  modal.classList.remove("show");
+  clearTimeout(txtExportCloseTimer);
+  txtExportCloseTimer = setTimeout(() => { modal.hidden = true; }, 200);
+}
+
+function onTxtScopeChange() {
+  const all = document.getElementById("txtScopeAll").checked;
+  txtExport.scope = all ? "all" : "part";
+  txtPicker.lockHeight();
+  document.getElementById("txpDateSection").style.display = all ? "none" : "";
+  updateTxtEstimate();
+  if (!all && !txtPicker.state.months.size) loadTxtCalendar();
+  txtPicker.tweenHeight();
+}
+
+// TXT 可以一次选中多个会话，日历就按它们合起来的消息日期画
+function txtNamesQuery() {
+  const params = new URLSearchParams();
+  txtExport.convs.forEach((name) => params.append("names", name));
+  return params.toString();
+}
+
+function loadTxtCalendar() {
+  if (!txtExport.convs.length) return;
+  fetch("/panel/api/export/txt/daily?" + txtNamesQuery())
+    .then((r) => (r.ok ? r.json() : Promise.reject()))
+    .then((d) => txtPicker.setDays(d.items || []))
+    .catch(() => {
+      const grid = document.getElementById("txpGrid");
+      if (grid) grid.innerHTML = '<div class="meta">日历加载失败，请重试。</div>';
+    });
+}
+
+function updateTxtEstimate() {
+  const el = document.getElementById("txtEstimate");
+  if (!el) return;
+  const go = document.getElementById("txtExportGo");
+  const part = txtExport.scope === "part";
+  if (part && !txtPicker.state.startTs) {
+    el.textContent = "请先在日历上点两下选择日期区间。";
+    if (go) go.disabled = true;
+    return;
+  }
+  if (go) go.disabled = part;          // 区间还没算完先别让点导出
+  el.textContent = "正在估算大小…";
+  clearTimeout(txtExport.estTimer);
+  txtExport.estTimer = setTimeout(() => {
+    fetch("/panel/api/export/txt/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        names: txtExport.convs,
+        start_ts: part ? txtPicker.state.startTs : null,
+        end_ts: part ? txtPicker.state.endTs : null,
+      }),
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        const pack = txtExport.convs.length > 1
+          ? "将导出 " + txtExport.convs.length + " 个会话并打包为 zip。"
+          : "";
+        el.textContent = pack + (part ? "区间内" : "") + "预计 " + d.messages + " 条消息，导出文件约 " + fmtBytes(d.estimated_bytes) + "。";
+        if (go) go.disabled = false;
+      })
+      .catch(() => { el.textContent = "预估失败，请重试。"; if (go) go.disabled = false; });
+  }, 300);
+}
+
+function runTxtExport() {
+  const go = document.getElementById("txtExportGo");
+  if (go) go.disabled = true;
+  const msg = document.getElementById("exportMsg");
+  const body = {
+    format: "txt",
+    conversations: txtExport.convs,
+    name_style: exportNameStyle(),
+    start_ts: txtExport.scope === "all" ? null : txtPicker.state.startTs,
+    end_ts: txtExport.scope === "all" ? null : txtPicker.state.endTs,
+  };
+  fetch("/panel/api/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+    .then(async (r) => {
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || t("error"));
+      if (msg) setDynText(msg, d.message || "TXT 导出完成");
+      closeTxtExport();
+      const btn = document.getElementById("downloadBtn");
+      if (btn) btn.style.display = "";
+      setStatusEl(document.getElementById("exportStatus"), "idle");
+    })
+    .catch((e) => {
+      if (msg) setDynText(msg, "TXT 导出失败: " + (e.message || e));
       setStatusEl(document.getElementById("exportStatus"), "idle");
     });
 }
@@ -9289,14 +9502,6 @@ let logsRestartTimer = null;
 let logsRestartSeconds = 0;
 let logsRestartSawDown = false; // 等待期间有没有见过「连不上」（用来判断服务真的停过）
 
-/* 文件大小：和日志本身一样按 KB / MB 报，不用让人去数字节 */
-function formatLogSize(bytes) {
-  const n = Number(bytes) || 0;
-  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
-  return n + ' B';
-}
-
 function logsKindMeta() {
   return LOG_KINDS[logsKind] || LOG_KINDS.server;
 }
@@ -9318,7 +9523,7 @@ function renderServerLogMeta() {
       const when = serverLogData.modified_at
         ? new Date(serverLogData.modified_at * 1000).toLocaleString()
         : '';
-      meta.textContent = t('logsMeta', formatLogSize(serverLogData.size), when);
+      meta.textContent = t('logsMeta', fmtBytes(serverLogData.size), when);
     }
   }
   // 说明、空状态、文件路径、打开文件夹的结果都跟着「当前这份日志 + 当前语言」走

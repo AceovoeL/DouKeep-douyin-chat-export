@@ -388,3 +388,25 @@ def test_txt_filename_and_panel_bundle(temp_db, tmp_path, monkeypatch):
         names = archive.namelist()
         assert len(names) == 2 and all(name.endswith(".txt") for name in names)
         assert archive.read(names[0]).decode("utf-8").strip() == "[我]一"
+
+def test_txt_export_respects_the_date_range(temp_db, tmp_path):
+    """面板选「部分导出」时只写区间内的消息（含起点、不含终点）。"""
+    import extractor.models as models
+
+    conn = models.get_db()
+    insert_conversation(conn, "c1", "区间会话", participant_uids='["owner","other"]', last_message_time=3000)
+    conn.execute("INSERT INTO users (uid, nickname) VALUES ('owner','我方')")
+    conn.execute("INSERT INTO users (uid, nickname) VALUES ('other','对方')")
+    insert_message(conn, "m1", "c1", 1, sender_uid="owner", content="第一天", timestamp=1000)
+    insert_message(conn, "m2", "c1", 2, sender_uid="other", content="第二天", timestamp=2000)
+    insert_message(conn, "m3", "c1", 3, sender_uid="owner", content="第三天", timestamp=3000)
+    conn.commit()
+    conn.close()
+
+    out = str(tmp_path / "range.txt")
+    ChatLabExporter(
+        conv_name="区间会话", output_format="txt", start_ts=1500, end_ts=3000,
+    ).export(out)
+    with open(out, encoding="utf-8") as handle:
+        assert handle.read().splitlines() == ["[对方]第二天"]
+

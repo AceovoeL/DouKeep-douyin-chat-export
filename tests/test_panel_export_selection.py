@@ -26,8 +26,8 @@ def _record_export(monkeypatch):
     """把真正干活的那一步换成记账的：只关心「被要求导出什么」。"""
     calls = []
 
-    def fake_do_export(fmt, filter_name, conversations, name_style="full"):
-        calls.append((fmt, filter_name, conversations, name_style))
+    def fake_do_export(fmt, filter_name, conversations, name_style="full", start_ts=None, end_ts=None):
+        calls.append((fmt, filter_name, conversations, name_style, start_ts, end_ts))
 
     monkeypatch.setattr(cp, "_do_export", fake_do_export)
     return calls
@@ -73,7 +73,7 @@ def test_selected_conversations_are_exported(tmp_path, monkeypatch):
 
     asyncio.run(cp.start_export(cp.ExportRequest(format="txt", conversations=[" 会话A ", "会话B"])))
 
-    assert calls == [("txt", "", ["会话A", "会话B"], "full")]   # 首尾空格顺手清掉
+    assert calls == [("txt", "", ["会话A", "会话B"], "full", None, None)]   # 首尾空格顺手清掉
 
 
 def test_database_export_ignores_the_selection(tmp_path, monkeypatch):
@@ -83,7 +83,7 @@ def test_database_export_ignores_the_selection(tmp_path, monkeypatch):
 
     asyncio.run(cp.start_export(cp.ExportRequest(format="database", conversations=[])))
 
-    assert calls == [("database", "", None, "full")]
+    assert calls == [("database", "", None, "full", None, None)]
 
 
 def test_name_style_is_passed_through_and_bad_values_fall_back(tmp_path, monkeypatch):
@@ -128,3 +128,47 @@ def test_panel_html_offers_the_three_name_styles():
         assert html.count(key) == 2                # 中文、英文各一份
     assert "exportNameStyleRow" in html
     assert "name_style: exportNameStyle()" in html
+
+def test_txt_date_range_is_passed_through(tmp_path, monkeypatch):
+    """面板选「部分导出」时，起止时间要原样传到导出那一层。"""
+    _isolate(tmp_path, monkeypatch)
+    calls = _record_export(monkeypatch)
+
+    asyncio.run(cp.start_export(cp.ExportRequest(
+        format="txt", conversations=["会话A"], start_ts=100, end_ts=200)))
+
+    assert calls == [("txt", "", ["会话A"], "full", 100, 200)]
+
+
+def test_invalid_txt_date_range_is_refused(tmp_path, monkeypatch):
+    """开始晚于结束要当场拒绝，绝不去动手导出。"""
+    _isolate(tmp_path, monkeypatch)
+    calls = _record_export(monkeypatch)
+
+    response = asyncio.run(cp.start_export(cp.ExportRequest(
+        format="txt", conversations=["会话A"], start_ts=200, end_ts=100)))
+
+    assert response.status_code == 400
+    assert calls == []
+
+
+def test_panel_html_has_txt_export_dialog():
+    """纯文本 TXT 也先弹窗选「全部 / 区间」，全部导出同样给出预估。"""
+    with open(PANEL_HTML, encoding="utf-8") as handle:
+        html = handle.read()
+
+    for key in ("txtExportModal", "openTxtExport", "onTxtScopeChange", "runTxtExport"):
+        assert key in html
+    assert "/panel/api/export/txt/daily" in html
+    assert "/panel/api/export/txt/estimate" in html
+
+
+def test_export_estimate_formats_size_with_matching_unit():
+    """导出预估的文件大小要按 B / KB / MB / GB 自动换单位，不能一律写成 KB。"""
+    with open(PANEL_HTML, encoding="utf-8") as handle:
+        html = handle.read()
+
+    assert "estimated_kb" not in html
+    assert "estimated_mb" not in html
+    assert html.count("fmtBytes(d.estimated_bytes)") == 2
+

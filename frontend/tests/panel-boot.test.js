@@ -279,3 +279,73 @@ describe('数据总览', () => {
     dom.window.close()
   })
 })
+
+/**
+ * 纯文本 TXT 的导出弹窗：和 HTML 那个共用一套日历。
+ * 这里直接驱动窗口里的全局函数：打开 → 全部导出有预估 → 切到部分导出 → 日历点两下选区间 → 区间预估。
+ */
+describe('纯文本 TXT 导出弹窗', () => {
+  it('全部/部分切换，部分导出能选日期区间并给出预估', async () => {
+    const { dom, window: win } = bootPanel()
+    win.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('/panel/api/export/txt/daily')) {
+        return { ok: true, json: async () => ({ items: [
+          { date: '2026-11-01', count: 3 },
+          { date: '2026-11-02', count: 1 },
+        ] }) }
+      }
+      if (u.startsWith('/panel/api/export/txt/estimate')) {
+        return { ok: true, json: async () => ({ messages: 4, estimated_bytes: 2048 }) }
+      }
+      return { ok: true, json: async () => ({}) }
+    }
+
+    win.openTxtExport(['会话A'])
+    const doc = win.document
+    expect(doc.getElementById('txtExportModal').hidden).toBe(false)
+    expect(doc.getElementById('txtScopeAll').checked).toBe(true)
+    expect(doc.getElementById('txtExportTitle').textContent).toContain('会话A')
+
+    // 全部导出也要有预估（消息条数 + 文件大小）
+    await new Promise((r) => setTimeout(r, 400))
+    expect(doc.getElementById('txtEstimate').textContent).toContain('预计')
+    expect(doc.getElementById('txtEstimate').textContent).toContain('2.0 KB')
+
+    // 切到部分导出：日期区间出现，日历按接口返回的有消息日期画
+    doc.getElementById('txtScopePart').checked = true
+    win.onTxtScopeChange()
+    expect(doc.getElementById('txpDateSection').style.display).toBe('')
+    await new Promise((r) => setTimeout(r, 30))
+    const days = [...doc.querySelectorAll('#txpGrid .hdp-day.has-msg')]
+    expect(days.length).toBeGreaterThan(0)
+
+    // 两次点击选区间（和 HTML 弹窗的操作一致）
+    days[0].dispatchEvent(new win.Event('click'))
+    days[days.length - 1].dispatchEvent(new win.Event('click'))
+    expect(doc.getElementById('txpRangeText').textContent).toContain('导出区间')
+
+    await new Promise((r) => setTimeout(r, 400))
+    expect(doc.getElementById('txtEstimate').textContent).toContain('区间内')
+    dom.window.close()
+  })
+
+  it('预估大小按 B / KB / MB / GB 自动换单位', async () => {
+    const { dom, window: win } = bootPanel()
+    const cases = [
+      [900, '900 B'],
+      [2048, '2.0 KB'],
+      [5 * 1024 * 1024, '5.0 MB'],
+      [3.6 * 1024 * 1024 * 1024, '3.6 GB'],
+    ]
+    for (const [bytes, shown] of cases) {
+      win.fetch = async () => ({ ok: true, json: async () => ({ messages: 1, estimated_bytes: bytes }) })
+      win.openTxtExport(['会话A'])
+      await new Promise((r) => setTimeout(r, 400))
+      expect(win.document.getElementById('txtEstimate').textContent).toContain(shown)
+      win.closeTxtExport()
+    }
+    dom.window.close()
+  })
+})
+

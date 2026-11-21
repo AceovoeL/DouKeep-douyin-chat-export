@@ -727,11 +727,16 @@ class ChatLabExporter:
         output_format: str = "jsonl",
         output_dir: str | os.PathLike[str] | None = None,
         name_style: str = NAME_STYLE_FULL,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
     ):
         self.conv_name = conv_name
         self.output_format = output_format  # "json" / "jsonl" / "txt"（纯文字，见 _resolve_message）
         #: txt 里昵称怎么写：原样 / 数字代号 / 字母代号（见 plain_text_lines）。
         self.name_style = normalize_name_style(name_style)
+        #: 可选日期区间（秒级时间戳，含起点、不含终点）；为空表示整份导出。
+        self.start_ts = start_ts
+        self.end_ts = end_ts
         self.output_dir = (
             paths.DATA_DIR if output_dir is None else os.fspath(output_dir)
         )
@@ -777,16 +782,24 @@ class ChatLabExporter:
             output_path = os.fspath(output_path)
 
         # Load messages ordered by seq
-        messages = conn.execute(
+        sql = (
             """SELECT m.*,
                       vt.text_result AS voice_transcription,
                       vt.status AS voice_transcription_status,
                       vt.error AS voice_transcription_error
                FROM messages m
                LEFT JOIN voice_transcriptions vt ON vt.msg_id = m.msg_id
-               WHERE m.conv_id = ? ORDER BY m.seq ASC""",
-            (conv_id,),
-        ).fetchall()
+               WHERE m.conv_id = ?"""
+        )
+        params: list = [conv_id]
+        if self.start_ts:
+            sql += " AND m.timestamp >= ?"
+            params.append(self.start_ts)
+        if self.end_ts:
+            sql += " AND m.timestamp < ?"
+            params.append(self.end_ts)
+        sql += " ORDER BY m.seq ASC"
+        messages = conn.execute(sql, params).fetchall()
 
         print(f"[*] 共 {len(messages)} 条消息")
 
