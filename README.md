@@ -10,9 +10,8 @@
 
 </div>
 
-> **本项目**由 **AceovoeL** 维护：<https://github.com/AceovoeL/DouKeep-douyin-chat-export>
+> **本项目**由 **AceovoeL** 维护：[DouKeep-douyin-chat-export](https://github.com/AceovoeL/DouKeep-douyin-chat-export)
 > 基于 **TeamBreakerr** 的原创项目 [douyin-chat-export](https://github.com/TeamBreakerr/douyin-chat-export) 修改而来，采用 MIT 许可（全文见 [LICENSE](LICENSE)，第三方素材说明见 [NOTICE](NOTICE)）。
-> 控制面板（`/panel`）→ **关于** 里可以看到作者信息、当前版本号，并一键检查更新。
 
 <div align="center">
   <img src="docs/chat-viewer.png" alt="聊天浏览界面" width="820">
@@ -38,7 +37,7 @@
 - **聊天浏览** — 无限滚动、会话内搜索、按日期定位与筛选、左右分栏、引用回复、图片与音视频播放、合并转发展开、5 套主题
 - **互动卡片** — 分享、火花、合养小火人、喂精灵、陪伴天数、彩蛋福袋等卡片按抖音客户端样式还原
 - **数据洞察** — 每个会话的热力图、消息排行、常用表情、连续聊天天数、高频关键词，全部本机计算
-- **导出** — ChatLab JSON / JSONL、纯文本 TXT、单文件 HTML（TXT 与 HTML 可按日期区间导出），也可整库导出 SQLite
+- **导出** — ChatLab JSON / JSONL、纯文本 TXT、单文件 HTML，也可整库导出 SQLite
 - **远程同步** — 实现 ChatLab Pull 协议，在 ChatLab 里添加本服务地址即可自动增量同步
 - **开放 API** — 只读 REST API，可取消息和日统计，也能把消息区间渲染成聊天长图
 - **控制面板** — 采集、导出、定时任务、登录、局域网与公网访问、密码保护、更新检查
@@ -57,7 +56,7 @@
 > 不确定装没装、版本对不对？Windows 双击仓库根目录的 **`start.html`**，它会自动检测并列出每一项
 > （详见下面的[方式 A](#方式-a第一次用windows一键启动)）；手动看的话，跑 `python --version` 和 `node --version` 就够了。
 >
-> 采集、导入 Cookie、聊天长图要用的 **Playwright Chromium** 由启动脚本自动下载（约 700 MB）；真正可选装的只有 **ffmpeg**（不装则 H.265 视频播不了）。缺什么可以在面板 **关于 → 环境检测** 里看。
+
 
 ## 快速开始
 
@@ -68,8 +67,6 @@
 Windows 上推荐从仓库根目录的 **`start.html`** 开始，全程不用记命令：它先逐项检测环境并引导安装，通过后自动建虚拟环境、装依赖、下载浏览器内核、构建前端并启动服务（首次约几分钟），完成后跳到控制面板。
 
 首次打开时页面不能直接执行本地命令（浏览器安全限制），按提示复制那条一次性命令，在 `Win + R` 里粘贴运行即可。
-
-> 第一次进面板会问要不要下载**资源包**；跳过之后可在 **关于 → 资源包** 里补，或运行 `python tools/download_emoji.py`。
 
 以后启动直接**双击 `启动服务（双击）.bat`**：窗口显示进度，就绪后自动打开面板；服务已在运行时不会重复启动。停止服务用面板 **日志 → 停止程序**。
 
@@ -117,8 +114,6 @@ cd frontend && npm install && npm run build && cd ..
 python3 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-> **前端那一步不能省**（`npm install && npm run build`）：后端启动时会去找 `frontend/dist/`，
-> 没有这份构建产物，聊天浏览页就打不开（控制面板本身不受影响）。
 > Node.js 版本不对时 `npm run build` 会直接报错，见下面的「[Node.js 版本不对？](#node-版本不对)」。
 
 启动成功后：
@@ -133,49 +128,25 @@ python3 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 ## 部署
 
-本项目只支持**源码运行**，装在什么机器上，数据就放在那台机器的项目目录里（见下）。
+本项目只支持**源码运行**。
 
 装法和启动步骤都在上面的[快速开始](#快速开始)里（Windows 双击 `启动服务（双击）.bat` / 跑 `start.ps1`；
 macOS、Linux 用 `./start.sh`），这一节只讲跑起来之后要管的事：数据放在哪、更新、环境变量、局域网访问、反向代理。
 
 ### 数据放在哪
 
-项目目录里只有两个会自己长大的目录，都已被 `.gitignore` 排除，升级代码不会动它们：
+项目目录里只有两个会自己长大的目录：
 
 | 目录 | 放什么 | 删了会怎样 |
 |------|--------|-----------|
 | `data/` | **聊天记录**：`chat.db` 数据库、下载的图片/表情/语音/视频、导出的聊天文件与数据库备份 | 聊天记录没了 |
 | `config/` | **设置与运行状态**：面板设置 `panel_config.json`、私有仓库凭据 `github_token`、登录态 `browser_profile/`、日志 `config/logs/` | 回到默认设置、需要重新登录，聊天记录不受影响 |
 
-备份就备份这两个目录；只在乎聊天记录的话，备份 `data/` 就够。出问题时要看的日志都在
-`config/logs/`（面板 **日志** 页也是读这里）。
+
 
 ### 更新到新版本
 
-控制面板 → **关于 → 检查更新** 会比对版本并列出每个待更新版本的变更，确认后点 **立即更新**：
-
-```bash
-# 换代码：有 .git 就 git pull，没有就把最新代码包解压覆盖进目录
-pip install -r requirements.txt                 # 依赖有变化时（每次都跑也无害）
-cd frontend && npm install && npm run build && cd ..
-# 然后自动重启服务：新代码先试启动一次，通过了才换掉旧服务
-```
-
-**更新完会自动重启服务**（默认勾选；用 nssm / 计划任务托管时可取消勾选）。重启后会弹「**更新完成**」，写明当前版本和这次更新包含的各版本改动；2 分钟后收进右下角的常驻提示，点「×」才消失，只弹一次（记录在 `config/update-done.json`）。
-
-**目录里有没有 git 都能一键更新**：
-
-| 目录情况 | 点「立即更新」实际做的事 |
-|----------|--------------------------|
-| 自己 `git clone` 下来的 | `git pull --ff-only`；有未提交改动会先停下问你，不覆盖任何东西 |
-| 拷贝的副本、ZIP 解压的目录、本机没装 git | 下载默认分支的代码包并解压覆盖目录里的代码文件（下载时实时打印进度） |
-
-两条路都只换仓库里的代码文件：`data/`、`config/`、`venv/`、`frontend/node_modules/` 不会被覆盖。
-
-> 拷贝的副本没有 git 记录，本地改动检查不出来，更新时会直接覆盖代码文件，不要在那上面手动改代码。
-> 公开仓库匿名就能下载代码包；只有放回私有仓库时才需要在「关于」页填 GitHub 只读凭据。
-
-也可以用 `python tools/update.py` 手动更新（另有 `--allow-dirty`、`--archive`）。升级前建议备份 `data/` 和 `config/panel_config.json`。
+控制面板 → **关于 → 检查更新** 会比对版本并列出每个待更新版本的变更，确认后点 **立即更新**。
 
 ### 环境变量（可选）
 
@@ -217,8 +188,7 @@ cd frontend && npm install && npm run build && cd ..
 * **关闭**：只停隧道，域名和 Cloudflare 上的解析都保留，重新挂载不用再填；**彻底移除** 会连记录一起删（需确认两次）。
 * 域名上已有别的解析记录时，程序不会替你改，面板会提示；点 **把解析改到这台电脑** 即可。
 * cloudflared 下载到 `config/cloudflared/`，日志在 `config/logs/cloudflared.log`，域名打不开先看它。
-* **版本更新**：面板显示当前版本，有新版本会标出来。点 **更新 cloudflared** 会先查再下：已是最新就只提示一句；有新版才下载（先镜像、再官方），替换时隧道短暂断开、完成后自动重连；下载完用官方 SHA-256 校验。不想等可以自己下好放进指定路径，再点 **我已放入指定位置**。
-* 隧道固定走 **HTTP/2**（TCP 443），比默认的 QUIC 稳定。
+* **版本更新**：面板显示当前版本，有新版本会标出来。点 **更新 cloudflared** 会先查再下：已是最新就只提示一句；有新版才下载，替换时隧道短暂断开、完成后自动重连；下载完用官方 SHA-256 校验。不想等可以自己下好放进指定路径，再点 **我已放入指定位置**。
 
 ### 挂到反向代理
 
@@ -252,18 +222,6 @@ python tools/verify_media_search_ui.py          # Windows: venv\Scripts\python.e
 
 它会用一个独立后端（随机端口，不影响正在运行的实例）在无头浏览器里跑 9 项检查，失败时返回 1；优先用本机 Edge / Chrome，没有时用 Playwright 自带的 chromium。
 
-### 面板页面快照（改面板之后跑一次）
-
-`tests/baseline/panel.html` 是控制面板页面的冻结快照；改过 `backend/panel/static/panel.html`（加个动画、改句话都算）就得同步，否则 CI 会红。两步并一步：
-
-```bash
-python tools/sync_panel_baseline.py            # 只对比并打印差异，不写入
-python tools/sync_panel_baseline.py --apply    # 同步快照，然后跑一遍 pytest
-# Windows: venv\Scripts\python.exe tools\sync_panel_baseline.py --apply
-```
-
-先不加参数看差异，确认后加 `--apply`，并把快照一起提交。
-
 ## 使用
 
 ### 1. 登录
@@ -278,9 +236,6 @@ python tools/sync_panel_baseline.py --apply    # 同步快照，然后跑一遍 
 ```bash
 python3 login.py
 ```
-
-浏览器内核由启动脚本负责（第一次启动服务时就下好了），所以先让服务启动过一次就行。
-扫码成功后浏览器自动关闭，重启一下后端服务（或直接在面板里开始采集）即可生效。
 </details>
 
 <details>
@@ -350,7 +305,7 @@ python3 export.py --filter "会话名称" --format txt --name-style number  # TX
 python3 export.py --filter "会话名称" --output data/export.jsonl
 ```
 
-未指定 `--output` 时，文件名自动为 `会话昵称_YYYYMMDDHHMMSS_export.后缀`。面板 **导出/导入** 里也能导出，勾几个会话就打成一个 zip；TXT 与 HTML 会先问「全部还是某段日期」。要全部聊天记录，用下面的整库导出。
+未指定 `--output` 时，文件名自动为 `会话昵称_YYYYMMDDHHMMSS_export.后缀`。面板 **导出/导入** 里也能导出，勾几个会话就打成一个 zip。要全部聊天记录，用下面的整库导出。
 
 **JSON / JSONL** 是 [ChatLab](https://github.com/hellodigua/ChatLab) 标准格式，可直接导入做 AI 分析；包含文本、表情、图片、语音转写、视频、分享链接、名片、引用回复和合并转发正文。
 

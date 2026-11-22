@@ -19,7 +19,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: 本项目当前版本（发版时手写的号，不跟 commit 数挂钩）。
 #: 2026-10-03 迁到新仓库 DouKeep-douyin-chat-export（从空仓库重开、旧历史不带过去），
 #: 版本号随新仓库从 1.0.0 重新开始。
-VERSION = "1.8.3"
+VERSION = "1.8.4"
 
 #: 版本号第一位默认是 1，一个「大版本」内共 100 个小版本（1.0.0 → 1.9.9）。
 _BASE_MAJOR = 1

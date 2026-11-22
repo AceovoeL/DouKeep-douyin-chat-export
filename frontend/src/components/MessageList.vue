@@ -3413,7 +3413,7 @@ watch(() => props.jumpToSeq, async (seq) => {
 
 /* 商品分享卡片：竖长方形（高 > 宽），上图 / 中描述（最多 3 行）/ 下价格 */
 .msg-goods-card {
-  width: var(--goods-card-width);
+  width: var(--goods-card-width, 168px);
   max-width: 100%;
   display: flex;
   flex-direction: column;
@@ -3438,6 +3438,8 @@ watch(() => props.jumpToSeq, async (seq) => {
 .msg-goods-cover-wrap {
   width: 100%;
   aspect-ratio: 1 / 1;
+  /* 主图跟着卡宽走，但最多长到这么高：卡片调宽也不会把聊天区占满 */
+  max-height: var(--goods-cover-max-height, 220px);
   background: var(--bg-tertiary);
   display: flex;
   align-items: center;
