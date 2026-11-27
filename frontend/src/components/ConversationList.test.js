@@ -169,4 +169,26 @@ describe('会话列表的加载态', () => {
     const icon = host.querySelector('.spark-icon')
     expect(icon.getAttribute('src')).toBe('/media/spark_icons/gray_normal.png')
   })
+
+  it('重燃中时只显示「重燃中 2/3」这句话，不当成天数', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        items: [{
+          conv_id: 'c1', name: '小明', message_count: 10, display_count: 10,
+          spark_days: 0, spark_icon: 'spark_icons/normal_normal.png',
+          spark_note: '重燃中 2/3',
+        }],
+        total: 1,
+      }),
+    })))
+
+    mount()
+    await flush()
+
+    expect(host.querySelector('.spark-note').textContent).toBe('重燃中 2/3')
+    expect(host.querySelector('.spark-days')).toBeNull()
+    expect(host.querySelector('.spark-icon').getAttribute('src'))
+      .toBe('/media/spark_icons/normal_normal.png')
+  })
 })

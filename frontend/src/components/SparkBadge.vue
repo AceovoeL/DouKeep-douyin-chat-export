@@ -2,8 +2,8 @@
 // 「火花图标 + 连续天数」：会话列表、聊天标题、数据洞察共用。
 // 图标是采集时从抖音接口按官方文件名存下来的本地图；下载失败时退回一个火苗。
 //
-// note 是「1 天后消失」这种马上要熄灭的原文：那时数字是倒计时、不是天数，
-// 按抖音网页版的样子只画灰色火花 + 这句话，不写数字。
+// note 是「1 天后消失」「重燃中 2/3」这类状态原文：那时数字是倒计时或重燃进度、
+// 不是天数，按抖音网页版的样子只画火花图标 + 这句话，不写数字。
 import { computed, ref, watch } from 'vue'
 import { sparkColor, sparkIconUrl } from '@/lib/spark.js'
 
@@ -67,7 +67,7 @@ const title = computed(() => (note.value ? `火花${note.value}` : `连续聊天
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-/* 「1 天后消失」比天数长一点，字号小半号、不要加粗，别把昵称挤出去 */
+/* 「1 天后消失」「重燃中 2/3」比天数长一点，字号小半号、不要加粗，别把昵称挤出去 */
 .spark-note {
   font-size: 0.92em;
   white-space: nowrap;

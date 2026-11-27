@@ -55,7 +55,7 @@ def init_db():
             display_count INTEGER,
             spark_days INTEGER,
             spark_icon TEXT,
-            -- 「1 天后消失」这类即将熄灭的原文；有值时 spark_days 是 0
+            -- 「1 天后消失」「重燃中 2/3」这类状态原文；有值时 spark_days 是 0
             spark_note TEXT,
             collected_at INTEGER
         );
@@ -153,7 +153,7 @@ def init_db():
         conn.execute("ALTER TABLE conversations ADD COLUMN spark_icon TEXT")
     except sqlite3.OperationalError:
         pass  # 列已存在
-    # 同样是火花：旧库没有「N 天后消失」这句话的列，启动时补上
+    # 同样是火花：旧库没有「N 天后消失」这类说明文字的列，启动时补上
     try:
         conn.execute("ALTER TABLE conversations ADD COLUMN spark_note TEXT")
     except sqlite3.OperationalError:

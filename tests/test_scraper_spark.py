@@ -117,6 +117,28 @@ def test_expiring_spark_keeps_note_instead_of_days(temp_db, monkeypatch):
     assert tuple(row) == (0, "spark_icons/gray_normal.png", "1 天后消失")
 
 
+def test_reigniting_spark_is_a_note_not_days(temp_db, monkeypatch):
+    """「重燃中 2/3」是断签后的重燃进度，不是 23 天火花：只留这句话。"""
+    conn = connect(foreign_keys=True)
+    insert_conversation(conn, "c1", "会话")
+    update_conversation_spark(conn, "c1", 50, "spark_icons/blue_normal.png")
+    conn.commit()
+    monkeypatch.setattr(
+        "extractor.web_scraper.save_spark_icon",
+        lambda url: "spark_icons/normal_normal.png",
+    )
+
+    page = FakePage({"days": 0, "icon": FLAME_URL, "note": "重燃中 2/3"})
+    asyncio.run(_scraper(conn, page)._extract_and_save_conv_spark("c1"))
+
+    row = conn.execute(
+        "SELECT spark_days, spark_icon, spark_note FROM conversations WHERE conv_id='c1'"
+    ).fetchone()
+    assert tuple(row) == (0, "spark_icons/normal_normal.png", "重燃中 2/3")
+    # 读 DOM 的脚本只认纯数字当天数，否则「重燃中 2/3」会被读成 23 天
+    assert "/^[0-9]+$/" in page.scripts[0]
+
+
 def test_marks_first_api_call_time(temp_db):
     conn = connect(foreign_keys=True)
     insert_conversation(conn, "c1", "会话")

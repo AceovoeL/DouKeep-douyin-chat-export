@@ -1794,10 +1794,11 @@ class WebChatScraper:
         抖音把「火花图标 + 天数」放在标题右侧的 commonStreak* 容器里（文字在
         commonStreaknormalText，图标是容器里的 img）。
 
-        这段文字有两种：正常的连续天数（``101``），和快要熄灭的倒计时
-        （``1 天后消失``，图标同时换成灰色的 gray_normal.png）。后者的数字是
-        「还剩几天」，不是火花天数 —— 单独放进 note，天数按 0 记，
-        页面只画灰色火花 + 这句话（见 frontend/src/components/SparkBadge.vue）。
+        这段文字有两种：正常的连续天数（``101``），和状态说明 —— 快要熄灭的
+        倒计时（``1 天后消失``，图标同时换成灰色的 gray_normal.png）、断签后
+        重新攒的进度（``重燃中 2/3``）。后两种里的数字都不是火花天数：整句放进
+        note，天数按 0 记，页面只画火花图标 + 这句话（见
+        frontend/src/components/SparkBadge.vue）。
 
         找不到活跃项时返回 None，调用方据此「不更新」——列表还没渲染好时
         不能把旧数据清掉。
@@ -1810,13 +1811,15 @@ class WebChatScraper:
             const textEl = box.querySelector('[class*="commonStreaknormalText"]');
             const raw = (textEl ? textEl.textContent : box.textContent) || '';
             const label = String(raw).replace(/\\s+/g, ' ').trim();
-            // 「1 天后消失」是倒计时，不是 1 天火花：天数为 0，只留这句话
-            const expiring = /天后消失|即将消失/.test(label);
-            const digits = expiring ? '' : label.replace(/[^0-9]/g, '');
-            const days = digits ? parseInt(digits, 10) : 0;
+            // 只有纯数字才是火花天数，其余全是状态说明：
+            // 「1 天后消失」是快熄灭的倒计时，「重燃中 2/3」是断签后的重燃进度。
+            // 这些句子里的数字不是天数 —— 整句原样留在 note，天数按 0 记
+            // （显示见 frontend/src/components/SparkBadge.vue）。
+            const counting = /^[0-9]+$/.test(label);
+            const days = counting ? parseInt(label, 10) : 0;
             const img = box.querySelector('img');
             const icon = img && img.src && /^https?:/i.test(img.src) ? img.src : '';
-            return {{ days: Number.isFinite(days) ? days : 0, icon: icon, note: expiring ? label : '' }};
+            return {{ days: Number.isFinite(days) ? days : 0, icon: icon, note: counting ? '' : label }};
         }}""")
 
     async def _extract_and_save_conv_spark(self, conv_id):
@@ -1836,8 +1839,9 @@ class WebChatScraper:
         except (TypeError, ValueError):
             days = 0
         if note:
-            # 「N 天后消失」：火花快熄了，数字是倒计时 —— 天数为 0，
-            # 只把这句话和灰色图标留下来（显示见 SparkBadge.vue）。
+            # 状态说明（「N 天后消失」的倒计时、断签后的「重燃中 2/3」）：句子里的
+            # 数字不是火花天数 —— 天数为 0，只把这句话和图标留下来
+            # （显示见 SparkBadge.vue）。
             days = 0
         elif days <= 0:
             clear_conversation_spark(self._db_conn, conv_id)
